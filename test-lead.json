@@ -1,0 +1,11 @@
+{
+  "call_id": "test-123",
+  "extracted_data": {
+    "lead_data": {
+      "business_slug": { "subjective": "skello-test-97237414" },
+      "name": { "subjective": "Test" },
+      "product": { "subjective": "Honda Dio" },
+      "lead_intent": { "objective": "Warm" }
+    }
+  }
+}

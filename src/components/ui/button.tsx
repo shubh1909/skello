@@ -1,3 +1,4 @@
+import * as React from "react"
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 
@@ -44,13 +45,32 @@ function Button({
   className,
   variant = "default",
   size = "default",
+  render,
+  nativeButton,
+  "data-slot": dataSlot = "button",
   ...props
-}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+}: ButtonPrimitive.Props &
+  VariantProps<typeof buttonVariants> & { "data-slot"?: string }) {
+  // Base UI defaults `nativeButton` to true, which warns when `render` is an
+  // <a>, <Link>, etc. Auto-disable it whenever the caller hands us a non-button
+  // render target — they can still opt back in explicitly if they want.
+  const resolvedNativeButton =
+    nativeButton ??
+    (React.isValidElement(render) && render.type !== "button"
+      ? false
+      : undefined)
+
+  // data-slot must have a single source of truth. When Button is used as a
+  // render target (e.g. DialogTrigger render={<Button>}), Base UI injects its
+  // own data-slot through props — mixing that with a hardcoded value caused a
+  // server/client hydration mismatch.
   return (
     <ButtonPrimitive
-      data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
+      render={render}
+      nativeButton={resolvedNativeButton}
       {...props}
+      data-slot={dataSlot}
     />
   )
 }

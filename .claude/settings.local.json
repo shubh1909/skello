@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(npx --yes create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --yes)",
-      "Bash(npx --yes shadcn@latest init --yes --base-color neutral)"
+      "Bash(npx --yes shadcn@latest init --yes --base-color neutral)",
+      "Bash(npm install *)",
+      "Bash(npx --yes skills add supabase/agent-skills)",
+      "Bash(npx --yes skills add supabase/agent-skills -y)"
     ]
   }
 }
