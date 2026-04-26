@@ -7,12 +7,12 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { callInitiateSchema, callListSchema } from "@/lib/validations/call";
 import { type ActionResult, fail, ok } from "@/types/action";
-import type { Call, CallStatus } from "@/types/call";
+import type { Call, CallStatus, CallWithLead } from "@/types/call";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const CALL_COLUMNS =
-  "id, organisation_id, lead_id, initiated_by, bolna_call_id, to_phone, from_phone, agent_id, status, error_code, error_message, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript_url, summary, created_at, updated_at";
+  "id, organisation_id, lead_id, initiated_by, bolna_call_id, to_phone, from_phone, agent_id, status, direction, error_code, error_message, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript_url, transcript, transcript_status, transcript_fetched_at, language, summary, created_at, updated_at";
 
 const STATUS_MAP: Record<string, CallStatus> = {
   initiated: "initiated",
@@ -105,10 +105,10 @@ export async function initiateCall(
 
   if (intErr) return fail(intErr.message);
   if (!integration) {
-    return fail("Bolna integration not configured. Set it up in Settings.");
+    return fail("Voice agent not configured. Set it up in Settings.");
   }
   if (!integration.enabled) {
-    return fail("Bolna integration is disabled for this organisation.");
+    return fail("Voice agent is disabled for this workspace.");
   }
 
   let bolnaResult;
@@ -126,7 +126,9 @@ export async function initiateCall(
     });
   } catch (err) {
     const reason =
-      err instanceof BolnaApiError ? err.message : "Failed to reach Bolna";
+      err instanceof BolnaApiError
+        ? err.message
+        : "Failed to reach the voice provider";
     await admin.from("calls").insert({
       organisation_id: org.id,
       lead_id: lead.id,
@@ -148,6 +150,7 @@ export async function initiateCall(
       lead_id: lead.id,
       initiated_by: user.id,
       bolna_call_id: bolnaResult.bolnaCallId,
+      direction: "outbound",
       to_phone: lead.phone,
       from_phone: integration.from_phone_number,
       agent_id: integration.agent_id,
@@ -161,6 +164,11 @@ export async function initiateCall(
   revalidatePath("/leads");
   revalidatePath("/dashboard");
   return ok(callRow);
+}
+
+function escapeForOrFilter(input: string): string {
+  // PostgREST .or() uses commas as separators and percent for ilike wildcards.
+  return input.replace(/[%,]/g, " ").trim();
 }
 
 export async function listCalls(
@@ -186,9 +194,81 @@ export async function listCalls(
 
   if (parsed.data.lead_id) query = query.eq("lead_id", parsed.data.lead_id);
   if (parsed.data.status) query = query.eq("status", parsed.data.status);
+  if (parsed.data.direction) query = query.eq("direction", parsed.data.direction);
+  if (parsed.data.agent_id) query = query.eq("agent_id", parsed.data.agent_id);
+  if (parsed.data.from) query = query.gte("started_at", parsed.data.from);
+  if (parsed.data.to) query = query.lte("started_at", parsed.data.to);
 
   const { data, error, count } = await query.returns<Call[]>();
   if (error) return fail(error.message);
 
   return ok({ items: data ?? [], total: count ?? 0 });
+}
+
+export async function listConversations(
+  input: unknown,
+): Promise<ActionResult<{ items: CallWithLead[]; total: number }>> {
+  const parsed = callListSchema.safeParse(input);
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id))) {
+    return fail("Forbidden");
+  }
+
+  let query = supabase
+    .from("calls")
+    .select(`${CALL_COLUMNS}, lead:leads(name, phone)`, { count: "exact" })
+    .eq("organisation_id", parsed.data.organisation_id)
+    .order("started_at", { ascending: false })
+    .range(parsed.data.offset, parsed.data.offset + parsed.data.limit - 1);
+
+  if (parsed.data.lead_id) query = query.eq("lead_id", parsed.data.lead_id);
+  if (parsed.data.status) query = query.eq("status", parsed.data.status);
+  if (parsed.data.direction) query = query.eq("direction", parsed.data.direction);
+  if (parsed.data.agent_id) query = query.eq("agent_id", parsed.data.agent_id);
+  if (parsed.data.from) query = query.gte("started_at", parsed.data.from);
+  if (parsed.data.to) query = query.lte("started_at", parsed.data.to);
+  if (parsed.data.q && parsed.data.q.trim().length > 0) {
+    const safe = escapeForOrFilter(parsed.data.q);
+    if (safe.length > 0) {
+      query = query.or(
+        `to_phone.ilike.%${safe}%,from_phone.ilike.%${safe}%,bolna_call_id.ilike.%${safe}%`,
+      );
+    }
+  }
+
+  const { data, error, count } = await query.returns<CallWithLead[]>();
+  if (error) return fail(error.message);
+
+  return ok({ items: data ?? [], total: count ?? 0 });
+}
+
+export async function listConversationAgents(
+  organisationId: string,
+): Promise<ActionResult<string[]>> {
+  if (!organisationId) return fail("Missing organisation id");
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+  if (!(await userOwnsOrg(supabase, user.id, organisationId))) {
+    return fail("Forbidden");
+  }
+
+  const { data, error } = await supabase
+    .from("calls")
+    .select("agent_id")
+    .eq("organisation_id", organisationId)
+    .order("started_at", { ascending: false })
+    .limit(500)
+    .returns<{ agent_id: string }[]>();
+
+  if (error) return fail(error.message);
+  const unique = Array.from(new Set((data ?? []).map((r) => r.agent_id))).filter(
+    Boolean,
+  );
+  return ok(unique);
 }

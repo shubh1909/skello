@@ -141,7 +141,7 @@ function FeatureGrid() {
     {
       icon: PhoneIcon,
       title: "Voice-driven lead capture",
-      desc: "Bolna.ai routes inbound calls into Skello with transcripts and intent already classified.",
+      desc: "Your voice agent routes inbound calls into Skello with transcripts and intent already classified.",
     },
     {
       icon: MessageCircleIcon,

@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { Logo } from "@/components/brand/logo";
 import { SignupForm } from "@/components/forms/signup-form";
 import { getCurrentUser } from "@/actions/auth";
+import { getIsAdmin } from "@/lib/auth/admin";
 
 export const metadata = {
   title: "Sign up · Skello",
@@ -11,7 +12,10 @@ export const metadata = {
 
 export default async function SignupPage() {
   const user = await getCurrentUser();
-  if (user) redirect("/dashboard");
+  if (user) {
+    const isAdmin = await getIsAdmin();
+    redirect(isAdmin ? "/admin" : "/dashboard");
+  }
 
   return (
     <div className="grid min-h-screen w-full lg:grid-cols-2">

@@ -28,7 +28,7 @@ export function LoginForm() {
         return;
       }
       toast.success("Welcome back");
-      router.replace("/dashboard");
+      router.replace(result.data.redirectTo);
     });
   }
 

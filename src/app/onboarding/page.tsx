@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createOrganisation, listOrganisations } from "@/actions/organisations";
 import { getCurrentUser } from "@/actions/auth";
+import { getIsAdmin } from "@/lib/auth/admin";
 
 export const metadata = { title: "Set up workspace · Skello" };
 
@@ -22,6 +23,9 @@ function slugify(input: string): string {
 export default async function OnboardingPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+
+  // Platform admins don't need their own workspace — send them home.
+  if (await getIsAdmin()) redirect("/admin");
 
   const orgsResult = await listOrganisations();
   if (orgsResult.success && orgsResult.data.length > 0) {

@@ -4,11 +4,16 @@ import { useTransition } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  BellIcon,
-  LayoutDashboardIcon,
+  ActivityIcon,
+  CodeIcon,
+  CreditCardIcon,
+  LayoutGridIcon,
   LogOutIcon,
+  MessageCircleIcon,
+  RadioIcon,
   SettingsIcon,
   UsersIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -17,19 +22,59 @@ import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/brand/logo";
 import { cn } from "@/lib/utils";
 
-const NAV = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboardIcon },
-  { href: "/leads", label: "Leads", icon: UsersIcon },
-  { href: "/reminders", label: "Reminders", icon: BellIcon },
-  { href: "/settings", label: "Settings", icon: SettingsIcon },
-] as const;
+type NavItem = {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  badgeKey?: "leads";
+};
+
+type NavSection = {
+  label: string;
+  items: readonly NavItem[];
+};
+
+const SECTIONS: readonly NavSection[] = [
+  {
+    label: "Overview",
+    items: [
+      { href: "/dashboard", label: "Dashboard", icon: LayoutGridIcon },
+      { href: "/pulse", label: "Pulse", icon: ActivityIcon },
+    ],
+  },
+  {
+    label: "Leads",
+    items: [
+      { href: "/leads", label: "Leads", icon: UsersIcon, badgeKey: "leads" },
+      {
+        href: "/conversations",
+        label: "Conversations",
+        icon: MessageCircleIcon,
+      },
+    ],
+  },
+  {
+    label: "Outreach",
+    items: [{ href: "/campaigns", label: "Campaigns", icon: RadioIcon }],
+  },
+  {
+    label: "System",
+    items: [
+      { href: "/settings", label: "Settings", icon: SettingsIcon },
+      { href: "/developer", label: "Developer", icon: CodeIcon },
+      { href: "/billing", label: "Billing", icon: CreditCardIcon },
+    ],
+  },
+];
 
 export function SidebarNav({
   organisationName,
   organisationSlug,
+  leadCount,
 }: {
   organisationName: string;
   organisationSlug: string;
+  leadCount: number;
 }) {
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
@@ -39,6 +84,12 @@ export function SidebarNav({
       const result = await logout();
       if (!result.success) toast.error(result.error);
     });
+  }
+
+  function getBadge(item: NavItem): string | null {
+    if (item.badgeKey !== "leads") return null;
+    if (leadCount <= 0) return null;
+    return leadCount > 999 ? "999+" : String(leadCount);
   }
 
   return (
@@ -59,31 +110,53 @@ export function SidebarNav({
         </div>
       </div>
 
-      <nav className="flex-1 px-2">
-        <ul className="space-y-0.5">
-          {NAV.map((item) => {
-            const active =
-              pathname === item.href ||
-              (item.href !== "/dashboard" && pathname.startsWith(item.href));
-            const Icon = item.icon;
-            return (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className={cn(
-                    "group flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
-                    active
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
-                  )}
-                >
-                  <Icon className="size-4" />
-                  <span className="font-medium">{item.label}</span>
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+      <nav className="flex-1 overflow-y-auto px-2 pb-2">
+        {SECTIONS.map((section) => (
+          <div key={section.label} className="mb-4">
+            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              {section.label}
+            </div>
+            <ul className="space-y-0.5">
+              {section.items.map((item) => {
+                const active =
+                  pathname === item.href ||
+                  (item.href !== "/dashboard" &&
+                    pathname.startsWith(item.href));
+                const Icon = item.icon;
+                const badge = getBadge(item);
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        "group flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
+                        active
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                          : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
+                      )}
+                    >
+                      <Icon className="size-4" />
+                      <span className="flex-1 font-medium">{item.label}</span>
+                      {badge ? (
+                        <span
+                          className={cn(
+                            "inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+                            active
+                              ? "bg-background/60 text-sidebar-accent-foreground"
+                              : "bg-muted text-muted-foreground group-hover:bg-background group-hover:text-foreground",
+                          )}
+                          aria-label={`${leadCount} total leads`}
+                        >
+                          {badge}
+                        </span>
+                      ) : null}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
       </nav>
 
       <div className="border-t border-border/60 p-4 text-xs text-muted-foreground">

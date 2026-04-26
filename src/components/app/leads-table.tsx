@@ -33,7 +33,7 @@ import {
 import { initiateCall } from "@/actions/calls";
 import { formatRelative, initialsOf } from "@/lib/format";
 import { useClientNow } from "@/hooks/use-client-now";
-import type { Lead, LeadIntent } from "@/types/lead";
+import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
 
 const INTENT_VARIANT: Record<
   LeadIntent,
@@ -48,6 +48,27 @@ const INTENT_LABEL: Record<LeadIntent, string> = {
   hot: "Hot",
   warm: "Warm",
   cold: "Cold",
+};
+
+const STATUS_LABEL: Record<LeadStatus, string> = {
+  new: "New",
+  contacted: "Contacted",
+  qualified: "Qualified",
+  negotiating: "Negotiating",
+  won: "Won",
+  lost: "Lost",
+};
+
+const STATUS_VARIANT: Record<
+  LeadStatus,
+  "default" | "secondary" | "outline" | "destructive"
+> = {
+  new: "outline",
+  contacted: "secondary",
+  qualified: "secondary",
+  negotiating: "default",
+  won: "default",
+  lost: "destructive",
 };
 
 interface LeadsTableProps {
@@ -109,7 +130,6 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
         return;
       }
       toast.success("Lead removed");
-      // Close the detail sheet if it was showing the deleted lead.
       if (detailLeadId === lead.id) setDetailOpen(false);
       router.refresh();
     });
@@ -140,8 +160,8 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
         </span>
         <p className="font-medium">No leads yet</p>
         <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-          Inbound calls captured by Bolna will appear here. You can also add a
-          lead manually from the top right.
+          Inbound calls captured by your voice agent will appear here. You
+          can also add a lead manually from the top right.
         </p>
       </Card>
     );
@@ -150,49 +170,93 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
   return (
     <>
       <Card className="overflow-hidden p-0">
-        <ul className="divide-y divide-border/60">
-          {leads.map((lead) => {
-            const intent = lead.lead_intent ?? "cold";
-            const isPending = pending && pendingLeadId === lead.id;
-            const hasPhone = Boolean(lead.phone);
-            const contacted = Boolean(lead.contacted_on_watsapp);
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-border/60 bg-muted/30">
+              <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                <th scope="col" className="px-3 py-3 font-medium">Lead</th>
+                <th scope="col" className="px-3 py-3 font-medium">Phone</th>
+                <th scope="col" className="w-40 px-3 py-3 font-medium">Product</th>
+                <th scope="col" className="px-3 py-3 font-medium">Status</th>
+                <th scope="col" className="px-3 py-3 font-medium">Intent</th>
+                <th scope="col" className="px-3 py-3 font-medium">Contacted</th>
+                <th scope="col" className="px-3 py-3 font-medium">Created</th>
+                <th scope="col" className="px-3 py-3 text-right font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/60">
+              {leads.map((lead) => {
+                const intent = lead.lead_intent ?? "cold";
+                const isPending = pending && pendingLeadId === lead.id;
+                const hasPhone = Boolean(lead.phone);
+                const contacted = Boolean(lead.contacted_on_watsapp);
 
-            return (
-              <li
-                key={lead.id}
-                role="button"
-                tabIndex={0}
-                aria-label={`Open details for ${lead.name ?? "lead"}`}
-                onClick={() => openDetail(lead)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    openDetail(lead);
-                  }
-                }}
-                className="group flex cursor-pointer flex-col gap-3 px-4 py-4 transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none md:flex-row md:items-center md:gap-4 md:px-5"
-              >
-                {/* Identity + meta */}
-                <div className="flex min-w-0 flex-1 items-start gap-3">
-                  <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-xs font-medium text-muted-foreground transition-colors group-hover:bg-muted-foreground/10">
-                    {initialsOf(lead.name)}
-                  </span>
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="truncate text-sm font-medium transition-colors group-hover:text-muted-foreground">
-                        {lead.name ?? "Unnamed lead"}
+                return (
+                  <tr
+                    key={lead.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open details for ${lead.name ?? "lead"}`}
+                    onClick={() => openDetail(lead)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        openDetail(lead);
+                      }
+                    }}
+                    className="group cursor-pointer align-middle transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+                  >
+                    <td className="px-3 py-3">
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground transition-colors group-hover:bg-muted-foreground/10">
+                          {initialsOf(lead.name)}
+                        </span>
+                        <span className="truncate font-medium">
+                          {lead.name ?? "Unnamed lead"}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      {hasPhone ? (
+                        <a
+                          href={`tel:${lead.phone}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <PhoneIcon className="size-3" />
+                          {lead.phone}
+                        </a>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs italic text-muted-foreground">
+                          <PhoneIcon className="size-3" />
+                          No phone
+                        </span>
+                      )}
+                    </td>
+                    <td className="w-40 px-3 py-3 text-muted-foreground">
+                      <span className="block w-40 truncate">
+                        {lead.product ?? "—"}
                       </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <Badge variant={STATUS_VARIANT[lead.status]}>
+                        {STATUS_LABEL[lead.status]}
+                      </Badge>
+                    </td>
+                    <td className="px-3 py-3">
                       <Badge variant={INTENT_VARIANT[intent]}>
                         {INTENT_LABEL[intent]}
                       </Badge>
+                    </td>
+                    <td
+                      className="px-3 py-3"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <Badge
                         render={
                           <button
                             type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggleContacted(lead);
-                            }}
+                            onClick={() => onToggleContacted(lead)}
                             disabled={isPending}
                             aria-pressed={contacted}
                             className="disabled:cursor-not-allowed disabled:opacity-60"
@@ -206,117 +270,92 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                         }
                       >
                         <CheckIcon />
-                        {contacted ? "Contacted" : "Mark contacted"}
+                        {contacted ? "Contacted" : "Mark"}
                       </Badge>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      {hasPhone ? (
-                        <a
-                          href={`tel:${lead.phone}`}
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 font-mono tabular-nums transition-colors hover:text-foreground"
-                        >
-                          <PhoneIcon className="size-3" />
-                          {lead.phone}
-                        </a>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 italic">
-                          <PhoneIcon className="size-3" />
-                          No phone
-                        </span>
-                      )}
-                      <span aria-hidden>·</span>
-                      <span className="truncate">
-                        {lead.product ?? "No product"}
-                      </span>
-                      <span aria-hidden>·</span>
-                      <span className="truncate">
-                        {lead.customer_status ?? "New"}
-                      </span>
-                      <span aria-hidden>·</span>
-                      <span suppressHydrationWarning>
-                        {now === null
-                          ? ""
-                          : formatRelative(lead.created_at, now)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Actions — stop click from reaching the row's onClick handler */}
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="flex flex-wrap items-center justify-end gap-1.5 md:flex-nowrap"
-                >
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onCall(lead)}
-                    disabled={isPending || !hasPhone}
-                    title={hasPhone ? "Call via Bolna" : "No phone on file"}
-                  >
-                    <PhoneIcon />
-                    <span className="hidden sm:inline">Call</span>
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => openWhatsApp(lead)}
-                    disabled={!hasPhone}
-                    title={hasPhone ? "Open WhatsApp" : "No phone on file"}
-                  >
-                    <MessageCircleIcon />
-                    <span className="hidden sm:inline">WhatsApp</span>
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => openReminder(lead)}
-                    title="Schedule a reminder"
-                  >
-                    <BellPlusIcon />
-                    <span className="hidden sm:inline">Remind</span>
-                  </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      render={
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label="More actions"
-                        />
-                      }
+                    </td>
+                    <td
+                      className="px-3 py-3 text-xs text-muted-foreground"
+                      suppressHydrationWarning
                     >
-                      <MoreHorizontalIcon />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56">
-                      <DropdownMenuItem onClick={() => openDetail(lead)}>
-                        <ExternalLinkIcon /> View details
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => onToggleContacted(lead)}
-                        disabled={isPending}
-                      >
-                        <CheckIcon />
-                        {contacted
-                          ? "Mark as not contacted"
-                          : "Mark as contacted"}
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onClick={() => onDelete(lead)}
-                        disabled={isPending}
-                      >
-                        <Trash2Icon /> Delete lead
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                      {now === null ? "" : formatRelative(lead.created_at, now)}
+                    </td>
+                    <td
+                      className="px-3 py-3"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={() => onCall(lead)}
+                          disabled={isPending || !hasPhone}
+                          aria-label="Call"
+                          title={hasPhone ? "Place a call" : "No phone on file"}
+                        >
+                          <PhoneIcon />
+                        </Button>
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={() => openWhatsApp(lead)}
+                          disabled={!hasPhone}
+                          aria-label="WhatsApp"
+                          title={hasPhone ? "Open WhatsApp" : "No phone on file"}
+                        >
+                          <MessageCircleIcon />
+                        </Button>
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={() => openReminder(lead)}
+                          aria-label="Remind"
+                          title="Schedule a reminder"
+                        >
+                          <BellPlusIcon />
+                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger
+                            render={
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label="More actions"
+                              />
+                            }
+                          >
+                            <MoreHorizontalIcon />
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-56">
+                            <DropdownMenuItem onClick={() => openDetail(lead)}>
+                              <ExternalLinkIcon /> View details
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => onToggleContacted(lead)}
+                              disabled={isPending}
+                            >
+                              <CheckIcon />
+                              {contacted
+                                ? "Mark as not contacted"
+                                : "Mark as contacted"}
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onClick={() => onDelete(lead)}
+                              disabled={isPending}
+                            >
+                              <Trash2Icon /> Delete lead
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </Card>
 
       <WhatsAppDialog

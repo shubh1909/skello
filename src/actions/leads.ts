@@ -15,7 +15,7 @@ import type { Lead } from "@/types/lead";
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const LEAD_COLUMNS =
-  "id, created_at, updated_at, org_slug, external_id, name, product, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, contacted_on_watsapp";
+  "id, created_at, updated_at, org_slug, external_id, name, product, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, contacted_on_watsapp, source, status, notes, city, pincode";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -56,6 +56,8 @@ export async function listLeads(
     contacted_on_watsapp,
     wants_to_connect_on_watsapp,
     has_phone,
+    source,
+    status,
   } = parsed.data;
 
   const { supabase, user } = await requireUser();
@@ -73,6 +75,8 @@ export async function listLeads(
 
   if (lead_intent) query = query.eq("lead_intent", lead_intent);
   if (customer_status) query = query.eq("customer_status", customer_status);
+  if (source) query = query.eq("source", source);
+  if (status) query = query.eq("status", status);
   if (typeof contacted_on_watsapp === "boolean") {
     query = query.eq("contacted_on_watsapp", contacted_on_watsapp);
   }

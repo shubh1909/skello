@@ -4,6 +4,23 @@ export const leadIdSchema = z.string().uuid("Invalid lead id");
 
 export const leadIntentSchema = z.enum(["hot", "warm", "cold"]);
 
+export const leadSourceSchema = z.enum([
+  "inbound_call",
+  "whatsapp",
+  "manual",
+  "import",
+  "web_form",
+]);
+
+export const leadStatusSchema = z.enum([
+  "new",
+  "contacted",
+  "qualified",
+  "negotiating",
+  "won",
+  "lost",
+]);
+
 const slugRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const orgSlugSchema = z
   .string()
@@ -22,6 +39,11 @@ export const leadCreateSchema = z.object({
   phone: z.string().trim().max(32).nullish(),
   wants_to_connect_on_watsapp: z.boolean().nullish(),
   visit_date_time: z.string().datetime({ offset: true }).nullish(),
+  source: leadSourceSchema.nullish(),
+  status: leadStatusSchema.optional(),
+  notes: z.string().trim().max(5000).nullish(),
+  city: z.string().trim().max(100).nullish(),
+  pincode: z.string().trim().max(20).nullish(),
 });
 
 export const leadUpdateSchema = leadCreateSchema
@@ -39,6 +61,8 @@ export const leadListSchema = z.object({
   contacted_on_watsapp: z.boolean().optional(),
   wants_to_connect_on_watsapp: z.boolean().optional(),
   has_phone: z.boolean().optional(),
+  source: leadSourceSchema.optional(),
+  status: leadStatusSchema.optional(),
 });
 
 export type LeadCreateInput = z.infer<typeof leadCreateSchema>;

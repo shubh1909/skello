@@ -54,7 +54,7 @@ export function BolnaIntegrationForm({ organisationId, integration }: Props) {
           toast.error(result.error);
           return;
         }
-        toast.success("Bolna integration saved");
+        toast.success("Voice agent integration saved");
         setApiKey("");
         router.refresh();
         return;
@@ -82,7 +82,7 @@ export function BolnaIntegrationForm({ organisationId, integration }: Props) {
         toast.error(result.error);
         return;
       }
-      toast.success("Bolna integration updated");
+      toast.success("Voice agent integration updated");
       setApiKey("");
       router.refresh();
     });
@@ -92,7 +92,7 @@ export function BolnaIntegrationForm({ organisationId, integration }: Props) {
     if (!hasExisting) return;
     if (
       !confirm(
-        "Disconnect Bolna? Outbound calls will be disabled for this workspace.",
+        "Disconnect the voice agent? Outbound calls will be disabled for this workspace.",
       )
     ) {
       return;
@@ -103,7 +103,7 @@ export function BolnaIntegrationForm({ organisationId, integration }: Props) {
         toast.error(result.error);
         return;
       }
-      toast.success("Bolna integration removed");
+      toast.success("Voice agent integration removed");
       setAgentId("");
       setApiKey("");
       setFromPhone("");
@@ -141,9 +141,9 @@ export function BolnaIntegrationForm({ organisationId, integration }: Props) {
       </div>
 
       <div className="grid gap-1.5">
-        <Label htmlFor="bolna-agent-id">Outbound Agent ID</Label>
+        <Label htmlFor="voice-agent-id">Outbound Agent ID</Label>
         <Input
-          id="bolna-agent-id"
+          id="voice-agent-id"
           placeholder="e.g. 9c5f…"
           value={agentId}
           onChange={(e) => setAgentId(e.target.value)}
@@ -151,17 +151,17 @@ export function BolnaIntegrationForm({ organisationId, integration }: Props) {
           required
         />
         <p className="text-xs text-muted-foreground">
-          Copy from your Bolna dashboard → Agents → the agent you use for
-          outbound calls.
+          Copy from your voice agent provider's dashboard — the Agents
+          section for the outbound agent.
         </p>
       </div>
 
       <div className="grid gap-1.5">
-        <Label htmlFor="bolna-api-key">
+        <Label htmlFor="voice-api-key">
           API Key {hasExisting ? "(leave blank to keep current)" : ""}
         </Label>
         <Input
-          id="bolna-api-key"
+          id="voice-api-key"
           type="password"
           placeholder={
             hasExisting
@@ -178,22 +178,22 @@ export function BolnaIntegrationForm({ organisationId, integration }: Props) {
       </div>
 
       <div className="grid gap-1.5">
-        <Label htmlFor="bolna-from-phone">Caller ID (optional)</Label>
+        <Label htmlFor="voice-from-phone">Caller ID (optional)</Label>
         <Input
-          id="bolna-from-phone"
+          id="voice-from-phone"
           placeholder="+91-XXXXXXXXXX"
           value={fromPhone}
           onChange={(e) => setFromPhone(e.target.value)}
           autoComplete="off"
         />
         <p className="text-xs text-muted-foreground">
-          The number leads will see. If blank, Bolna uses the agent default.
+          The number leads will see. If blank, the agent default is used.
         </p>
       </div>
 
       <div className="flex items-center justify-between gap-2 pt-2">
         <Button type="submit" disabled={pending}>
-          {hasExisting ? "Save changes" : "Connect Bolna"}
+          {hasExisting ? "Save changes" : "Connect voice agent"}
         </Button>
         {hasExisting ? (
           <Button

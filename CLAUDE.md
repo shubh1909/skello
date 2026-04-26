@@ -21,7 +21,7 @@ Maintain this hierarchy to ensure a strict Separation of Concerns:
 ├── components/         # UI Components (shadcn/ui & Custom)
 ├── hooks/              # Reusable Client-side Logic
 ├── lib/                # Config (Supabase Client, Shared Utils)
-├── services/           # Third-party Integrations (Bolna, Razorpay)
+├── services/           # Third-party Integrations (telephony provider, payments)
 ├── types/              # TypeScript Interfaces & DB Schemas
 └── supabase/           # Migrations & RLS Policy Definitions
 ```
@@ -71,20 +71,37 @@ Maintain this hierarchy to ensure a strict Separation of Concerns:
 - **Type Safety:** `tsc --noEmit`
 - **Commit Check:** Before committing, verify Law #1 (Multi-tenancy) and Law #4 (Error Handling).
 
+### Current domain model (headline tables)
+
+- `organisations` — one per workspace; `owner_id = auth.uid()`.
+- `leads` — CRM core. Tenant scope via `org_slug`. Columns include pipeline `status` (enum: new → contacted → qualified → negotiating → won/lost), temperature `lead_intent` (hot/warm/cold), `source` (enum: inbound_call / whatsapp / manual / import / web_form), plus `notes`, `city`, `pincode`, and a free-form `customer_status` ("buyer type"). See [docs/api.md § Leads](docs/api.md#leads).
+- `calls` — inbound + outbound. `direction` enum distinguishes them; `transcript` stores the raw blob; `transcript_status` drives the ingestion lifecycle. Tenant scope via `organisation_id`.
+- `call_transcripts` — child table, one row per utterance. FTS GIN index on `to_tsvector('simple', text)` for multi-language search.
+- `bolna_integrations` — per-org provider config (API key, agent id). RLS enabled with no authenticated policies; service-role only.
+- `reminders` — per-lead + per-org follow-ups with `type` and `status` enums.
+
+Migration files live under `supabase/migrations/`; [docs/api.md § Setup & Environment](docs/api.md#setup--environment) keeps the chronological list.
+
+## Branding & Provider Naming
+
+- **No third-party telephony vendor is ever named in the product.** User-facing copy, labels, tooltips, toasts, docs, and marketing pages refer to the feature as **"voice agent"** (lowercase in running copy, **"Voice Agent"** in titles). Never expose the vendor's brand in the CRM UI.
+- When discussing the feature externally, say "Skello's voice agent" or "voice agent integration" — not the underlying provider.
+- This applies to new code, UI copy, error messages, marketing, and all documentation that ships with the product. Internal engineering comments, debug logs, and code identifiers are exempt (we may still reference the current provider internally for clarity), but those must not leak into anything a user can read.
+
 ## Third-Party Integrations
 
-### Bolna.ai (Voice AI)
+### Voice Agent (Telephony Provider)
 
-Skello integrates with [Bolna.ai](https://www.bolna.ai/docs) to power its voice-driven lead pipeline.
+Skello is provider-agnostic at the product layer. A pluggable telephony provider powers the voice-driven lead pipeline.
 
-- **Inbound Lead Capture:** Bolna sends call transcripts, caller metadata, and extracted lead fields to a Skello webhook endpoint. The webhook persists the lead under the correct `organization_id` (see Law #1).
-- **Outbound Call Initiation:** Server Actions trigger Bolna's API to place outbound calls (follow-ups, nurture sequences, verification). Call status updates flow back via webhook.
-- **Implementation Location:**
-  - Bolna client + API wrappers → `services/bolna/`
-  - Webhook handlers → `app/api/webhooks/bolna/`
+- **Inbound Lead Capture:** The provider sends call transcripts, caller metadata, and extracted lead fields to a Skello webhook. The webhook persists the lead under the correct `organization_id` (see Law #1).
+- **Outbound Call Initiation:** Server Actions trigger the provider's API to place outbound calls (follow-ups, nurture sequences, verification). Call status updates flow back via webhook.
+- **Implementation Location (internal):**
+  - Provider client + API wrappers → `services/<provider>/` (current: `services/bolna/`)
+  - Webhook handlers → `app/api/webhooks/<provider>/`
   - Outbound call Server Actions → `actions/calls/`
-- **Security:** Verify Bolna webhook signatures before processing. Never trust `organization_id` from the webhook payload — resolve it server-side from the agent/phone-number mapping.
-- **Docs:** https://www.bolna.ai/docs
+- **Security:** Verify webhook signatures before processing. Never trust `organization_id` from the webhook payload — resolve it server-side from the agent/phone-number mapping.
+- **Internal note only (do not surface in UI):** the current implementation is Bolna.ai; a future rename of `services/bolna/` → `services/telephony/` is tracked but not yet executed.
 
 ## Agents
 
@@ -96,7 +113,6 @@ Skello integrates with [Bolna.ai](https://www.bolna.ai/docs) to power its voice-
 - **AI Agent Logic:** Refer to `agents.md`.
 - **Backend API Reference:** [docs/api.md](docs/api.md).
 - **UI Sitemap (routes, layouts, navigation flow):** [docs/sitemap.md](docs/sitemap.md).
-- **Bolna.ai API:** https://www.bolna.ai/docs
 
 @AGENTS.md
 @backend-engineer-agent.md

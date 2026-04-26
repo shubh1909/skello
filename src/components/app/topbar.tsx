@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { NotificationsBell } from "@/components/app/notifications-bell";
 import { UserMenu } from "@/components/app/user-menu";
 import { listReminders } from "@/actions/reminders";
+import { getIsAdmin } from "@/lib/auth/admin";
 import type { Reminder } from "@/types/reminder";
 
 export async function Topbar({
@@ -13,7 +14,10 @@ export async function Topbar({
   email: string;
   organisationId: string;
 }) {
-  const reminders = await fetchPendingReminders(organisationId);
+  const [reminders, isAdmin] = await Promise.all([
+    fetchPendingReminders(organisationId),
+    getIsAdmin(),
+  ]);
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/60 bg-background/80 px-4 backdrop-blur-xl md:px-6">
@@ -30,7 +34,7 @@ export async function Topbar({
           reminders={reminders}
           organisationId={organisationId}
         />
-        <UserMenu email={email} />
+        <UserMenu email={email} isAdmin={isAdmin} />
       </div>
     </header>
   );

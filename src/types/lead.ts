@@ -1,6 +1,23 @@
 // Mirrors the Postgres enum `intent_type` (lowercase values).
 export type LeadIntent = "hot" | "warm" | "cold";
 
+// Mirrors the Postgres enum `lead_source`.
+export type LeadSource =
+  | "inbound_call"
+  | "whatsapp"
+  | "manual"
+  | "import"
+  | "web_form";
+
+// Mirrors the Postgres enum `lead_status`.
+export type LeadStatus =
+  | "new"
+  | "contacted"
+  | "qualified"
+  | "negotiating"
+  | "won"
+  | "lost";
+
 export interface Lead {
   id: string;
   created_at: string;
@@ -15,4 +32,9 @@ export interface Lead {
   phone: string | null;
   wants_to_connect_on_watsapp: boolean | null;
   contacted_on_watsapp: boolean | null;
+  source: LeadSource | null;
+  status: LeadStatus;
+  notes: string | null;
+  city: string | null;
+  pincode: string | null;
 }

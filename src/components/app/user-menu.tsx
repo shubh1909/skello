@@ -1,7 +1,13 @@
 "use client";
 
 import { useTransition } from "react";
-import { LogOutIcon, UserIcon, SettingsIcon } from "lucide-react";
+import Link from "next/link";
+import {
+  LogOutIcon,
+  SettingsIcon,
+  ShieldIcon,
+  UserIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { logout } from "@/actions/auth";
@@ -19,7 +25,13 @@ function initials(email: string): string {
   return email.slice(0, 2).toUpperCase();
 }
 
-export function UserMenu({ email }: { email: string }) {
+export function UserMenu({
+  email,
+  isAdmin = false,
+}: {
+  email: string;
+  isAdmin?: boolean;
+}) {
   const [pending, startTransition] = useTransition();
 
   function onLogout() {
@@ -59,6 +71,14 @@ export function UserMenu({ email }: { email: string }) {
         <DropdownMenuItem>
           <SettingsIcon /> Workspace settings
         </DropdownMenuItem>
+        {isAdmin ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem render={<Link href="/admin" />}>
+              <ShieldIcon /> Admin console
+            </DropdownMenuItem>
+          </>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           variant="destructive"

@@ -1,197 +1,190 @@
-import Link from "next/link";
-import { ArrowRightIcon, ClockIcon, FlameIcon, UsersIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  CalendarIcon,
+  ClockIcon,
+  FlameIcon,
+  HeadphonesIcon,
+  PhoneIcon,
+  TargetIcon,
+  UsersIcon,
+  ZapIcon,
+} from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { LeadCreateDialog } from "@/components/app/lead-create-dialog";
-import { ReminderDialog } from "@/components/app/reminder-dialog";
+import { CallOutcomes } from "@/components/app/analytics/call-outcomes";
+import { ChartFrame } from "@/components/app/analytics/chart-frame";
+import { DailyBarChart } from "@/components/app/analytics/daily-bar-chart";
+import { HorizontalBarList } from "@/components/app/analytics/horizontal-bar-list";
+import { RangeToggle } from "@/components/app/analytics/range-toggle";
+import { StackedBarChart } from "@/components/app/analytics/stacked-bar-chart";
 import { StatCard } from "@/components/app/stat-card";
-import { listLeads } from "@/actions/leads";
-import { listReminders } from "@/actions/reminders";
+import { VoiceAgentBanner } from "@/components/app/voice-agent-banner";
+import { getBolnaIntegration } from "@/actions/bolna-integrations";
+import {
+  RANGE_LABEL,
+  getDashboardAnalytics,
+  parseRange,
+} from "@/lib/analytics/dashboard";
 import { requireSession } from "@/lib/auth/session";
-import { formatRelative, initialsOf, renderNow } from "@/lib/format";
 
-export const metadata = { title: "Dashboard · Skello" };
+export const metadata = { title: "Analytics · Skello" };
 
-export default async function DashboardPage() {
+interface PageProps {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function DashboardPage({ searchParams }: PageProps) {
   const session = await requireSession();
-  const orgSlug = session.organisation.slug;
-  const orgId = session.organisation.id;
+  const sp = (await searchParams) ?? {};
+  const rawRange = Array.isArray(sp.range) ? sp.range[0] : sp.range;
+  const range = parseRange(rawRange);
 
-  const [leadsResult, remindersResult] = await Promise.all([
-    listLeads({ org_slug: orgSlug, limit: 10, offset: 0 }),
-    listReminders({
-      organisation_id: orgId,
-      status: "pending",
-      limit: 10,
-      offset: 0,
+  const [analytics, integrationResult] = await Promise.all([
+    getDashboardAnalytics({
+      orgSlug: session.organisation.slug,
+      orgId: session.organisation.id,
+      range,
     }),
+    getBolnaIntegration(session.organisation.id),
   ]);
+  const integration = integrationResult.success ? integrationResult.data : null;
 
-  const leads = leadsResult.success ? leadsResult.data.items : [];
-  const totalLeads = leadsResult.success ? leadsResult.data.total : 0;
-  const reminders = remindersResult.success ? remindersResult.data.items : [];
-
-  const now = renderNow();
-  const hot = leads.filter((l) => l.lead_intent === "hot").length;
-  const contacted = leads.filter((l) => l.contacted_on_watsapp).length;
-  const dueToday = reminders.filter((r) => {
-    const t = new Date(r.remind_at).getTime();
-    const day = 24 * 60 * 60 * 1000;
-    return t <= now + day;
-  }).length;
+  const callsDelta = pctDelta(
+    analytics.totalCalls.current,
+    analytics.totalCalls.previous,
+  );
+  const usersDelta = pctDelta(
+    analytics.uniqueUsers.current,
+    analytics.uniqueUsers.previous,
+  );
+  const durationDelta =
+    analytics.avgDurationSec.current - analytics.avgDurationSec.previous;
+  const qualifiedDelta =
+    analytics.qualifiedRate.current - analytics.qualifiedRate.previous;
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1.5">
           <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Workspace
+            Analytics
           </p>
           <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
             {greeting()}, {session.email.split("@")[0]}.
           </h1>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            Here&apos;s what&apos;s happening across {session.organisation.name}.
+            {RANGE_LABEL[range]} · {session.organisation.name}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ReminderDialog
-            organisationId={orgId}
-            trigger={
-              <Button variant="outline">
-                <ClockIcon /> New reminder
-              </Button>
-            }
-          />
-          <LeadCreateDialog orgSlug={orgSlug} />
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs text-muted-foreground">
+            <CalendarIcon className="size-3.5" />
+            {RANGE_LABEL[range]}
+          </span>
+          <RangeToggle value={range} />
         </div>
       </header>
 
+      <VoiceAgentBanner integration={integration} />
+
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Total leads"
-          value={totalLeads}
-          hint="All-time captured"
+          label="Total calls"
+          value={analytics.totalCalls.current.toLocaleString()}
+          icon={<PhoneIcon />}
+          trend={{
+            delta: callsDelta,
+            suffix: "%",
+            period: "vs. previous period",
+          }}
         />
         <StatCard
-          label="Hot pipeline"
-          value={hot}
-          hint="From last 10 captured"
+          label="Unique users"
+          value={analytics.uniqueUsers.current.toLocaleString()}
+          icon={<UsersIcon />}
+          trend={{
+            delta: usersDelta,
+            suffix: "%",
+            period: "vs. previous period",
+          }}
         />
         <StatCard
-          label="WhatsApp contacted"
-          value={contacted}
-          hint={`${leads.length ? Math.round((contacted / leads.length) * 100) : 0}% of recent`}
+          label="Avg. duration"
+          value={formatDuration(analytics.avgDurationSec.current)}
+          icon={<ClockIcon />}
+          trend={{
+            delta: durationDelta,
+            suffix: "s",
+            period: "vs. previous period",
+          }}
         />
         <StatCard
-          label="Reminders due ≤24h"
-          value={dueToday}
-          hint={`${reminders.length} pending total`}
+          label="Qualified rate"
+          value={`${analytics.qualifiedRate.current.toFixed(1)}%`}
+          icon={<TargetIcon />}
+          trend={{
+            delta: Math.round(qualifiedDelta * 10) / 10,
+            suffix: "pp",
+            period: "vs. previous period",
+          }}
         />
       </section>
 
-      <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2 p-0">
-          <CardHeader className="flex-row items-center justify-between border-b px-5 py-4">
-            <div className="flex items-center gap-2">
-              <UsersIcon className="size-4 text-muted-foreground" />
-              <CardTitle>Recent leads</CardTitle>
-            </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              render={<Link href="/leads" />}
-            >
-              View all <ArrowRightIcon />
-            </Button>
-          </CardHeader>
-          <CardContent className="p-0">
-            {leads.length === 0 ? (
-              <div className="flex flex-col items-center gap-1 px-6 py-12 text-center">
-                <p className="font-medium">No leads yet</p>
-                <p className="text-sm text-muted-foreground">
-                  Add your first lead to get started.
-                </p>
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/60">
-                {leads.slice(0, 6).map((lead) => (
-                  <li
-                    key={lead.id}
-                    className="flex items-center gap-3 px-5 py-3"
-                  >
-                    <span className="grid size-8 place-items-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
-                      {initialsOf(lead.name)}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium">
-                          {lead.name ?? "Unnamed"}
-                        </span>
-                        {lead.lead_intent === "hot" ? (
-                          <Badge variant="destructive">
-                            <FlameIcon /> Hot
-                          </Badge>
-                        ) : null}
-                      </div>
-                      <div className="truncate text-xs text-muted-foreground">
-                        {lead.product ?? "—"} · {lead.phone ?? "no phone"}
-                      </div>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {formatRelative(lead.created_at)}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <ChartFrame
+          icon={ActivityIcon}
+          title="New Leads — Daily"
+          subtitle={`${RANGE_LABEL[range]} · ${session.organisation.name}`}
+          className="p-5 lg:col-span-2"
+        >
+          <DailyBarChart
+            data={analytics.newLeadsDaily.map((d) => ({
+              date: d.date,
+              value: d.count,
+            }))}
+            seriesLabel="New Leads"
+          />
+        </ChartFrame>
 
-        <Card className="p-0">
-          <CardHeader className="flex-row items-center justify-between border-b px-5 py-4">
-            <div className="flex items-center gap-2">
-              <ClockIcon className="size-4 text-muted-foreground" />
-              <CardTitle>Upcoming</CardTitle>
-            </div>
-            <Button size="sm" variant="ghost" render={<Link href="/reminders" />}>
-              All <ArrowRightIcon />
-            </Button>
-          </CardHeader>
-          <CardContent className="p-0">
-            {reminders.length === 0 ? (
-              <div className="flex flex-col items-center gap-1 px-6 py-12 text-center">
-                <p className="font-medium">All clear</p>
-                <p className="text-sm text-muted-foreground">
-                  No reminders scheduled.
-                </p>
-              </div>
-            ) : (
-              <ul className="divide-y divide-border/60">
-                {reminders.slice(0, 6).map((r) => {
-                  const overdue = new Date(r.remind_at).getTime() < now;
-                  return (
-                    <li key={r.id} className="px-5 py-3">
-                      <p className="truncate text-sm font-medium">{r.title}</p>
-                      <p
-                        className={
-                          overdue
-                            ? "text-xs font-medium text-destructive"
-                            : "text-xs text-muted-foreground"
-                        }
-                      >
-                        {overdue ? "Overdue · " : ""}
-                        {formatRelative(r.remind_at)} · {r.type}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+        <ChartFrame
+          icon={ZapIcon}
+          title="Product Interest"
+          subtitle="What leads are asking about"
+        >
+          <HorizontalBarList
+            items={analytics.productInterest.map((p) => ({
+              label: p.product,
+              value: p.count,
+            }))}
+            total={analytics.totalProductMentions}
+            totalLabel="Total mentions"
+            emptyLabel="No products tagged on leads yet."
+          />
+        </ChartFrame>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <ChartFrame
+          icon={FlameIcon}
+          title="Lead Temperature Distribution"
+          subtitle={`Hot · Warm · Cold leads per day — ${RANGE_LABEL[range].toLowerCase()}`}
+          className="p-5 lg:col-span-2"
+        >
+          <StackedBarChart
+            data={analytics.leadTemperatureDaily}
+            totals={analytics.leadTemperatureTotals}
+          />
+        </ChartFrame>
+
+        <ChartFrame
+          icon={HeadphonesIcon}
+          title="Call Outcomes"
+          subtitle="How calls are ending"
+        >
+          <CallOutcomes
+            outcomes={analytics.callOutcomes}
+            total={analytics.totalCalls.current}
+          />
+        </ChartFrame>
       </section>
     </div>
   );
@@ -202,4 +195,19 @@ function greeting(): string {
   if (h < 12) return "Good morning";
   if (h < 18) return "Good afternoon";
   return "Good evening";
+}
+
+function pctDelta(current: number, previous: number): number {
+  if (previous === 0) {
+    if (current === 0) return 0;
+    return 100;
+  }
+  return Math.round(((current - previous) / previous) * 1000) / 10;
+}
+
+function formatDuration(seconds: number): string {
+  if (!seconds || seconds < 0) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
 }

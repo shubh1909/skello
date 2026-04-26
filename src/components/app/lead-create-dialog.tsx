@@ -26,12 +26,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { LeadIntent } from "@/types/lead";
+import { Textarea } from "@/components/ui/textarea";
+import type { LeadIntent, LeadStatus } from "@/types/lead";
 
 const INTENTS: { value: LeadIntent; label: string }[] = [
   { value: "hot", label: "Hot" },
-  { value: "warm", label: "warm" },
+  { value: "warm", label: "Warm" },
   { value: "cold", label: "Cold" },
+];
+
+const STATUSES: { value: LeadStatus; label: string }[] = [
+  { value: "new", label: "New" },
+  { value: "contacted", label: "Contacted" },
+  { value: "qualified", label: "Qualified" },
+  { value: "negotiating", label: "Negotiating" },
+  { value: "won", label: "Won" },
+  { value: "lost", label: "Lost" },
 ];
 
 export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
@@ -39,11 +49,20 @@ export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
   const [open, setOpen] = React.useState(false);
   const [pending, startTransition] = React.useTransition();
   const [intent, setIntent] = React.useState<LeadIntent>("warm");
+  const [status, setStatus] = React.useState<LeadStatus>("new");
+
+  function resetForm() {
+    setIntent("warm");
+    setStatus("new");
+  }
 
   function onSubmit(formData: FormData) {
     const name = String(formData.get("name") ?? "").trim();
     const phone = String(formData.get("phone") ?? "").trim();
     const product = String(formData.get("product") ?? "").trim();
+    const city = String(formData.get("city") ?? "").trim();
+    const pincode = String(formData.get("pincode") ?? "").trim();
+    const notes = String(formData.get("notes") ?? "").trim();
 
     if (!name) {
       toast.error("Name is required");
@@ -57,6 +76,12 @@ export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
         phone: phone || undefined,
         product: product || undefined,
         lead_intent: intent,
+        status,
+        // Anything captured through this dialog is manual by definition.
+        source: "manual",
+        city: city || undefined,
+        pincode: pincode || undefined,
+        notes: notes || undefined,
       });
       if (!result.success) {
         toast.error(result.error);
@@ -64,13 +89,19 @@ export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
       }
       toast.success("Lead added");
       setOpen(false);
-      setIntent("warm");
+      resetForm();
       router.refresh();
     });
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) resetForm();
+      }}
+    >
       <DialogTrigger
         render={
           <Button>
@@ -78,38 +109,51 @@ export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
           </Button>
         }
       />
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Add a lead</DialogTitle>
           <DialogDescription>
-            Capture a prospect manually. Bolna webhooks add inbound leads
+            Capture a prospect manually. Inbound calls add leads
             automatically.
           </DialogDescription>
         </DialogHeader>
         <form action={onSubmit} className="grid gap-4">
           <div className="grid gap-1.5">
-            <Label htmlFor="lead-name">Name</Label>
+            <Label htmlFor="lead-name">
+              Name <span className="text-destructive">*</span>
+            </Label>
             <Input
               id="lead-name"
               name="name"
               placeholder="Jane Cooper"
               required
+              maxLength={200}
             />
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="lead-phone">Phone</Label>
-            <Input
-              id="lead-phone"
-              name="phone"
-              type="tel"
-              placeholder="+91 98xxxxxxxx"
-            />
-          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5">
-              <Label htmlFor="lead-product">Product</Label>
-              <Input id="lead-product" name="product" placeholder="Pro plan" />
+              <Label htmlFor="lead-phone">Phone</Label>
+              <Input
+                id="lead-phone"
+                name="phone"
+                type="tel"
+                placeholder="+91 98xxxxxxxx"
+                maxLength={32}
+              />
             </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="lead-product">Product</Label>
+              <Input
+                id="lead-product"
+                name="product"
+                placeholder="Pro plan"
+                maxLength={500}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5">
               <Label>Intent</Label>
               <Select
@@ -128,7 +172,59 @@ export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
                 </SelectContent>
               </Select>
             </div>
+            <div className="grid gap-1.5">
+              <Label>Status</Label>
+              <Select
+                value={status}
+                onValueChange={(v) => setStatus(v as LeadStatus)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUSES.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="lead-city">City</Label>
+              <Input
+                id="lead-city"
+                name="city"
+                placeholder="Mumbai"
+                maxLength={100}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="lead-pincode">Pincode</Label>
+              <Input
+                id="lead-pincode"
+                name="pincode"
+                placeholder="400001"
+                maxLength={20}
+                inputMode="numeric"
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label htmlFor="lead-notes">Notes</Label>
+            <Textarea
+              id="lead-notes"
+              name="notes"
+              placeholder="Context from the conversation, preferences, objections…"
+              rows={3}
+              maxLength={5000}
+            />
+          </div>
+
           <DialogFooter>
             <DialogClose render={<Button variant="outline" type="button" />}>
               Cancel

@@ -1,6 +1,7 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
+import { enrichOutboundCall } from "@/lib/bolna/enrich";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { CallStatus } from "@/types/call";
 
@@ -128,6 +129,23 @@ export async function POST(request: NextRequest) {
       { error: `No call with bolna_call_id=${bolnaCallId}` },
       { status: 404 },
     );
+  }
+
+  // Fetch + store transcript once the call has actually ended.
+  if (mapped === "completed") {
+    const callId = data.id;
+    const orgId = data.organisation_id;
+    after(async () => {
+      try {
+        await enrichOutboundCall({
+          organisationId: orgId,
+          callId,
+          executionId: bolnaCallId,
+        });
+      } catch (err) {
+        console.error("[calls webhook] enrichment failed", err);
+      }
+    });
   }
 
   return NextResponse.json({ id: data.id, status: mapped }, { status: 200 });

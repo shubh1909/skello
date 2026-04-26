@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { BolnaIntegrationForm } from "@/components/app/bolna-integration-form";
+import { VoiceAgentStatusCard } from "@/components/app/voice-agent-status-card";
 import { getBolnaIntegration } from "@/actions/bolna-integrations";
 import { requireSession } from "@/lib/auth/session";
 
@@ -45,21 +45,7 @@ export default async function SettingsPage() {
 
       <Separator />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Bolna integration</CardTitle>
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            Connect your Bolna account to place outbound calls from Skello.
-            Each workspace uses its own agent and API key.
-          </p>
-        </CardHeader>
-        <CardContent>
-          <BolnaIntegrationForm
-            organisationId={session.organisation.id}
-            integration={integration}
-          />
-        </CardContent>
-      </Card>
+      <VoiceAgentStatusCard integration={integration} />
 
       <Separator />
 

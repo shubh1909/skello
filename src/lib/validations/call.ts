@@ -11,16 +11,23 @@ export const callStatusSchema = z.enum([
   "canceled",
 ]);
 
+export const callDirectionSchema = z.enum(["inbound", "outbound"]);
+
 export const callInitiateSchema = z.object({
   lead_id: z.string().uuid(),
 });
 
 export const callListSchema = z.object({
   organisation_id: z.string().uuid(),
-  limit: z.number().int().min(1).max(200).default(50),
+  limit: z.number().int().min(1).max(500).default(50),
   offset: z.number().int().min(0).default(0),
   lead_id: z.string().uuid().optional(),
   status: callStatusSchema.optional(),
+  direction: callDirectionSchema.optional(),
+  agent_id: z.string().min(1).max(200).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  q: z.string().max(200).optional(),
 });
 
 export type CallInitiateInput = z.infer<typeof callInitiateSchema>;

@@ -7,10 +7,13 @@ import {
   CheckIcon,
   ClockIcon,
   ExternalLinkIcon,
+  FileTextIcon,
   Loader2Icon,
   MessageCircleIcon,
   PencilIcon,
   PhoneIcon,
+  PhoneIncomingIcon,
+  PhoneOutgoingIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -28,6 +31,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
+import { CallTranscriptDialog } from "@/components/app/call-transcript-dialog";
 import {
   Sheet,
   SheetContent,
@@ -47,7 +52,7 @@ import {
   toLocalDateTimeInputValue,
 } from "@/lib/format";
 import { useClientNow } from "@/hooks/use-client-now";
-import type { Lead, LeadIntent } from "@/types/lead";
+import type { Lead, LeadIntent, LeadSource, LeadStatus } from "@/types/lead";
 import type { Reminder } from "@/types/reminder";
 import type { Call, CallStatus } from "@/types/call";
 
@@ -64,6 +69,35 @@ const INTENT_LABEL: Record<LeadIntent, string> = {
   hot: "Hot",
   warm: "Warm",
   cold: "Cold",
+};
+
+const STATUS_LABEL: Record<LeadStatus, string> = {
+  new: "New",
+  contacted: "Contacted",
+  qualified: "Qualified",
+  negotiating: "Negotiating",
+  won: "Won",
+  lost: "Lost",
+};
+
+const STATUS_VARIANT: Record<
+  LeadStatus,
+  "default" | "secondary" | "outline" | "destructive"
+> = {
+  new: "outline",
+  contacted: "secondary",
+  qualified: "secondary",
+  negotiating: "default",
+  won: "default",
+  lost: "destructive",
+};
+
+const SOURCE_LABEL: Record<LeadSource, string> = {
+  inbound_call: "Inbound call",
+  whatsapp: "WhatsApp",
+  manual: "Manual",
+  import: "Import",
+  web_form: "Web form",
 };
 
 const CALL_STATUS_VARIANT: Record<
@@ -217,6 +251,9 @@ export function LeadDetailSheet({
                 Lead details and history
               </SheetDescription>
               <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={STATUS_VARIANT[lead.status]}>
+                  {STATUS_LABEL[lead.status]}
+                </Badge>
                 <Badge variant={INTENT_VARIANT[intent]}>
                   {INTENT_LABEL[intent]}
                 </Badge>
@@ -239,7 +276,7 @@ export function LeadDetailSheet({
                   <Badge
                     variant="outline"
                     className="font-mono text-[10px] text-muted-foreground"
-                    title="External id from Bolna"
+                    title="Capture ID from voice agent"
                   >
                     {lead.external_id.slice(0, 10)}
                     {lead.external_id.length > 10 ? "…" : ""}
@@ -257,7 +294,7 @@ export function LeadDetailSheet({
               variant="outline"
               onClick={() => onCall(lead)}
               disabled={pending || !hasPhone}
-              title={hasPhone ? "Call via Bolna" : "No phone on file"}
+              title={hasPhone ? "Place a call" : "No phone on file"}
             >
               <PhoneIcon />
               Call
@@ -338,12 +375,40 @@ export function LeadDetailSheet({
                   {lead.product ?? <Muted>—</Muted>}
                 </Field>
                 <Field label="Status">
-                  {lead.customer_status ?? <Muted>New</Muted>}
+                  <Badge variant={STATUS_VARIANT[lead.status]}>
+                    {STATUS_LABEL[lead.status]}
+                  </Badge>
                 </Field>
                 <Field label="Intent">
                   <Badge variant={INTENT_VARIANT[intent]}>
                     {INTENT_LABEL[intent]}
                   </Badge>
+                </Field>
+                <Field label="Source">
+                  {lead.source ? (
+                    <Badge variant="outline">{SOURCE_LABEL[lead.source]}</Badge>
+                  ) : (
+                    <Muted>Unknown</Muted>
+                  )}
+                </Field>
+                <Field label="Customer type">
+                  {lead.customer_status ?? <Muted>—</Muted>}
+                </Field>
+                <Field label="City">
+                  {lead.city ? (
+                    <span>
+                      {lead.city}
+                      {lead.pincode ? (
+                        <span className="ml-1 text-muted-foreground">
+                          · {lead.pincode}
+                        </span>
+                      ) : null}
+                    </span>
+                  ) : lead.pincode ? (
+                    <span>{lead.pincode}</span>
+                  ) : (
+                    <Muted>—</Muted>
+                  )}
                 </Field>
                 <Field label="Visit">
                   {lead.visit_date_time ? (
@@ -371,6 +436,16 @@ export function LeadDetailSheet({
                     {now === null ? "" : formatRelative(lead.updated_at, now)}
                   </span>
                 </Field>
+                {lead.notes ? (
+                  <>
+                    <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
+                      Notes
+                    </dt>
+                    <dd className="col-span-2 whitespace-pre-wrap rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm leading-relaxed">
+                      {lead.notes}
+                    </dd>
+                  </>
+                ) : null}
               </dl>
             )}
           </section>
@@ -540,33 +615,61 @@ function ReminderRow({
 }
 
 function CallRow({ call, now }: { call: Call; now: number | null }) {
+  const [open, setOpen] = React.useState(false);
   const duration =
     typeof call.duration_seconds === "number"
       ? formatDuration(call.duration_seconds)
       : null;
+  const inbound = call.direction === "inbound";
+  const DirectionIcon = inbound ? PhoneIncomingIcon : PhoneOutgoingIcon;
+  const counterparty = inbound ? call.from_phone : call.to_phone;
+  const hasTranscript = call.transcript_status === "ready";
   return (
-    <li className="flex items-start gap-2 rounded-md border border-border/60 bg-card px-3 py-2">
-      <PhoneIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm">
-          Call to{" "}
-          <span className="font-mono tabular-nums">{call.to_phone}</span>
-          {duration ? (
-            <span className="text-muted-foreground"> · {duration}</span>
-          ) : null}
-        </p>
-        <p
-          className="text-xs text-muted-foreground"
-          suppressHydrationWarning
-        >
-          {now === null ? "" : formatRelative(call.started_at, now)}
-          {call.error_message ? ` · ${call.error_message}` : ""}
-        </p>
-      </div>
-      <Badge variant={CALL_STATUS_VARIANT[call.status]} className="mt-0.5">
-        {CALL_STATUS_LABEL[call.status]}
-      </Badge>
-    </li>
+    <>
+      <li className="flex items-start gap-2 rounded-md border border-border/60 bg-card px-3 py-2">
+        <DirectionIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm">
+            <span className="text-muted-foreground">
+              {inbound ? "Inbound from " : "Call to "}
+            </span>
+            <span className="font-mono tabular-nums">
+              {counterparty ?? "unknown"}
+            </span>
+            {duration ? (
+              <span className="text-muted-foreground"> · {duration}</span>
+            ) : null}
+          </p>
+          <p
+            className="text-xs text-muted-foreground"
+            suppressHydrationWarning
+          >
+            {now === null ? "" : formatRelative(call.started_at, now)}
+            {call.error_message ? ` · ${call.error_message}` : ""}
+          </p>
+        </div>
+        {hasTranscript ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setOpen(true)}
+            aria-label="View transcript"
+            title="View transcript"
+          >
+            <FileTextIcon />
+          </Button>
+        ) : null}
+        <Badge variant={CALL_STATUS_VARIANT[call.status]} className="mt-0.5">
+          {CALL_STATUS_LABEL[call.status]}
+        </Badge>
+      </li>
+      <CallTranscriptDialog
+        call={call}
+        open={open}
+        onOpenChange={setOpen}
+      />
+    </>
   );
 }
 
@@ -587,6 +690,11 @@ interface EditForm {
   product: string;
   customer_status: string;
   lead_intent: LeadIntent | "";
+  status: LeadStatus;
+  source: LeadSource | "none";
+  city: string;
+  pincode: string;
+  notes: string;
   visit_date_time: string; // datetime-local value (YYYY-MM-DDTHH:mm), or ""
   wants_to_connect_on_watsapp: "yes" | "no" | "unknown";
 }
@@ -598,6 +706,11 @@ function leadToForm(lead: Lead): EditForm {
     product: lead.product ?? "",
     customer_status: lead.customer_status ?? "",
     lead_intent: (lead.lead_intent ?? "") as LeadIntent | "",
+    status: lead.status,
+    source: lead.source ?? "none",
+    city: lead.city ?? "",
+    pincode: lead.pincode ?? "",
+    notes: lead.notes ?? "",
     visit_date_time: lead.visit_date_time
       ? toLocalDateTimeInputValue(lead.visit_date_time)
       : "",
@@ -616,6 +729,11 @@ type LeadPatch = {
   product?: string | null;
   customer_status?: string | null;
   lead_intent?: LeadIntent | null;
+  status?: LeadStatus;
+  source?: LeadSource | null;
+  city?: string | null;
+  pincode?: string | null;
+  notes?: string | null;
   visit_date_time?: string | null;
   wants_to_connect_on_watsapp?: boolean | null;
 };
@@ -638,6 +756,20 @@ function diffForm(form: EditForm, lead: Lead): LeadPatch {
 
   const nextIntent = (form.lead_intent || null) as LeadIntent | null;
   if (nextIntent !== (lead.lead_intent ?? null)) patch.lead_intent = nextIntent;
+
+  if (form.status !== lead.status) patch.status = form.status;
+
+  const nextSource = form.source === "none" ? null : form.source;
+  if (nextSource !== (lead.source ?? null)) patch.source = nextSource;
+
+  const nextCity = form.city.trim() || null;
+  if (nextCity !== (lead.city ?? null)) patch.city = nextCity;
+
+  const nextPincode = form.pincode.trim() || null;
+  if (nextPincode !== (lead.pincode ?? null)) patch.pincode = nextPincode;
+
+  const nextNotes = form.notes.trim() || null;
+  if (nextNotes !== (lead.notes ?? null)) patch.notes = nextNotes;
 
   const nextVisitIso = form.visit_date_time
     ? fromLocalDateTimeInput(form.visit_date_time)
@@ -712,18 +844,38 @@ function LeadEditForm({
           />
         </div>
         <div className="grid gap-1.5">
-          <Label htmlFor="edit-status">Status</Label>
+          <Label htmlFor="edit-customer-type">Customer type</Label>
           <Input
-            id="edit-status"
+            id="edit-customer-type"
             value={form.customer_status}
             onChange={(e) => update("customer_status", e.target.value)}
             disabled={disabled}
             maxLength={50}
-            placeholder="Buyer"
+            placeholder="Buyer / Owner / …"
           />
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-1.5">
+          <Label>Status</Label>
+          <Select
+            value={form.status}
+            onValueChange={(v) => update("status", v as LeadStatus)}
+            disabled={disabled}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="new">New</SelectItem>
+              <SelectItem value="contacted">Contacted</SelectItem>
+              <SelectItem value="qualified">Qualified</SelectItem>
+              <SelectItem value="negotiating">Negotiating</SelectItem>
+              <SelectItem value="won">Won</SelectItem>
+              <SelectItem value="lost">Lost</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <div className="grid gap-1.5">
           <Label>Intent</Label>
           <Select
@@ -741,6 +893,30 @@ function LeadEditForm({
               <SelectItem value="hot">Hot</SelectItem>
               <SelectItem value="warm">Warm</SelectItem>
               <SelectItem value="cold">Cold</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-1.5">
+          <Label>Source</Label>
+          <Select
+            value={form.source}
+            onValueChange={(v) =>
+              update("source", v as EditForm["source"])
+            }
+            disabled={disabled}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Unknown</SelectItem>
+              <SelectItem value="inbound_call">Inbound call</SelectItem>
+              <SelectItem value="whatsapp">WhatsApp</SelectItem>
+              <SelectItem value="manual">Manual</SelectItem>
+              <SelectItem value="web_form">Web form</SelectItem>
+              <SelectItem value="import">Import</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -766,6 +942,43 @@ function LeadEditForm({
             </SelectContent>
           </Select>
         </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-1.5">
+          <Label htmlFor="edit-city">City</Label>
+          <Input
+            id="edit-city"
+            value={form.city}
+            onChange={(e) => update("city", e.target.value)}
+            disabled={disabled}
+            maxLength={100}
+            placeholder="Mumbai"
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="edit-pincode">Pincode</Label>
+          <Input
+            id="edit-pincode"
+            value={form.pincode}
+            onChange={(e) => update("pincode", e.target.value)}
+            disabled={disabled}
+            maxLength={20}
+            inputMode="numeric"
+            placeholder="400001"
+          />
+        </div>
+      </div>
+      <div className="grid gap-1.5">
+        <Label htmlFor="edit-notes">Notes</Label>
+        <Textarea
+          id="edit-notes"
+          value={form.notes}
+          onChange={(e) => update("notes", e.target.value)}
+          disabled={disabled}
+          maxLength={5000}
+          rows={4}
+          placeholder="Conversation context, objections, preferences…"
+        />
       </div>
       <div className="grid gap-1.5">
         <Label htmlFor="edit-visit">Visit</Label>

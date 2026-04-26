@@ -1,9 +1,10 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   bolnaLeadPayloadSchema,
   extractLead,
 } from "@/lib/bolna/extract";
+import { enrichInboundLead } from "@/lib/bolna/enrich";
 import type { LeadIntent } from "@/types/lead";
 
 export const runtime = "nodejs";
@@ -80,15 +81,15 @@ export async function POST(request: NextRequest) {
   const supabase = createAdminClient();
 
   // FK on leads.org_slug -> organisations.slug makes the insert fail loudly
-  // if the org doesn't exist, but a pre-check gives Bolna a clearer 404.
+  // if the org doesn't exist, but a pre-check gives the provider a clearer 404.
   const { data: org, error: orgError } = await supabase
     .from("organisations")
-    .select("slug")
+    .select("id, slug")
     .eq("slug", extracted.business_slug)
-    .maybeSingle<{ slug: string }>();
+    .maybeSingle<{ id: string; slug: string }>();
 
   if (orgError) {
-    console.error("[bolna webhook] org lookup failed", orgError);
+    console.error("[inbound webhook] org lookup failed", orgError);
     return NextResponse.json({ error: "Lookup failed" }, { status: 500 });
   }
   if (!org) {
@@ -107,6 +108,7 @@ export async function POST(request: NextRequest) {
     lead_intent: coerceIntent(extracted.lead_intent),
     wants_to_connect_on_watsapp: extracted.connect_on_whatsapp,
     visit_date_time: extracted.visit_scheduled_at,
+    source: "inbound_call" as const,
   };
 
   // Idempotent when Bolna supplies an external id; plain insert otherwise.
@@ -123,8 +125,29 @@ export async function POST(request: NextRequest) {
         .single<{ id: string }>();
 
   if (result.error) {
-    console.error("[bolna webhook] insert failed", result.error);
+    console.error("[inbound webhook] insert failed", result.error);
     return NextResponse.json({ error: "Insert failed" }, { status: 500 });
+  }
+
+  // Enrich the lead from the provider's execution API (phone + transcript).
+  // Runs after the response is flushed so the webhook returns fast; failures
+  // are logged but don't affect the lead insert.
+  if (externalId) {
+    const leadId = result.data.id;
+    const orgId = org.id;
+    const orgSlug = org.slug;
+    after(async () => {
+      try {
+        await enrichInboundLead({
+          organisationId: orgId,
+          leadId,
+          orgSlug,
+          executionId: externalId,
+        });
+      } catch (err) {
+        console.error("[inbound webhook] enrichment failed", err);
+      }
+    });
   }
 
   return NextResponse.json({ id: result.data.id }, { status: 200 });

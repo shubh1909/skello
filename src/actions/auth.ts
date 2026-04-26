@@ -62,7 +62,9 @@ export async function signUp(
   return ok({ userId: authData.user.id, organisationId: org.id });
 }
 
-export async function login(input: unknown): Promise<ActionResult<null>> {
+export async function login(
+  input: unknown,
+): Promise<ActionResult<{ redirectTo: string }>> {
   const parsed = loginSchema.safeParse(input);
   if (!parsed.success) {
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
@@ -73,8 +75,37 @@ export async function login(input: unknown): Promise<ActionResult<null>> {
 
   if (error) return fail(error.message);
 
+  // Pick the landing page server-side based on admin status + org ownership.
+  // Keeps the client form dumb and avoids a flash-then-redirect hop.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    revalidatePath("/", "layout");
+    return ok({ redirectTo: "/login" });
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("is_admin")
+    .eq("id", user.id)
+    .maybeSingle<{ is_admin: boolean }>();
+
+  let redirectTo = "/dashboard";
+  if (profile?.is_admin) {
+    redirectTo = "/admin";
+  } else {
+    const { data: org } = await supabase
+      .from("organisations")
+      .select("id")
+      .eq("owner_id", user.id)
+      .limit(1)
+      .maybeSingle();
+    redirectTo = org ? "/dashboard" : "/onboarding";
+  }
+
   revalidatePath("/", "layout");
-  return ok(null);
+  return ok({ redirectTo });
 }
 
 export async function logout(): Promise<ActionResult<null>> {
