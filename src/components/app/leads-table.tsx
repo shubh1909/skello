@@ -6,7 +6,6 @@ import {
   BellPlusIcon,
   CheckIcon,
   ExternalLinkIcon,
-  MessageCircleIcon,
   MoreHorizontalIcon,
   PhoneIcon,
   Trash2Icon,
@@ -26,49 +25,29 @@ import {
 import { LeadDetailSheet } from "@/components/app/lead-detail-sheet";
 import { ReminderDialog } from "@/components/app/reminder-dialog";
 import { WhatsAppDialog } from "@/components/app/whatsapp-dialog";
+import { WhatsAppIcon } from "@/components/brand/whatsapp-icon";
 import {
   deleteLead,
-  toggleLeadContactedOnWhatsApp,
+  toggleLeadPendingAction,
 } from "@/actions/leads";
 import { initiateCall } from "@/actions/calls";
-import { formatRelative, initialsOf } from "@/lib/format";
+import { formatDateTime, formatRelative } from "@/lib/format";
 import { useClientNow } from "@/hooks/use-client-now";
-import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
+import type { Lead, LeadIntent } from "@/types/lead";
 
-const INTENT_VARIANT: Record<
-  LeadIntent,
-  "destructive" | "secondary" | "outline"
-> = {
-  hot: "destructive",
-  warm: "secondary",
-  cold: "outline",
+// Hot stays destructive (red). Warm uses an amber/yellow chip. Cold uses our
+// brand primary so a "cold" lead reads as the baseline state, not as muted.
+const INTENT_CLASSES: Record<LeadIntent, string> = {
+  hot: "border-transparent bg-destructive/10 text-destructive dark:bg-destructive/20",
+  warm:
+    "border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300",
+  cold: "border-transparent bg-primary text-primary-foreground",
 };
 
 const INTENT_LABEL: Record<LeadIntent, string> = {
   hot: "Hot",
   warm: "Warm",
   cold: "Cold",
-};
-
-const STATUS_LABEL: Record<LeadStatus, string> = {
-  new: "New",
-  contacted: "Contacted",
-  qualified: "Qualified",
-  negotiating: "Negotiating",
-  won: "Won",
-  lost: "Lost",
-};
-
-const STATUS_VARIANT: Record<
-  LeadStatus,
-  "default" | "secondary" | "outline" | "destructive"
-> = {
-  new: "outline",
-  contacted: "secondary",
-  qualified: "secondary",
-  negotiating: "default",
-  won: "default",
-  lost: "destructive",
 };
 
 interface LeadsTableProps {
@@ -89,7 +68,7 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
   const now = useClientNow();
 
   // Always read the freshest lead from the prop array so the sheet stays in
-  // sync after router.refresh() (e.g., after Mark-contacted re-runs).
+  // sync after router.refresh() (e.g., after Mark-done re-runs).
   const detailLead = React.useMemo(
     () => (detailLeadId ? leads.find((l) => l.id === detailLeadId) ?? null : null),
     [leads, detailLeadId],
@@ -107,10 +86,10 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
     setDetailLeadId(lead.id);
     setDetailOpen(true);
   }
-  function onToggleContacted(lead: Lead) {
+  function onTogglePendingAction(lead: Lead) {
     setPendingLeadId(lead.id);
     startTransition(async () => {
-      const result = await toggleLeadContactedOnWhatsApp(lead.id);
+      const result = await toggleLeadPendingAction(lead.id);
       setPendingLeadId(null);
       if (!result.success) {
         toast.error(result.error);
@@ -154,12 +133,12 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
 
   if (leads.length === 0) {
     return (
-      <Card className="items-center gap-3 py-16 text-center">
-        <span className="grid size-12 place-items-center rounded-full bg-muted">
-          <PhoneIcon className="size-5 text-muted-foreground" />
+      <Card className="items-center gap-3 py-24 text-center">
+        <span className="grid size-14 place-items-center rounded-full bg-muted">
+          <PhoneIcon className="size-6 text-muted-foreground" />
         </span>
-        <p className="font-medium">No leads yet</p>
-        <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
+        <p className="text-base font-medium">No leads yet</p>
+        <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
           Inbound calls captured by your voice agent will appear here. You
           can also add a lead manually from the top right.
         </p>
@@ -174,14 +153,15 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
           <table className="w-full text-left text-sm">
             <thead className="border-b border-border/60 bg-muted/30">
               <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                <th scope="col" className="px-3 py-3 font-medium">Lead</th>
-                <th scope="col" className="px-3 py-3 font-medium">Phone</th>
-                <th scope="col" className="w-40 px-3 py-3 font-medium">Product</th>
-                <th scope="col" className="px-3 py-3 font-medium">Status</th>
-                <th scope="col" className="px-3 py-3 font-medium">Intent</th>
-                <th scope="col" className="px-3 py-3 font-medium">Contacted</th>
-                <th scope="col" className="px-3 py-3 font-medium">Created</th>
-                <th scope="col" className="px-3 py-3 text-right font-medium">Actions</th>
+                <th scope="col" className="px-5 py-4 font-medium">Lead Name</th>
+                <th scope="col" className="px-5 py-4 font-medium">Phone</th>
+                <th scope="col" className="w-32 px-5 py-4 font-medium">Interest</th>
+                <th scope="col" className="px-5 py-4 font-medium">Customer Type</th>
+                <th scope="col" className="px-5 py-4 font-medium">Visit</th>
+                <th scope="col" className="px-5 py-4 font-medium">Created</th>
+                <th scope="col" className="px-5 py-4 font-medium">Intent</th>
+                <th scope="col" className="px-5 py-4 font-medium">Pending Action</th>
+                <th scope="col" className="px-5 py-4 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
@@ -189,7 +169,7 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                 const intent = lead.lead_intent ?? "cold";
                 const isPending = pending && pendingLeadId === lead.id;
                 const hasPhone = Boolean(lead.phone);
-                const contacted = Boolean(lead.contacted_on_watsapp);
+                const actionPending = Boolean(lead.pending_action);
 
                 return (
                   <tr
@@ -206,84 +186,92 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                     }}
                     className="group cursor-pointer align-middle transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
                   >
-                    <td className="px-3 py-3">
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground transition-colors group-hover:bg-muted-foreground/10">
-                          {initialsOf(lead.name)}
-                        </span>
-                        <span className="truncate font-medium">
-                          {lead.name ?? "Unnamed lead"}
-                        </span>
-                      </div>
+                    <td className="px-5 py-5">
+                      <span className="block truncate text-sm font-medium">
+                        {lead.name ?? "Unnamed lead"}
+                      </span>
                     </td>
-                    <td className="px-3 py-3">
+                    <td className="px-5 py-5">
                       {hasPhone ? (
                         <a
                           href={`tel:${lead.phone}`}
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+                          className="inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
                         >
-                          <PhoneIcon className="size-3" />
+                          <PhoneIcon className="size-3.5" />
                           {lead.phone}
                         </a>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-xs italic text-muted-foreground">
-                          <PhoneIcon className="size-3" />
+                        <span className="inline-flex items-center gap-1.5 text-xs italic text-muted-foreground">
+                          <PhoneIcon className="size-3.5" />
                           No phone
                         </span>
                       )}
                     </td>
-                    <td className="w-40 px-3 py-3 text-muted-foreground">
-                      <span className="block w-40 truncate">
-                        {lead.product ?? "—"}
+                    <td className="px-5 py-5 text-sm text-muted-foreground">
+                      <span className="block max-w-32 truncate">
+                        {lead.interest ?? "—"}
                       </span>
                     </td>
-                    <td className="px-3 py-3">
-                      <Badge variant={STATUS_VARIANT[lead.status]}>
-                        {STATUS_LABEL[lead.status]}
-                      </Badge>
+                    <td className="px-5 py-5 text-sm text-muted-foreground">
+                      <span className="block max-w-40 truncate">
+                        {lead.customer_status ?? "—"}
+                      </span>
                     </td>
-                    <td className="px-3 py-3">
-                      <Badge variant={INTENT_VARIANT[intent]}>
+                    <td
+                      className="px-5 py-5 text-xs text-muted-foreground"
+                      suppressHydrationWarning
+                    >
+                      {lead.visit_date_time
+                        ? formatDateTime(lead.visit_date_time)
+                        : "—"}
+                    </td>
+                    <td
+                      className="px-5 py-5 text-xs text-muted-foreground"
+                      suppressHydrationWarning
+                    >
+                      {now === null ? "" : formatRelative(lead.created_at, now)}
+                    </td>
+                    <td className="px-5 py-5">
+                      <Badge className={INTENT_CLASSES[intent]}>
                         {INTENT_LABEL[intent]}
                       </Badge>
                     </td>
                     <td
-                      className="px-3 py-3"
+                      className="px-5 py-5"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <Badge
                         render={
                           <button
                             type="button"
-                            onClick={() => onToggleContacted(lead)}
+                            onClick={() => onTogglePendingAction(lead)}
                             disabled={isPending}
-                            aria-pressed={contacted}
+                            aria-pressed={!actionPending}
                             className="disabled:cursor-not-allowed disabled:opacity-60"
                           />
                         }
-                        variant={contacted ? "secondary" : "outline"}
+                        variant="outline"
+                        className={
+                          actionPending
+                            ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
+                            : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
+                        }
                         title={
-                          contacted
-                            ? "Click to mark as not contacted"
-                            : "Click to mark as contacted"
+                          actionPending
+                            ? "Click to mark as done"
+                            : "Click to reopen action"
                         }
                       >
                         <CheckIcon />
-                        {contacted ? "Contacted" : "Mark"}
+                        {actionPending ? "Mark as Done" : "Done"}
                       </Badge>
                     </td>
                     <td
-                      className="px-3 py-3 text-xs text-muted-foreground"
-                      suppressHydrationWarning
-                    >
-                      {now === null ? "" : formatRelative(lead.created_at, now)}
-                    </td>
-                    <td
-                      className="px-3 py-3"
+                      className="px-5 py-5"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <div className="flex items-center justify-end gap-1">
+                      <div className="flex items-center justify-end gap-1.5">
                         <Button
                           size="icon-sm"
                           variant="ghost"
@@ -302,7 +290,7 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                           aria-label="WhatsApp"
                           title={hasPhone ? "Open WhatsApp" : "No phone on file"}
                         >
-                          <MessageCircleIcon />
+                          <WhatsAppIcon className="size-4" />
                         </Button>
                         <Button
                           size="icon-sm"
@@ -330,13 +318,11 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                               <ExternalLinkIcon /> View details
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              onClick={() => onToggleContacted(lead)}
+                              onClick={() => onTogglePendingAction(lead)}
                               disabled={isPending}
                             >
                               <CheckIcon />
-                              {contacted
-                                ? "Mark as not contacted"
-                                : "Mark as contacted"}
+                              {actionPending ? "Mark as done" : "Reopen action"}
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
@@ -380,7 +366,7 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
         onCall={onCall}
         onOpenWhatsApp={openWhatsApp}
         onOpenReminder={openReminder}
-        onToggleContacted={onToggleContacted}
+        onToggleContacted={onTogglePendingAction}
         onDelete={onDelete}
       />
     </>

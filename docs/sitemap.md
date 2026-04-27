@@ -35,8 +35,8 @@ A map of every route in the app, who can reach it, what it renders, and how the 
 │
 └── (app)/                  → Authenticated shell — sidebar + topbar
     ├── Overview
-    │   ├── /dashboard      → Analytics (range-filtered KPIs, charts)
-    │   └── /pulse          → Operator snapshot (needs-attention, recent)
+    │   └── /dashboard      → Analytics (range-filtered KPIs, charts)
+    │   (/pulse exists but is hidden — see Hidden routes below)
     ├── Leads
     │   ├── /leads          → Lead CRM table + export
     │   └── /conversations  → Placeholder (Coming soon)
@@ -63,7 +63,7 @@ A map of every route in the app, who can reach it, what it renders, and how the 
 | `/signup` | [src/app/signup/page.tsx](../src/app/signup/page.tsx) | Public · redirects to `/dashboard` if signed in | Email + password + workspace name; creates org via `signUp()` |
 | `/onboarding` | [src/app/onboarding/page.tsx](../src/app/onboarding/page.tsx) | Authed · redirects to `/dashboard` if user has any org | Fallback when an authed user has no org (e.g. org was deleted) |
 | `/dashboard` | [src/app/(app)/dashboard/page.tsx](../src/app/(app)/dashboard/page.tsx) | Authed + org required | **Analytics dashboard** — range toggle (24h/7d/14d/30d), 4 KPI cards (total calls, unique users, avg duration, qualified rate), Daily New Leads bar chart, Product Interest ranking, Lead Temperature stacked chart, Call Outcomes breakdown |
-| `/pulse` | [src/app/(app)/pulse/page.tsx](../src/app/(app)/pulse/page.tsx) | Authed + org required | Operator snapshot — hot-but-uncontacted alert card, recent leads, upcoming reminders, recent calls |
+| `/pulse` | [src/app/(app)/pulse/page.tsx](../src/app/(app)/pulse/page.tsx) | Authed + org required · **hidden from sidebar (2026-04-28)** — reachable only by deep link | Operator snapshot — hot-but-uncontacted alert card, recent leads, upcoming reminders, recent calls |
 | `/leads` | [src/app/(app)/leads/page.tsx](../src/app/(app)/leads/page.tsx) | Authed + org required | Leads table (tabular) + Export dialog + filter bar (Status, Intent, Source, Contacted, Wants WA) + 4 contextual stat cards |
 | `/conversations` | [src/app/(app)/conversations/page.tsx](../src/app/(app)/conversations/page.tsx) | Authed + org required | Placeholder — unified call/WhatsApp threads coming later |
 | `/campaigns` | [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx) | Authed + org required | Placeholder — plan-gated (Access denied) |
@@ -80,6 +80,8 @@ A map of every route in the app, who can reach it, what it renders, and how the 
 | `/admin/users` | [src/app/(admin)/admin/users/page.tsx](../src/app/(admin)/admin/users/page.tsx) | Admin required | List every user, promote / demote admin — self-demotion blocked |
 
 > Routes not listed here do not exist. The middleware refreshes the Supabase session on every request but does **not** itself enforce route guards — guarding lives inside `requireSession()` and the auth pages' redirect checks.
+
+> **Hidden routes (2026-04-28):** `/pulse` is no longer linked from the sidebar. The page still renders for anyone who deep-links to it, but it is not part of the discoverable navigation. The decision was product-driven: the dashboard already covers the operator snapshot well enough, and the duplicate landing surface added cognitive overhead. Removal of the route file is deferred until we are certain no internal tooling links to it. See [src/components/app/sidebar-nav.tsx](../src/components/app/sidebar-nav.tsx) — the Overview group now contains only `/dashboard`.
 
 > **Terminology:** the product refers to the telephony feature as **"voice agent"** (lowercase in copy, "Voice Agent" in titles) — never by the underlying provider name. Internal file paths (`services/bolna/`, `app/api/webhooks/bolna/`) still reference the current provider; see [CLAUDE.md](../CLAUDE.md) → *Branding & Provider Naming*.
 

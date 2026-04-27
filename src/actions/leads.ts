@@ -15,7 +15,7 @@ import type { Lead } from "@/types/lead";
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const LEAD_COLUMNS =
-  "id, created_at, updated_at, org_slug, external_id, name, product, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, contacted_on_watsapp, source, status, notes, city, pincode";
+  "id, created_at, updated_at, org_slug, external_id, name, interest, summary, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, pending_action, source, status, notes, city, pincode";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -53,7 +53,7 @@ export async function listLeads(
     q,
     lead_intent,
     customer_status,
-    contacted_on_watsapp,
+    pending_action,
     wants_to_connect_on_watsapp,
     has_phone,
     source,
@@ -77,8 +77,8 @@ export async function listLeads(
   if (customer_status) query = query.eq("customer_status", customer_status);
   if (source) query = query.eq("source", source);
   if (status) query = query.eq("status", status);
-  if (typeof contacted_on_watsapp === "boolean") {
-    query = query.eq("contacted_on_watsapp", contacted_on_watsapp);
+  if (typeof pending_action === "boolean") {
+    query = query.eq("pending_action", pending_action);
   }
   if (typeof wants_to_connect_on_watsapp === "boolean") {
     query = query.eq(
@@ -92,7 +92,7 @@ export async function listLeads(
     // Escape PostgREST wildcards so a user typing % doesn't broaden the search.
     const safe = q.replace(/[%,]/g, " ").trim();
     query = query.or(
-      `name.ilike.%${safe}%,product.ilike.%${safe}%,phone.ilike.%${safe}%`,
+      `name.ilike.%${safe}%,interest.ilike.%${safe}%,phone.ilike.%${safe}%`,
     );
   }
 
@@ -221,7 +221,7 @@ export async function deleteLead(
   return ok({ id: parsed.data });
 }
 
-export async function toggleLeadContactedOnWhatsApp(
+export async function toggleLeadPendingAction(
   id: unknown,
 ): Promise<ActionResult<Lead>> {
   const parsed = leadIdSchema.safeParse(id);
@@ -232,9 +232,9 @@ export async function toggleLeadContactedOnWhatsApp(
 
   const { data: existing, error: fetchErr } = await supabase
     .from("leads")
-    .select("org_slug, contacted_on_watsapp")
+    .select("org_slug, pending_action")
     .eq("id", parsed.data)
-    .maybeSingle<{ org_slug: string | null; contacted_on_watsapp: boolean | null }>();
+    .maybeSingle<{ org_slug: string | null; pending_action: boolean | null }>();
 
   if (fetchErr) return fail(fetchErr.message);
   if (!existing) return fail("Lead not found");
@@ -244,7 +244,7 @@ export async function toggleLeadContactedOnWhatsApp(
 
   const { data, error } = await supabase
     .from("leads")
-    .update({ contacted_on_watsapp: !existing.contacted_on_watsapp })
+    .update({ pending_action: !existing.pending_action })
     .eq("id", parsed.data)
     .select(LEAD_COLUMNS)
     .single<Lead>();

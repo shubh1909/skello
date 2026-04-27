@@ -96,7 +96,7 @@ export default async function PulsePage() {
     .filter(
       (l) =>
         l.lead_intent === "hot" &&
-        !l.contacted_on_watsapp &&
+        l.pending_action &&
         new Date(l.created_at).getTime() >= now - 3 * dayMs,
     )
     .slice(0, 5);
@@ -164,7 +164,7 @@ export default async function PulsePage() {
                     </Badge>
                   </div>
                   <div className="truncate text-xs text-muted-foreground">
-                    {lead.product ?? "No product"} ·{" "}
+                    {lead.interest ?? "No interest tagged"} ·{" "}
                     {lead.phone ?? "no phone"} ·{" "}
                     {formatRelative(lead.created_at, now)}
                   </div>
@@ -207,7 +207,7 @@ export default async function PulsePage() {
               <ul className="divide-y divide-border/60">
                 {leads.slice(0, 8).map((lead) => {
                   const intent = lead.lead_intent ?? "cold";
-                  const contacted = Boolean(lead.contacted_on_watsapp);
+                  const isPending = Boolean(lead.pending_action);
                   return (
                     <li
                       key={lead.id}
@@ -224,14 +224,14 @@ export default async function PulsePage() {
                           <Badge variant={INTENT_VARIANT[intent]}>
                             {INTENT_LABEL[intent]}
                           </Badge>
-                          {contacted ? (
+                          {!isPending ? (
                             <Badge variant="secondary">
-                              <CheckIcon /> Contacted
+                              <CheckIcon /> Done
                             </Badge>
                           ) : null}
                         </div>
                         <div className="truncate text-xs text-muted-foreground">
-                          {lead.product ?? "—"} · {lead.phone ?? "no phone"}
+                          {lead.interest ?? "—"} · {lead.phone ?? "no phone"}
                         </div>
                       </div>
                       <div className="text-xs text-muted-foreground">

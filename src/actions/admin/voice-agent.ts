@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { pingBolna } from "@/lib/bolna/client";
 import { requireAdmin } from "@/lib/auth/admin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { type ActionResult, fail, ok } from "@/types/action";
@@ -133,6 +134,66 @@ export async function updateVoiceAgentAdmin(
   revalidatePath(`/admin/organisations/${organisation_id}`);
   revalidatePath("/settings");
   return ok(toPublic(data));
+}
+
+export interface VoiceAgentTestResult {
+  status: number;
+  agent_id: string;
+  api_key_last4: string;
+  message: string;
+}
+
+export async function testVoiceAgentAdmin(
+  organisationId: unknown,
+): Promise<ActionResult<VoiceAgentTestResult>> {
+  await requireAdmin();
+  if (typeof organisationId !== "string") {
+    return fail("Invalid organisation id");
+  }
+
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("bolna_integrations")
+    .select("agent_id, api_key")
+    .eq("organisation_id", organisationId)
+    .maybeSingle<{ agent_id: string; api_key: string }>();
+
+  if (error) return fail(error.message);
+  if (!data) return fail("Voice agent is not configured for this workspace.");
+
+  let result;
+  try {
+    result = await pingBolna({
+      apiKey: data.api_key,
+      agentId: data.agent_id,
+    });
+  } catch (err) {
+    console.error("[admin/voice-agent] ping network error", err);
+    return fail(
+      err instanceof Error
+        ? `Network error: ${err.message}`
+        : "Network error reaching the voice provider",
+    );
+  }
+
+  const last4 = data.api_key.slice(-4);
+  console.info(
+    `[admin/voice-agent] ping org=${organisationId} status=${result.status}`,
+  );
+
+  if (result.ok) {
+    return ok({
+      status: result.status,
+      agent_id: data.agent_id,
+      api_key_last4: last4,
+      message:
+        "Connection successful — the voice provider accepted the API key and recognised the agent.",
+    });
+  }
+
+  // Surface the provider's body verbatim so the operator can act on it.
+  const detail = result.body || `HTTP ${result.status}`;
+  return fail(`Voice provider returned ${result.status}: ${detail}`);
 }
 
 export async function disconnectVoiceAgentAdmin(

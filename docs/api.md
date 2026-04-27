@@ -107,6 +107,7 @@ Migrations:
 - `20260424000000_leads_add_crm_fields.sql` — enums `lead_source`, `lead_status`; columns `source`, `status` (NOT NULL default `'new'`), `notes`, `city`, `pincode`; composite indexes on `(org_slug, status)` and `(org_slug, source)`; backfills `source` to `inbound_call` when `external_id IS NOT NULL`, else `manual`.
 - `20260424000001_calls_direction_and_transcripts.sql` — enums `call_direction`, `call_transcript_status`, `call_turn_speaker`; `calls` gains `direction` (NOT NULL default `'outbound'`), `transcript`, `transcript_status`, `transcript_fetched_at`, `language`; `calls.to_phone` becomes nullable; new child table `call_transcripts` (one row per utterance) with RLS + FTS GIN index on `to_tsvector('simple', text)`.
 - `20260424000002_profiles_and_admin.sql` — new `profiles` table (one row per `auth.users` id) with `display_name` + `is_admin`; trigger `on_auth_user_created` auto-provisions profile rows on signup; backfills existing users; RLS lets a user read & update their own profile **except** `is_admin` (locked via `WITH CHECK`). Admin promotion goes through the service-role client.
+- `20260427000000_leads_rename_columns_and_summary.sql` — renames `leads.product` → `interest`; adds `summary text`; renames `contacted_on_watsapp` → `pending_action` and inverts the semantics (true = action still owed) with a default of `true`. Existing rows are flipped (`old true` → `false`, `old false/null` → `true`). The Status column was hidden from the leads table UI in the same change; the column itself is unchanged.
 
 ---
 
@@ -242,13 +243,17 @@ File: [src/actions/leads.ts](../src/actions/leads.ts) — Type: [src/types/lead.
 
 ```
 id, created_at, updated_at, org_slug, external_id,
-name, product,
-lead_intent (enum: hot | warm | cold),    -- Postgres enum `intent_type`
-visit_date_time, customer_status,         -- customer_status = free-form
-                                          --   "buyer type" label
+name, interest,                          -- renamed from `product` on 2026-04-27
+summary,                                 -- short LLM synopsis (added 2026-04-27)
+lead_intent (enum: hot | warm | cold),   -- Postgres enum `intent_type`
+visit_date_time, customer_status,        -- customer_status = free-form
+                                         --   "buyer type" label
 phone,                        -- nullable; consumed by the WhatsApp dialog
 wants_to_connect_on_watsapp,  -- from the voice agent: what the customer wants
-contacted_on_watsapp,         -- set by the team: what we have done
+pending_action,               -- NOT NULL DEFAULT true. Renamed from
+                              --   `contacted_on_watsapp` on 2026-04-27 with
+                              --   inverted semantics — true means an action
+                              --   is still owed by the team.
 
 -- Added 2026-04-24 (20260424000000_leads_add_crm_fields.sql):
 source   (enum lead_source:
@@ -265,7 +270,7 @@ Tenant scoping on `leads` is via **`org_slug` (text)**, enforced by FK `leads.or
 
 **Two "status" columns, deliberately distinct:**
 
-- `status` — the **pipeline stage** enum (new → contacted → qualified → negotiating → won/lost). This is what the leads table renders as a colored badge; the leads filter bar exposes it as a filter.
+- `status` — the **pipeline stage** enum (new → contacted → qualified → negotiating → won/lost). The column is still authoritative on the server, but **as of 2026-04-27 the leads table no longer renders it** — it was hidden from the table UI to reduce visual noise alongside the new pending-action chip. The detail sheet still surfaces it (as a Badge and an editable Select), and `listLeads` still accepts `status` as a filter input so deep links and programmatic callers continue to work.
 - `customer_status` — a **free-form** label the team uses for buyer type ("Buyer", "Owner", "Service", etc). Editable as an Input in the detail sheet, labelled **Customer type** in the UI.
 
 `lead_intent` (hot/warm/cold) is a **temperature**, independent of both above — a "hot" lead can be `new` or `qualified` or `lost`.
@@ -282,10 +287,10 @@ Tenant scoping on `leads` is via **`org_slug` (text)**, enforced by FK `leads.or
   org_slug: string;                           // required
   limit?: number;                             // 1–200, default 50
   offset?: number;                            // default 0
-  q?: string;                                 // free-text over name/product/phone
+  q?: string;                                 // free-text over name/interest/phone
   lead_intent?: "hot" | "warm" | "cold";
   customer_status?: string;                   // free-form "buyer type"
-  contacted_on_watsapp?: boolean;
+  pending_action?: boolean;                   // true = action still owed
   wants_to_connect_on_watsapp?: boolean;
   has_phone?: boolean;                        // reserved — no UI exposes it today
   status?: "new" | "contacted" | "qualified"
@@ -295,7 +300,7 @@ Tenant scoping on `leads` is via **`org_slug` (text)**, enforced by FK `leads.or
 ```
 **Returns** `ActionResult<{ items: Lead[]; total: number }>` — full `Lead` shape ordered by `created_at desc`.
 
-The leads filter bar ([src/components/app/leads-filter-bar.tsx](../src/components/app/leads-filter-bar.tsx)) exposes: search (q), Status, Intent, Source, Contacted, Wants WhatsApp. **The "Has phone" filter was removed** on 2026-04-24 for being noise; `has_phone` remains on the server schema if a programmatic caller needs it.
+The leads filter bar ([src/components/app/leads-filter-bar.tsx](../src/components/app/leads-filter-bar.tsx)) exposes: search (q), Intent, Source, Pending action, Wants WhatsApp. **The Status filter was removed from the UI** on 2026-04-27 alongside hiding the Status column in the leads table; the `status` query param is still honoured by `listLeads` so deep links continue to work. **The "Has phone" filter was removed** on 2026-04-24 for being noise; `has_phone` remains on the server schema if a programmatic caller needs it.
 
 **Example** (Server Component)
 ```tsx
@@ -315,7 +320,8 @@ Returns the full `Lead` including every column from the live schema. Caller must
 {
   org_slug: string;                                    // required
   name?: string | null;
-  product?: string | null;
+  interest?: string | null;                            // ≤ 500 chars (renamed from product, 2026-04-27)
+  summary?: string | null;                             // ≤ 5000 chars (added 2026-04-27)
   customer_status?: string | null;                     // free-form buyer type
   lead_intent?: "hot" | "warm" | "cold" | null;
   phone?: string | null;                               // ≤ 32 chars; UI normalises before wa.me
@@ -336,25 +342,25 @@ Returns the full `Lead` including every column from the live schema. Caller must
 
 ### `updateLead(id, input)`
 
-Same shape as create minus `org_slug`, plus `contacted_on_watsapp?: boolean`. Empty patches rejected.
+Same shape as create minus `org_slug`, plus `pending_action?: boolean`. Empty patches rejected.
 
 ### `deleteLead(id)`
 
 Hard-deletes. Linked reminders have `lead_id` set to null.
 
-### `toggleLeadContactedOnWhatsApp(id)`
+### `toggleLeadPendingAction(id)`
 
-Fetches the current `contacted_on_watsapp` and flips it. Returns the updated `Lead`.
+Fetches the current `pending_action` and flips it. Returns the updated `Lead`. (Renamed from `toggleLeadContactedOnWhatsApp` on 2026-04-27 along with the column rename.)
 
 ```ts
 // In a row action button
 async function onToggle(leadId: string) {
-  const res = await toggleLeadContactedOnWhatsApp(leadId);
+  const res = await toggleLeadPendingAction(leadId);
   if (!res.success) toast.error(res.error);
 }
 ```
 
-The UI's WhatsApp dialog ([src/components/app/whatsapp-dialog.tsx](../src/components/app/whatsapp-dialog.tsx)) calls this automatically after the user clicks **Open WhatsApp** — `wa.me/<digits>?text=<encoded message>` opens in a new tab and the lead is marked as contacted in the same transition.
+The UI's WhatsApp dialog ([src/components/app/whatsapp-dialog.tsx](../src/components/app/whatsapp-dialog.tsx)) calls this automatically after the user clicks **Open WhatsApp** — `wa.me/<digits>?text=<encoded message>` opens in a new tab and `pending_action` is flipped to `false` in the same transition.
 
 ---
 
@@ -737,11 +743,11 @@ At minimum the route expects:
 {
   "extracted_data": {
     "lead_data": {
-      "business_slug":          { "subjective": "acme-motors", ... },
-      "name":                   { "subjective": "Neem", ... },
-      "product":                { "subjective": "Honda Dio 2024", ... },
-      "customer_status":        { "objective":  "Buyer", ... },
-      "lead_intent":            { "objective":  "Warm", ... },
+      "business_slug":          { "subjective": "acme-motors", "reasoning_subjective": "Caller said they were calling Acme Motors.", ... },
+      "name":                   { "subjective": "Neem", "reasoning_subjective": "Caller introduced themselves as Neem.", ... },
+      "product":                { "subjective": "Honda Dio 2024", "reasoning_subjective": "Caller asked about the 2024 Dio.", ... },
+      "customer_status":        { "objective":  "Buyer", "reasoning_subjective": "Caller said they want to purchase, not service.", ... },
+      "lead_intent":            { "objective":  "Warm", "reasoning_subjective": "Caller is comparing models — interested but not ready to book.", ... },
       "connect_on_whatsapp":    { "subjective": "false", ... },
       "date_and_time_of_visit": { "subjective": "", ... }
     }
@@ -759,6 +765,7 @@ Extra top-level keys are allowed and ignored (the full body is stored in `raw_pa
 - `connect_on_whatsapp` is coerced via `toBoolean()` (accepts `true|false|yes|no|1|0`).
 - `date_and_time_of_visit` is coerced via `toTimestamp()` (ISO parseable → stored as UTC ISO; otherwise null).
 - A per-field `confidence` map is captured and written to `leads.confidence`.
+- **Summary (added 2026-04-28):** `buildSummary()` walks every key in `extracted_data.lead_data`, picks the per-field `reasoning_subjective` string, and concatenates them as `<Humanised Field>: <reasoning>` paragraphs separated by a blank line. The result is written to `leads.summary` and surfaced in the lead detail sheet under a "Summary" block. Fields without `reasoning_subjective` are skipped; if no field carries reasoning, `summary` stays `null`. On idempotent retry the upsert overwrites the column — manual edits to `summary` will be replaced if the same `call_id` is re-delivered before any human input.
 - **Phone is *not* in `extracted_data`.** The provider delivers caller metadata separately on the execution record — it lands on the lead via `enrichInboundLead` (see below).
 
 ### Routing & idempotency

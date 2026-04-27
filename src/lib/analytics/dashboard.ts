@@ -34,7 +34,7 @@ export interface DashboardAnalytics {
   avgDurationSec: { current: number; previous: number };
   qualifiedRate: { current: number; previous: number };
   newLeadsDaily: Array<{ date: string; count: number }>;
-  productInterest: Array<{ product: string; count: number }>;
+  interestMentions: Array<{ interest: string; count: number }>;
   leadTemperatureDaily: Array<{
     date: string;
     hot: number;
@@ -43,13 +43,13 @@ export interface DashboardAnalytics {
   }>;
   leadTemperatureTotals: { hot: number; warm: number; cold: number };
   callOutcomes: Array<{ status: CallStatus; count: number }>;
-  totalProductMentions: number;
+  totalInterestMentions: number;
 }
 
 interface LeadRow {
   created_at: string;
   lead_intent: LeadIntent | null;
-  product: string | null;
+  interest: string | null;
   phone: string | null;
 }
 
@@ -94,7 +94,7 @@ export async function getDashboardAnalytics(input: {
   // deltas in a single round trip. Capped at 10k for safety.
   const { data: leadsRaw } = await supabase
     .from("leads")
-    .select("created_at, lead_intent, product, phone")
+    .select("created_at, lead_intent, interest, phone")
     .eq("org_slug", orgSlug)
     .gte("created_at", prevWindowStart)
     .order("created_at", { ascending: false })
@@ -199,19 +199,19 @@ export async function getDashboardAnalytics(input: {
   );
 
   // ---------------------------------------------------------------------
-  // Product interest — top products by lead count in window
+  // Interest mentions — top interests by lead count in window
   // ---------------------------------------------------------------------
-  const productCounts = new Map<string, number>();
+  const interestCounts = new Map<string, number>();
   for (const l of leadsCurrent) {
-    const p = l.product?.trim();
+    const p = l.interest?.trim();
     if (!p) continue;
-    productCounts.set(p, (productCounts.get(p) ?? 0) + 1);
+    interestCounts.set(p, (interestCounts.get(p) ?? 0) + 1);
   }
-  const productInterest = [...productCounts.entries()]
-    .map(([product, count]) => ({ product, count }))
+  const interestMentions = [...interestCounts.entries()]
+    .map(([interest, count]) => ({ interest, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 6);
-  const totalProductMentions = [...productCounts.values()].reduce(
+  const totalInterestMentions = [...interestCounts.values()].reduce(
     (a, b) => a + b,
     0,
   );
@@ -234,10 +234,10 @@ export async function getDashboardAnalytics(input: {
     avgDurationSec,
     qualifiedRate,
     newLeadsDaily,
-    productInterest,
+    interestMentions,
     leadTemperatureDaily,
     leadTemperatureTotals,
     callOutcomes,
-    totalProductMentions,
+    totalInterestMentions,
   };
 }

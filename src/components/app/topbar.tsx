@@ -25,7 +25,7 @@ export async function Topbar({
         <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           type="search"
-          placeholder="Search leads, reminders, products…"
+          placeholder="Search leads, reminders, interests…"
           className="h-9 pl-8"
         />
       </div>

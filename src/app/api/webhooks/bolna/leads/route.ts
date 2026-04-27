@@ -18,10 +18,17 @@ function coerceIntent(raw: string | null): LeadIntent | null {
   return match ?? null;
 }
 
+// Bound external-id length defensively — the provider's real ids are UUIDs,
+// but a malicious or buggy payload could otherwise push arbitrary-length
+// strings through to Supabase lookups and the DB.
+const EXTERNAL_ID_MAX = 200;
+
 function pickExternalId(body: Record<string, unknown>): string | null {
   for (const key of ["call_id", "execution_id", "id"] as const) {
     const v = body[key];
-    if (typeof v === "string" && v.trim() !== "") return v;
+    if (typeof v === "string" && v.trim() !== "") {
+      return v.length > EXTERNAL_ID_MAX ? v.slice(0, EXTERNAL_ID_MAX) : v;
+    }
   }
   return null;
 }
@@ -103,7 +110,8 @@ export async function POST(request: NextRequest) {
     org_slug: extracted.business_slug,
     external_id: externalId,
     name: extracted.name,
-    product: extracted.product,
+    interest: extracted.interest,
+    summary: extracted.summary,
     customer_status: extracted.customer_status,
     lead_intent: coerceIntent(extracted.lead_intent),
     wants_to_connect_on_watsapp: extracted.connect_on_whatsapp,

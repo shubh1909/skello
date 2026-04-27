@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Loader2Icon, MessageCircleIcon, SendIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { toggleLeadContactedOnWhatsApp } from "@/actions/leads";
+import { toggleLeadPendingAction } from "@/actions/leads";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,14 +47,14 @@ type TemplateId = (typeof TEMPLATES)[number]["id"];
 
 function templateText(id: TemplateId, lead: Lead | null): string {
   const name = lead?.name?.split(" ")[0] ?? "there";
-  const product = lead?.product ?? "your enquiry";
+  const interest = lead?.interest ?? "your enquiry";
   switch (id) {
     case "intro":
-      return `Hi ${name}, this is the team at Skello — thanks for reaching out about ${product}. Is now a good time to chat?`;
+      return `Hi ${name}, this is the team at Skello — thanks for reaching out about ${interest}. Is now a good time to chat?`;
     case "followup":
-      return `Hey ${name}, just circling back on ${product}. Happy to answer anything that's on your mind.`;
+      return `Hey ${name}, just circling back on ${interest}. Happy to answer anything that's on your mind.`;
     case "demo":
-      return `Hi ${name} — I'd love to show you how Skello can help with ${product}. Are you free for a quick 15-min walkthrough this week?`;
+      return `Hi ${name} — I'd love to show you how Skello can help with ${interest}. Are you free for a quick 15-min walkthrough this week?`;
     case "custom":
       return "";
   }
@@ -93,11 +93,13 @@ export function WhatsAppDialog({
     const url = buildWaUrl(phone, message);
     window.open(url, "_blank", "noopener,noreferrer");
 
-    if (!lead.contacted_on_watsapp) {
+    // pending_action=true means the operator still owes a follow-up; sending
+    // a WhatsApp message closes the loop, so we flip it to false.
+    if (lead.pending_action) {
       startTransition(async () => {
-        const result = await toggleLeadContactedOnWhatsApp(lead.id);
+        const result = await toggleLeadPendingAction(lead.id);
         if (result.success) {
-          toast.success("Marked as contacted on WhatsApp");
+          toast.success("Marked as done");
           router.refresh();
         }
       });
@@ -116,8 +118,8 @@ export function WhatsAppDialog({
             Message {lead?.name ?? "lead"} on WhatsApp
           </DialogTitle>
           <DialogDescription>
-            We&apos;ll open a wa.me link in a new tab. The lead will be marked as
-            contacted.
+            We&apos;ll open a wa.me link in a new tab. The lead&apos;s pending
+            action will be cleared.
           </DialogDescription>
         </DialogHeader>
 
@@ -185,8 +187,8 @@ export function WhatsAppDialog({
             />
             <div className="flex items-center justify-between text-[11px] text-muted-foreground">
               <span>{message.length} chars</span>
-              {lead?.contacted_on_watsapp ? (
-                <Badge variant="secondary">Already contacted</Badge>
+              {lead && !lead.pending_action ? (
+                <Badge variant="secondary">Already done</Badge>
               ) : null}
             </div>
           </div>

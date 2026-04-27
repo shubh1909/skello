@@ -78,6 +78,38 @@ export async function fetchBolnaExecution(input: {
   return body;
 }
 
+export interface PingResult {
+  ok: boolean;
+  status: number;
+  // Raw response body, truncated to 1000 chars. We surface this verbatim so
+  // operators can read Bolna's exact rejection wording.
+  body: string;
+}
+
+// Lightweight probe: hits Bolna's "list executions for agent" endpoint with
+// page_size=1. A 200 means both the API key and the agent_id are accepted by
+// the same Bolna workspace. Non-200 responses (incl. "Unrecognized access
+// token") are surfaced verbatim. Does NOT place a call.
+export async function pingBolna(input: {
+  apiKey: string;
+  agentId: string;
+}): Promise<PingResult> {
+  const url = `${bolnaBaseUrl()}/v2/agent/${encodeURIComponent(
+    input.agentId,
+  )}/executions?page_size=1`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${input.apiKey}` },
+    cache: "no-store",
+  });
+  const text = (await response.text().catch(() => "")) ?? "";
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: text.slice(0, 1000),
+  };
+}
+
 export async function initiateBolnaCall(
   input: InitiateCallInput,
 ): Promise<InitiateCallResult> {
@@ -104,17 +136,30 @@ export async function initiateBolnaCall(
     );
   }
 
+  // Bolna's POST /call success body looks like:
+  //   { "message": "done", "status": "queued", "execution_id": "<uuid>" }
+  // The identifier field is `execution_id`; older deployments returned
+  // `call_id` / `id`, so we accept any of them. The literal `message: "done"`
+  // is a status string, NOT an error — do not fall back to it.
   const body = (await response.json().catch(() => null)) as
-    | { call_id?: string; id?: string; status?: string; message?: string }
+    | {
+        execution_id?: string;
+        call_id?: string;
+        id?: string;
+        status?: string;
+        message?: string;
+      }
     | null;
 
-  const callId = body?.call_id ?? body?.id;
+  const callId = body?.execution_id ?? body?.call_id ?? body?.id;
   if (!callId) {
     throw new BolnaApiError(
       502,
-      body?.message ?? "Voice provider response missing call_id",
+      body?.message
+        ? `Voice provider response missing execution_id (message: ${body.message})`
+        : "Voice provider response missing execution_id",
     );
   }
 
-  return { bolnaCallId: callId, status: body?.status ?? "initiated" };
+  return { bolnaCallId: callId, status: body?.status ?? "queued" };
 }

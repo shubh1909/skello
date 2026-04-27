@@ -1,7 +1,7 @@
 import {
   BellRingIcon,
+  CircleDotIcon,
   FlameIcon,
-  MessageCircleIcon,
   UsersIcon,
 } from "lucide-react";
 
@@ -18,7 +18,7 @@ import { listLeads } from "@/actions/leads";
 import { listReminders } from "@/actions/reminders";
 import { requireSession } from "@/lib/auth/session";
 import { renderNow } from "@/lib/format";
-import type { Lead, LeadIntent, LeadSource, LeadStatus } from "@/types/lead";
+import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
 
 export const metadata = { title: "Leads · Skello" };
 
@@ -35,14 +35,6 @@ const STATUSES: readonly LeadStatus[] = [
   "won",
   "lost",
 ];
-const SOURCES: readonly LeadSource[] = [
-  "inbound_call",
-  "whatsapp",
-  "manual",
-  "import",
-  "web_form",
-];
-
 function readFilters(
   sp: Record<string, string | string[] | undefined>,
 ): LeadFilters {
@@ -51,10 +43,8 @@ function readFilters(
     return Array.isArray(v) ? v[0] : v;
   };
   const intent = one("intent")?.toLowerCase();
-  const contacted = one("contacted");
-  const wants = one("wants");
+  const pending = one("pending");
   const status = one("status")?.toLowerCase();
-  const source = one("source")?.toLowerCase();
 
   return {
     q: one("q")?.trim() || undefined,
@@ -62,16 +52,11 @@ function readFilters(
       intent && (INTENTS as readonly string[]).includes(intent)
         ? (intent as LeadIntent)
         : undefined,
-    contacted:
-      contacted === "yes" || contacted === "no" ? contacted : undefined,
-    wants: wants === "yes" || wants === "no" ? wants : undefined,
+    pending:
+      pending === "yes" || pending === "no" ? pending : undefined,
     status:
       status && (STATUSES as readonly string[]).includes(status)
         ? (status as LeadStatus)
-        : undefined,
-    source:
-      source && (SOURCES as readonly string[]).includes(source)
-        ? (source as LeadSource)
         : undefined,
   };
 }
@@ -90,20 +75,13 @@ export default async function LeadsPage({ searchParams }: PageProps) {
       offset: 0,
       q: filters.q,
       lead_intent: filters.intent,
-      contacted_on_watsapp:
-        filters.contacted === "yes"
+      pending_action:
+        filters.pending === "yes"
           ? true
-          : filters.contacted === "no"
-            ? false
-            : undefined,
-      wants_to_connect_on_watsapp:
-        filters.wants === "yes"
-          ? true
-          : filters.wants === "no"
+          : filters.pending === "no"
             ? false
             : undefined,
       status: filters.status,
-      source: filters.source,
     }),
     listReminders({
       organisation_id: orgId,
@@ -123,7 +101,7 @@ export default async function LeadsPage({ searchParams }: PageProps) {
   const t48 = now - 2 * day;
 
   const hot = leads.filter((l) => l.lead_intent === "hot").length;
-  const contacted = leads.filter((l) => l.contacted_on_watsapp).length;
+  const pendingActions = leads.filter((l) => l.pending_action).length;
   const dueToday = reminders.filter(
     (r) => new Date(r.remind_at).getTime() <= now + day,
   ).length;
@@ -147,12 +125,14 @@ export default async function LeadsPage({ searchParams }: PageProps) {
       .length -
     leads.filter((l) => l.lead_intent === "hot" && createdBetween(l, t48, t24))
       .length;
-  const contactedDelta =
+  // pending_action is the inverse of "contacted" — fewer pending actions in
+  // the last 24h vs the previous 24h is a positive trend, so we invert the sign.
+  const pendingActionDelta =
     leads.filter(
-      (l) => l.contacted_on_watsapp && updatedBetween(l, t24, now),
+      (l) => l.pending_action && updatedBetween(l, t48, t24),
     ).length -
     leads.filter(
-      (l) => l.contacted_on_watsapp && updatedBetween(l, t48, t24),
+      (l) => l.pending_action && updatedBetween(l, t24, now),
     ).length;
   const reminderDelta =
     reminders.filter((r) => {
@@ -165,10 +145,10 @@ export default async function LeadsPage({ searchParams }: PageProps) {
     }).length;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div className="space-y-1.5">
-          <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
+        <div className="space-y-2">
+          <h1 className="font-heading text-3xl font-semibold leading-tight tracking-tight md:text-4xl">
             Leads
           </h1>
           <p className="text-sm leading-relaxed text-muted-foreground">
@@ -181,7 +161,7 @@ export default async function LeadsPage({ searchParams }: PageProps) {
         </div>
       </header>
 
-      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <section className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Total leads"
           value={total.toLocaleString()}
@@ -195,10 +175,10 @@ export default async function LeadsPage({ searchParams }: PageProps) {
           trend={{ delta: hotDelta }}
         />
         <StatCard
-          label="WhatsApp contacted"
-          value={contacted}
-          icon={<MessageCircleIcon />}
-          trend={{ delta: contactedDelta }}
+          label="Pending actions"
+          value={pendingActions}
+          icon={<CircleDotIcon />}
+          trend={{ delta: pendingActionDelta }}
         />
         <StatCard
           label="Reminders due ≤24h"

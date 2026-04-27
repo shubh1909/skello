@@ -59,7 +59,7 @@ export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
   function onSubmit(formData: FormData) {
     const name = String(formData.get("name") ?? "").trim();
     const phone = String(formData.get("phone") ?? "").trim();
-    const product = String(formData.get("product") ?? "").trim();
+    const interest = String(formData.get("interest") ?? "").trim();
     const city = String(formData.get("city") ?? "").trim();
     const pincode = String(formData.get("pincode") ?? "").trim();
     const notes = String(formData.get("notes") ?? "").trim();
@@ -74,7 +74,7 @@ export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
         org_slug: orgSlug,
         name,
         phone: phone || undefined,
-        product: product || undefined,
+        interest: interest || undefined,
         lead_intent: intent,
         status,
         // Anything captured through this dialog is manual by definition.
@@ -143,10 +143,10 @@ export function LeadCreateDialog({ orgSlug }: { orgSlug: string }) {
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="lead-product">Product</Label>
+              <Label htmlFor="lead-interest">Interest</Label>
               <Input
-                id="lead-product"
-                name="product"
+                id="lead-interest"
+                name="interest"
                 placeholder="Pro plan"
                 maxLength={500}
               />

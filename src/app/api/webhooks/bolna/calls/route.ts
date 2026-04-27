@@ -10,9 +10,10 @@ export const dynamic = "force-dynamic";
 
 const payloadSchema = z
   .object({
-    call_id: z.string().min(1).optional(),
-    id: z.string().min(1).optional(),
-    status: z.string().min(1),
+    execution_id: z.string().min(1).max(200).optional(),
+    call_id: z.string().min(1).max(200).optional(),
+    id: z.string().min(1).max(200).optional(),
+    status: z.string().min(1).max(64),
     started_at: z.string().optional(),
     answered_at: z.string().optional(),
     ended_at: z.string().optional(),
@@ -29,6 +30,11 @@ const payloadSchema = z
 const STATUS_MAP: Record<string, CallStatus> = {
   initiated: "initiated",
   queued: "initiated",
+  // Bolna defers dials that fall outside the agent's allowed-hours guardrail.
+  // We collapse `scheduled` / `rescheduled` into `initiated` so the row keeps
+  // moving forward — the actual reason lives in Bolna's execution detail.
+  scheduled: "initiated",
+  rescheduled: "initiated",
   ringing: "ringing",
   answered: "in_progress",
   "in-progress": "in_progress",
@@ -85,9 +91,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const bolnaCallId = parsed.data.call_id ?? parsed.data.id;
+  const bolnaCallId =
+    parsed.data.execution_id ?? parsed.data.call_id ?? parsed.data.id;
   if (!bolnaCallId) {
-    return NextResponse.json({ error: "Missing call_id" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing execution_id" },
+      { status: 400 },
+    );
   }
 
   const mapped = STATUS_MAP[parsed.data.status.toLowerCase()];

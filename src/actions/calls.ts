@@ -17,6 +17,11 @@ const CALL_COLUMNS =
 const STATUS_MAP: Record<string, CallStatus> = {
   initiated: "initiated",
   queued: "initiated",
+  // Bolna defers dials that fall outside the agent's allowed-hours guardrail.
+  // We collapse `scheduled` / `rescheduled` into `initiated` so the row keeps
+  // moving forward — the actual reason lives in Bolna's execution detail.
+  scheduled: "initiated",
+  rescheduled: "initiated",
   ringing: "ringing",
   answered: "in_progress",
   "in-progress": "in_progress",

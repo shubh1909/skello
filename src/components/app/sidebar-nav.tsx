@@ -4,7 +4,6 @@ import { useTransition } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  ActivityIcon,
   CodeIcon,
   CreditCardIcon,
   LayoutGridIcon,
@@ -39,7 +38,8 @@ const SECTIONS: readonly NavSection[] = [
     label: "Overview",
     items: [
       { href: "/dashboard", label: "Dashboard", icon: LayoutGridIcon },
-      { href: "/pulse", label: "Pulse", icon: ActivityIcon },
+      // /pulse is intentionally hidden from the sidebar (route still exists
+      // and is reachable by deep-link). See docs/sitemap.md → Hidden routes.
     ],
   },
   {

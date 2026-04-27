@@ -147,17 +147,17 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
         <ChartFrame
           icon={ZapIcon}
-          title="Product Interest"
+          title="Lead Interest"
           subtitle="What leads are asking about"
         >
           <HorizontalBarList
-            items={analytics.productInterest.map((p) => ({
-              label: p.product,
+            items={analytics.interestMentions.map((p) => ({
+              label: p.interest,
               value: p.count,
             }))}
-            total={analytics.totalProductMentions}
+            total={analytics.totalInterestMentions}
             totalLabel="Total mentions"
-            emptyLabel="No products tagged on leads yet."
+            emptyLabel="No interest tagged on leads yet."
           />
         </ChartFrame>
       </section>

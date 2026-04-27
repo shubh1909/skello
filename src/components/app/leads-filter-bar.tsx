@@ -16,15 +16,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import type { LeadSource, LeadStatus } from "@/types/lead";
+import type { LeadStatus } from "@/types/lead";
 
 export type LeadFilters = {
   q?: string;
   intent?: "hot" | "warm" | "cold";
-  contacted?: "yes" | "no";
-  wants?: "yes" | "no";
+  pending?: "yes" | "no";
   status?: LeadStatus;
-  source?: LeadSource;
 };
 
 const INTENT_OPTIONS = [
@@ -38,25 +36,6 @@ const YES_NO_OPTIONS = [
   { value: "__any", label: "Any" },
   { value: "yes", label: "Yes" },
   { value: "no", label: "No" },
-] as const;
-
-const STATUS_OPTIONS = [
-  { value: "__any", label: "Any" },
-  { value: "new", label: "New" },
-  { value: "contacted", label: "Contacted" },
-  { value: "qualified", label: "Qualified" },
-  { value: "negotiating", label: "Negotiating" },
-  { value: "won", label: "Won" },
-  { value: "lost", label: "Lost" },
-] as const;
-
-const SOURCE_OPTIONS = [
-  { value: "__any", label: "Any" },
-  { value: "inbound_call", label: "Inbound call" },
-  { value: "whatsapp", label: "WhatsApp" },
-  { value: "manual", label: "Manual" },
-  { value: "web_form", label: "Web form" },
-  { value: "import", label: "Import" },
 ] as const;
 
 export function LeadsFilterBar({
@@ -103,10 +82,8 @@ export function LeadsFilterBar({
   const activeCount = [
     filters.q,
     filters.intent,
-    filters.contacted,
-    filters.wants,
+    filters.pending,
     filters.status,
-    filters.source,
   ].filter(Boolean).length;
 
   return (
@@ -119,20 +96,18 @@ export function LeadsFilterBar({
               id="leads-search"
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Name, product, or phone…"
+              placeholder="Name, interest, or phone…"
               className="h-9 pl-8"
             />
           </div>
         </FilterField>
 
-        <FilterField label="Status" className="w-40">
-          <FilterSelect
-            value={filters.status ?? "__any"}
-            onChange={(v) => updateParam("status", v)}
-            options={STATUS_OPTIONS}
-            ariaLabel="Status"
-          />
-        </FilterField>
+        {/*
+          Status filter intentionally omitted from the UI — the Status column is
+          hidden from the leads table per product direction (see docs/api.md
+          § Leads). The query param is still honoured if present so deep links
+          continue to work.
+        */}
 
         <FilterField label="Intent" className="w-32">
           <FilterSelect
@@ -143,30 +118,12 @@ export function LeadsFilterBar({
           />
         </FilterField>
 
-        <FilterField label="Source" className="w-40">
+        <FilterField label="Pending action" className="w-36">
           <FilterSelect
-            value={filters.source ?? "__any"}
-            onChange={(v) => updateParam("source", v)}
-            options={SOURCE_OPTIONS}
-            ariaLabel="Source"
-          />
-        </FilterField>
-
-        <FilterField label="Contacted" className="w-32">
-          <FilterSelect
-            value={filters.contacted ?? "__any"}
-            onChange={(v) => updateParam("contacted", v)}
+            value={filters.pending ?? "__any"}
+            onChange={(v) => updateParam("pending", v)}
             options={YES_NO_OPTIONS}
-            ariaLabel="Contacted"
-          />
-        </FilterField>
-
-        <FilterField label="Wants WhatsApp" className="w-40">
-          <FilterSelect
-            value={filters.wants ?? "__any"}
-            onChange={(v) => updateParam("wants", v)}
-            options={YES_NO_OPTIONS}
-            ariaLabel="Wants WhatsApp"
+            ariaLabel="Pending action"
           />
         </FilterField>
 
@@ -188,21 +145,13 @@ export function LeadsFilterBar({
               {filters.intent ? (
                 <Chip label={`Intent · ${capitalise(filters.intent)}`} />
               ) : null}
-              {filters.contacted ? (
+              {filters.pending ? (
                 <Chip
-                  label={`Contacted · ${filters.contacted === "yes" ? "Yes" : "No"}`}
-                />
-              ) : null}
-              {filters.wants ? (
-                <Chip
-                  label={`Wants WA · ${filters.wants === "yes" ? "Yes" : "No"}`}
+                  label={`Pending · ${filters.pending === "yes" ? "Yes" : "No"}`}
                 />
               ) : null}
               {filters.status ? (
                 <Chip label={`Status · ${capitalise(filters.status)}`} />
-              ) : null}
-              {filters.source ? (
-                <Chip label={`Source · ${sourceLabel(filters.source)}`} />
               ) : null}
             </>
           )}
@@ -272,9 +221,4 @@ function Chip({ label }: { label: string }) {
 
 function capitalise(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function sourceLabel(s: LeadSource): string {
-  const match = SOURCE_OPTIONS.find((o) => o.value === s);
-  return match?.label ?? s;
 }

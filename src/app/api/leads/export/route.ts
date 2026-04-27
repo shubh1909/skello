@@ -19,7 +19,7 @@ const rangeSchema = z.enum([
 type Range = z.infer<typeof rangeSchema>;
 
 const LEAD_COLUMNS =
-  "id, created_at, updated_at, external_id, name, product, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, contacted_on_watsapp, source, status, notes, city, pincode";
+  "id, created_at, updated_at, external_id, name, interest, summary, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, pending_action, source, status, notes, city, pincode";
 
 // Rolling-window date boundaries. Returning `null` means "no date filter".
 function rangeBounds(
@@ -49,7 +49,8 @@ const CSV_COLUMNS: { key: keyof Lead; header: string }[] = [
   { key: "created_at", header: "Created At" },
   { key: "name", header: "Name" },
   { key: "phone", header: "Phone" },
-  { key: "product", header: "Product" },
+  { key: "interest", header: "Interest" },
+  { key: "summary", header: "Summary" },
   { key: "lead_intent", header: "Intent" },
   { key: "status", header: "Status" },
   { key: "source", header: "Source" },
@@ -57,7 +58,7 @@ const CSV_COLUMNS: { key: keyof Lead; header: string }[] = [
   { key: "city", header: "City" },
   { key: "pincode", header: "Pincode" },
   { key: "visit_date_time", header: "Visit" },
-  { key: "contacted_on_watsapp", header: "WA Contacted" },
+  { key: "pending_action", header: "Pending Action" },
   { key: "wants_to_connect_on_watsapp", header: "Wants WA" },
   { key: "notes", header: "Notes" },
   { key: "external_id", header: "Capture ID" },

@@ -33,7 +33,8 @@ export const orgSlugSchema = z
 export const leadCreateSchema = z.object({
   org_slug: orgSlugSchema,
   name: z.string().trim().min(1).max(200).nullish(),
-  product: z.string().trim().max(500).nullish(),
+  interest: z.string().trim().max(500).nullish(),
+  summary: z.string().trim().max(5000).nullish(),
   customer_status: z.string().trim().max(50).nullish(),
   lead_intent: leadIntentSchema.nullish(),
   phone: z.string().trim().max(32).nullish(),
@@ -48,7 +49,7 @@ export const leadCreateSchema = z.object({
 
 export const leadUpdateSchema = leadCreateSchema
   .omit({ org_slug: true })
-  .extend({ contacted_on_watsapp: z.boolean().optional() })
+  .extend({ pending_action: z.boolean().optional() })
   .partial();
 
 export const leadListSchema = z.object({
@@ -58,7 +59,7 @@ export const leadListSchema = z.object({
   q: z.string().trim().max(100).optional(),
   lead_intent: leadIntentSchema.optional(),
   customer_status: z.string().trim().max(50).optional(),
-  contacted_on_watsapp: z.boolean().optional(),
+  pending_action: z.boolean().optional(),
   wants_to_connect_on_watsapp: z.boolean().optional(),
   has_phone: z.boolean().optional(),
   source: leadSourceSchema.optional(),

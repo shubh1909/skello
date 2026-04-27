@@ -2,11 +2,12 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2Icon, Trash2Icon } from "lucide-react";
+import { Loader2Icon, Trash2Icon, ZapIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import {
   disconnectVoiceAgentAdmin,
+  testVoiceAgentAdmin,
   updateVoiceAgentAdmin,
   upsertVoiceAgentAdmin,
 } from "@/actions/admin/voice-agent";
@@ -83,6 +84,23 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
       toast.success("Voice agent updated");
       setApiKey("");
       router.refresh();
+    });
+  }
+
+  function onTest() {
+    if (!hasExisting) return;
+    startTransition(async () => {
+      const result = await testVoiceAgentAdmin(organisationId);
+      if (!result.success) {
+        toast.error("Connection test failed", {
+          description: result.error,
+          duration: 12000,
+        });
+        return;
+      }
+      toast.success("Voice agent connection works", {
+        description: `Tested key ••••${result.data.api_key_last4} against agent ${result.data.agent_id}.`,
+      });
     });
   }
 
@@ -180,11 +198,25 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
         />
       </div>
 
-      <div className="flex items-center justify-between gap-2 pt-2">
-        <Button type="submit" disabled={pending}>
-          {pending ? <Loader2Icon className="animate-spin" /> : null}
-          {hasExisting ? "Save changes" : "Connect voice agent"}
-        </Button>
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="submit" disabled={pending}>
+            {pending ? <Loader2Icon className="animate-spin" /> : null}
+            {hasExisting ? "Save changes" : "Connect voice agent"}
+          </Button>
+          {hasExisting ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={pending}
+              onClick={onTest}
+              title="Probe the voice provider with the saved key + agent ID"
+            >
+              <ZapIcon />
+              Test connection
+            </Button>
+          ) : null}
+        </div>
         {hasExisting ? (
           <Button
             type="button"

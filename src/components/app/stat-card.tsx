@@ -23,7 +23,7 @@ export function StatCard({
   hint,
 }: StatCardProps) {
   return (
-    <Card className="gap-3 p-5">
+    <Card className="gap-4 p-6">
       <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
         {icon ? (
           <span className="inline-flex size-4 items-center justify-center text-muted-foreground [&_svg]:size-3.5">
@@ -32,7 +32,7 @@ export function StatCard({
         ) : null}
         <span>{label}</span>
       </div>
-      <div className="font-heading text-3xl font-semibold leading-none tracking-tight">
+      <div className="font-heading text-4xl font-semibold leading-none tracking-tight">
         {value}
       </div>
       {trend ? (

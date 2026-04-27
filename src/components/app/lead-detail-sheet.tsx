@@ -71,35 +71,6 @@ const INTENT_LABEL: Record<LeadIntent, string> = {
   cold: "Cold",
 };
 
-const STATUS_LABEL: Record<LeadStatus, string> = {
-  new: "New",
-  contacted: "Contacted",
-  qualified: "Qualified",
-  negotiating: "Negotiating",
-  won: "Won",
-  lost: "Lost",
-};
-
-const STATUS_VARIANT: Record<
-  LeadStatus,
-  "default" | "secondary" | "outline" | "destructive"
-> = {
-  new: "outline",
-  contacted: "secondary",
-  qualified: "secondary",
-  negotiating: "default",
-  won: "default",
-  lost: "destructive",
-};
-
-const SOURCE_LABEL: Record<LeadSource, string> = {
-  inbound_call: "Inbound call",
-  whatsapp: "WhatsApp",
-  manual: "Manual",
-  import: "Import",
-  web_form: "Web form",
-};
-
 const CALL_STATUS_VARIANT: Record<
   CallStatus,
   "secondary" | "destructive" | "outline" | "default"
@@ -232,7 +203,7 @@ export function LeadDetailSheet({
   if (!lead) return null;
 
   const intent = lead.lead_intent ?? "cold";
-  const contacted = Boolean(lead.contacted_on_watsapp);
+  const isPending = Boolean(lead.pending_action);
   const hasPhone = Boolean(lead.phone);
 
   return (
@@ -251,9 +222,6 @@ export function LeadDetailSheet({
                 Lead details and history
               </SheetDescription>
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={STATUS_VARIANT[lead.status]}>
-                  {STATUS_LABEL[lead.status]}
-                </Badge>
                 <Badge variant={INTENT_VARIANT[intent]}>
                   {INTENT_LABEL[intent]}
                 </Badge>
@@ -263,14 +231,19 @@ export function LeadDetailSheet({
                       type="button"
                       onClick={() => onToggleContacted(lead)}
                       disabled={pending}
-                      aria-pressed={contacted}
+                      aria-pressed={!isPending}
                       className="disabled:cursor-not-allowed disabled:opacity-60"
                     />
                   }
-                  variant={contacted ? "secondary" : "outline"}
+                  className={
+                    isPending
+                      ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
+                      : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
+                  }
+                  variant="outline"
                 >
                   <CheckIcon />
-                  {contacted ? "Contacted" : "Mark contacted"}
+                  {isPending ? "Mark as Done" : "Done"}
                 </Badge>
                 {lead.external_id ? (
                   <Badge
@@ -371,25 +344,13 @@ export function LeadDetailSheet({
                     </span>
                   )}
                 </Field>
-                <Field label="Product">
-                  {lead.product ?? <Muted>—</Muted>}
-                </Field>
-                <Field label="Status">
-                  <Badge variant={STATUS_VARIANT[lead.status]}>
-                    {STATUS_LABEL[lead.status]}
-                  </Badge>
+                <Field label="Interest">
+                  {lead.interest ?? <Muted>—</Muted>}
                 </Field>
                 <Field label="Intent">
                   <Badge variant={INTENT_VARIANT[intent]}>
                     {INTENT_LABEL[intent]}
                   </Badge>
-                </Field>
-                <Field label="Source">
-                  {lead.source ? (
-                    <Badge variant="outline">{SOURCE_LABEL[lead.source]}</Badge>
-                  ) : (
-                    <Muted>Unknown</Muted>
-                  )}
                 </Field>
                 <Field label="Customer type">
                   {lead.customer_status ?? <Muted>—</Muted>}
@@ -436,6 +397,16 @@ export function LeadDetailSheet({
                     {now === null ? "" : formatRelative(lead.updated_at, now)}
                   </span>
                 </Field>
+                {lead.summary ? (
+                  <>
+                    <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
+                      Summary
+                    </dt>
+                    <dd className="col-span-2 whitespace-pre-wrap rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm leading-relaxed">
+                      {lead.summary}
+                    </dd>
+                  </>
+                ) : null}
                 {lead.notes ? (
                   <>
                     <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
@@ -687,7 +658,7 @@ function formatDuration(seconds: number): string {
 interface EditForm {
   name: string;
   phone: string;
-  product: string;
+  interest: string;
   customer_status: string;
   lead_intent: LeadIntent | "";
   status: LeadStatus;
@@ -703,7 +674,7 @@ function leadToForm(lead: Lead): EditForm {
   return {
     name: lead.name ?? "",
     phone: lead.phone ?? "",
-    product: lead.product ?? "",
+    interest: lead.interest ?? "",
     customer_status: lead.customer_status ?? "",
     lead_intent: (lead.lead_intent ?? "") as LeadIntent | "",
     status: lead.status,
@@ -726,7 +697,7 @@ function leadToForm(lead: Lead): EditForm {
 type LeadPatch = {
   name?: string | null;
   phone?: string | null;
-  product?: string | null;
+  interest?: string | null;
   customer_status?: string | null;
   lead_intent?: LeadIntent | null;
   status?: LeadStatus;
@@ -746,8 +717,8 @@ function diffForm(form: EditForm, lead: Lead): LeadPatch {
   const nextPhone = form.phone.trim() || null;
   if (nextPhone !== (lead.phone ?? null)) patch.phone = nextPhone;
 
-  const nextProduct = form.product.trim() || null;
-  if (nextProduct !== (lead.product ?? null)) patch.product = nextProduct;
+  const nextInterest = form.interest.trim() || null;
+  if (nextInterest !== (lead.interest ?? null)) patch.interest = nextInterest;
 
   const nextStatus = form.customer_status.trim() || null;
   if (nextStatus !== (lead.customer_status ?? null)) {
@@ -833,11 +804,11 @@ function LeadEditForm({
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="grid gap-1.5">
-          <Label htmlFor="edit-product">Product</Label>
+          <Label htmlFor="edit-interest">Interest</Label>
           <Input
-            id="edit-product"
-            value={form.product}
-            onChange={(e) => update("product", e.target.value)}
+            id="edit-interest"
+            value={form.interest}
+            onChange={(e) => update("interest", e.target.value)}
             disabled={disabled}
             maxLength={500}
             placeholder="Pro plan"
@@ -857,26 +828,6 @@ function LeadEditForm({
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="grid gap-1.5">
-          <Label>Status</Label>
-          <Select
-            value={form.status}
-            onValueChange={(v) => update("status", v as LeadStatus)}
-            disabled={disabled}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="new">New</SelectItem>
-              <SelectItem value="contacted">Contacted</SelectItem>
-              <SelectItem value="qualified">Qualified</SelectItem>
-              <SelectItem value="negotiating">Negotiating</SelectItem>
-              <SelectItem value="won">Won</SelectItem>
-              <SelectItem value="lost">Lost</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-1.5">
           <Label>Intent</Label>
           <Select
             value={form.lead_intent === "" ? "none" : form.lead_intent}
@@ -893,30 +844,6 @@ function LeadEditForm({
               <SelectItem value="hot">Hot</SelectItem>
               <SelectItem value="warm">Warm</SelectItem>
               <SelectItem value="cold">Cold</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="grid gap-1.5">
-          <Label>Source</Label>
-          <Select
-            value={form.source}
-            onValueChange={(v) =>
-              update("source", v as EditForm["source"])
-            }
-            disabled={disabled}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">Unknown</SelectItem>
-              <SelectItem value="inbound_call">Inbound call</SelectItem>
-              <SelectItem value="whatsapp">WhatsApp</SelectItem>
-              <SelectItem value="manual">Manual</SelectItem>
-              <SelectItem value="web_form">Web form</SelectItem>
-              <SelectItem value="import">Import</SelectItem>
             </SelectContent>
           </Select>
         </div>
