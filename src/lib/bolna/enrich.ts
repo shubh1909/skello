@@ -51,14 +51,18 @@ export async function enrichInboundLead(
   const execution = await fetchWithRetry(apiKey, args.executionId);
   if (!execution) return result;
 
-  const phone = execution.telephony_data?.to_number?.trim() || null;
-  if (phone) {
+  // For inbound calls, `from_number` is the caller (the lead) and `to_number`
+  // is our voice-agent line. The lead row stores the caller's number; the
+  // call row keeps both sides so the UI can render direction correctly.
+  const callerPhone = execution.telephony_data?.from_number?.trim() || null;
+  const agentPhone = execution.telephony_data?.to_number?.trim() || null;
+  if (callerPhone) {
     const { error } = await admin
       .from("leads")
-      .update({ phone })
+      .update({ phone: callerPhone })
       .eq("id", args.leadId);
     if (error) console.error("[enrich] phone update failed", error);
-    else result.phone = phone;
+    else result.phone = callerPhone;
   }
 
   const { data: callRow, error: callErr } = await admin
@@ -69,8 +73,8 @@ export async function enrichInboundLead(
         lead_id: args.leadId,
         bolna_call_id: args.executionId,
         direction: "inbound" as const,
-        to_phone: phone,
-        from_phone: execution.telephony_data?.from_number ?? null,
+        to_phone: agentPhone,
+        from_phone: callerPhone,
         agent_id: "inbound",
         status: mapExecutionStatus(execution.status),
         duration_seconds:

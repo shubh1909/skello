@@ -15,7 +15,7 @@ import type { Lead } from "@/types/lead";
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const LEAD_COLUMNS =
-  "id, created_at, updated_at, org_slug, external_id, name, interest, summary, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, pending_action, source, status, notes, city, pincode";
+  "id, created_at, updated_at, org_slug, external_id, name, interest, summary, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, pending_action, source, status, notes, city, pincode, actionable, recording_url";
 
 async function requireUser() {
   const supabase = await createClient();

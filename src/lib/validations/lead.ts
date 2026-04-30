@@ -45,6 +45,8 @@ export const leadCreateSchema = z.object({
   notes: z.string().trim().max(5000).nullish(),
   city: z.string().trim().max(100).nullish(),
   pincode: z.string().trim().max(20).nullish(),
+  actionable: z.string().trim().max(1000).nullish(),
+  recording_url: z.string().trim().url().max(2000).nullish(),
 });
 
 export const leadUpdateSchema = leadCreateSchema

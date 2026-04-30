@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CallTranscriptDialog } from "@/components/app/call-transcript-dialog";
+import { useCallsRealtime } from "@/hooks/use-calls-realtime";
 import type { Call, CallStatus, CallWithLead } from "@/types/call";
 
 const OUTCOME_LABEL: Record<CallStatus, string> = {
@@ -62,7 +63,14 @@ function formatDateTime(iso: string): string {
   }).format(d);
 }
 
-export function ConversationsTable({ calls }: { calls: CallWithLead[] }) {
+export function ConversationsTable({
+  calls,
+  organisationId,
+}: {
+  calls: CallWithLead[];
+  organisationId: string;
+}) {
+  useCallsRealtime(organisationId);
   const [transcriptCall, setTranscriptCall] = React.useState<Call | null>(null);
   const [transcriptOpen, setTranscriptOpen] = React.useState(false);
 

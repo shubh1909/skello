@@ -38,8 +38,8 @@ A map of every route in the app, who can reach it, what it renders, and how the 
     │   └── /dashboard      → Analytics (range-filtered KPIs, charts)
     │   (/pulse exists but is hidden — see Hidden routes below)
     ├── Leads
-    │   ├── /leads          → Lead CRM table + export
-    │   └── /conversations  → Placeholder (Coming soon)
+    │   ├── /leads          → Lead CRM table + export + column resize
+    │   └── /conversations  → Inbound + outbound call log w/ filters & realtime
     ├── Outreach
     │   └── /campaigns      → Placeholder (Access denied)
     ├── System
@@ -64,16 +64,16 @@ A map of every route in the app, who can reach it, what it renders, and how the 
 | `/onboarding` | [src/app/onboarding/page.tsx](../src/app/onboarding/page.tsx) | Authed · redirects to `/dashboard` if user has any org | Fallback when an authed user has no org (e.g. org was deleted) |
 | `/dashboard` | [src/app/(app)/dashboard/page.tsx](../src/app/(app)/dashboard/page.tsx) | Authed + org required | **Analytics dashboard** — range toggle (24h/7d/14d/30d), 4 KPI cards (total calls, unique users, avg duration, qualified rate), Daily New Leads bar chart, Product Interest ranking, Lead Temperature stacked chart, Call Outcomes breakdown |
 | `/pulse` | [src/app/(app)/pulse/page.tsx](../src/app/(app)/pulse/page.tsx) | Authed + org required · **hidden from sidebar (2026-04-28)** — reachable only by deep link | Operator snapshot — hot-but-uncontacted alert card, recent leads, upcoming reminders, recent calls |
-| `/leads` | [src/app/(app)/leads/page.tsx](../src/app/(app)/leads/page.tsx) | Authed + org required | Leads table (tabular) + Export dialog + filter bar (Status, Intent, Source, Contacted, Wants WA) + 4 contextual stat cards |
-| `/conversations` | [src/app/(app)/conversations/page.tsx](../src/app/(app)/conversations/page.tsx) | Authed + org required | Placeholder — unified call/WhatsApp threads coming later |
+| `/leads` | [src/app/(app)/leads/page.tsx](../src/app/(app)/leads/page.tsx) | Authed + org required | Leads table (tabular) + Export dialog + filter bar (Status, Intent, Source, Contacted, Wants WA) + 4 contextual stat cards. Columns are drag-resizable (persisted in `localStorage`). Realtime updates via `useLeadsRealtime`. New **Actionable** column (between Intent and Pending Action) shows the agent's extracted next-step note. |
+| `/conversations` | [src/app/(app)/conversations/page.tsx](../src/app/(app)/conversations/page.tsx) | Authed + org required | Unified call log (inbound + outbound). Columns: Call ID, Lead / Number, Date & Time, Duration, Direction, Outcome, Audio. Filter bar: Range (24h / 7d / 30d / all), Agent, Outcome, Direction, search. Click a row → `CallTranscriptDialog`. **Audio → Play** opens `recording_url`. Realtime updates via `useCallsRealtime`. |
 | `/campaigns` | [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx) | Authed + org required | Placeholder — plan-gated (Access denied) |
 | `/reminders` | [src/app/(app)/reminders/page.tsx](../src/app/(app)/reminders/page.tsx) | Authed + org required | Tabbed reminder list. Query: `?status=pending\|done\|dismissed` (default `pending`). Not in sidebar — reached from dashboard widgets and the lead detail sheet. |
 | `/settings` | [src/app/(app)/settings/page.tsx](../src/app/(app)/settings/page.tsx) | Authed + org required | Workspace + account view; includes the voice agent integration card |
 | `/developer` | [src/app/(app)/developer/page.tsx](../src/app/(app)/developer/page.tsx) | Authed + org required | Placeholder — role-gated (Access denied) |
 | `/billing` | [src/app/(app)/billing/page.tsx](../src/app/(app)/billing/page.tsx) | Authed + org required | Placeholder — owner-gated (Access denied) |
 | `GET /api/leads/export` | [src/app/api/leads/export/route.ts](../src/app/api/leads/export/route.ts) | Session-authed | CSV download. Query: `?range=today\|yesterday\|last_week\|last_month\|all`. Scoped to the caller's org. |
-| `POST /api/webhooks/bolna/leads` | [src/app/api/webhooks/bolna/leads/route.ts](../src/app/api/webhooks/bolna/leads/route.ts) | Signed (header `x-bolna-signature` or `?secret=`) | Inbound lead capture. Fires voice-agent enrichment via `after()` — phone + transcript + call row. See [api.md](api.md#voice-agent-webhooks). |
-| `POST /api/webhooks/bolna/calls` | [src/app/api/webhooks/bolna/calls/route.ts](../src/app/api/webhooks/bolna/calls/route.ts) | Signed | Outbound call status updates. When status flips to `completed`, fires transcript enrichment via `after()`. |
+| `POST /api/webhooks/bolna/leads` | [src/app/api/webhooks/bolna/leads/route.ts](../src/app/api/webhooks/bolna/leads/route.ts) | Signed (header `x-bolna-signature` or `?secret=`) | **Unified post-call webhook.** Dispatches on `telephony_data.call_type`: inbound → creates lead + records call inline (`recordInboundCall`); outbound → patches the existing call row from `initiateCall` and flows extraction back to the lead (`recordOutboundResult`). Same URL on every Bolna agent regardless of direction. See [api.md](api.md#voice-agent-webhooks). |
+| `POST /api/webhooks/bolna/calls` | [src/app/api/webhooks/bolna/calls/route.ts](../src/app/api/webhooks/bolna/calls/route.ts) | Signed | **Legacy** status-only updater. Superseded by the unified `/api/webhooks/bolna/leads` route for new agent configurations; kept for backward compatibility. |
 | `/admin` | [src/app/(admin)/admin/page.tsx](../src/app/(admin)/admin/page.tsx) | **Admin required** (`requireAdmin()`) | Platform-admin overview — org counts, voice agent states, recent signups |
 | `/admin/organisations` | [src/app/(admin)/admin/organisations/page.tsx](../src/app/(admin)/admin/organisations/page.tsx) | Admin required | Every workspace, searchable by name or slug |
 | `/admin/organisations/[id]` | [src/app/(admin)/admin/organisations/[id]/page.tsx](../src/app/(admin)/admin/organisations/[id]/page.tsx) | Admin required | Edit org name/slug, provision / pause / disconnect the voice agent, view owner |
@@ -160,12 +160,14 @@ These render across multiple routes inside `(app)`. Consult the file directly fo
 | `NotificationsBell` | [src/components/app/notifications-bell.tsx](../src/components/app/notifications-bell.tsx) | Topbar — popover of pending reminders, inline mark-done |
 | `UserMenu` | [src/components/app/user-menu.tsx](../src/components/app/user-menu.tsx) | Topbar — avatar dropdown, logout |
 | `StatCard` | [src/components/app/stat-card.tsx](../src/components/app/stat-card.tsx) | Analytics dashboard, `/leads` — icon + label + value + "vs. previous period" trend |
-| `LeadsTable` | [src/components/app/leads-table.tsx](../src/components/app/leads-table.tsx) | `/leads` — true `<table>` with status/intent/contacted badges |
+| `LeadsTable` | [src/components/app/leads-table.tsx](../src/components/app/leads-table.tsx) | `/leads` — true `<table>` with status/intent/pending-action badges. **Drag-resizable columns** via per-`<th>` handle, widths persisted in `localStorage` (`skello.leads-table.col-widths.v1`). Includes the **Actionable** column. Realtime via `useLeadsRealtime`. |
 | `LeadsFilterBar` | [src/components/app/leads-filter-bar.tsx](../src/components/app/leads-filter-bar.tsx) | `/leads` — labelled filter controls for Status, Intent, Source, Contacted, Wants WA |
 | `LeadCreateDialog` | [src/components/app/lead-create-dialog.tsx](../src/components/app/lead-create-dialog.tsx) | `/leads`, `/pulse` — captures name/phone/product/intent/status/city/pincode/notes; `source` stamped as `manual` implicitly |
 | `LeadExportDialog` | [src/components/app/lead-export-dialog.tsx](../src/components/app/lead-export-dialog.tsx) | `/leads` header — duration picker + CSV download |
-| `LeadDetailSheet` | [src/components/app/lead-detail-sheet.tsx](../src/components/app/lead-detail-sheet.tsx) | `/leads` — read + edit all lead fields; renders Reminders + Call History with transcript access |
-| `CallTranscriptDialog` | [src/components/app/call-transcript-dialog.tsx](../src/components/app/call-transcript-dialog.tsx) | Lead detail sheet — chat-bubble render of parsed transcript turns, with raw-blob fallback |
+| `LeadDetailSheet` | [src/components/app/lead-detail-sheet.tsx](../src/components/app/lead-detail-sheet.tsx) | `/leads` — read + edit all lead fields including `actionable` (textarea) and `recording_url` (URL input + **Listen** link). Renders Reminders + Call History with transcript access. |
+| `ConversationsTable` | [src/components/app/conversations-table.tsx](../src/components/app/conversations-table.tsx) | `/conversations` — `<table>` of `CallWithLead` rows with direction badge, outcome badge, **Audio → Play** for `recording_url`, transcript fallback. Realtime via `useCallsRealtime`. |
+| `ConversationsFilterBar` | [src/components/app/conversations-filter-bar.tsx](../src/components/app/conversations-filter-bar.tsx) | `/conversations` — Range (24h / 7d / 30d / all) · Agent · Outcome · Direction · debounced phone/ID search. URL-driven via search params. |
+| `CallTranscriptDialog` | [src/components/app/call-transcript-dialog.tsx](../src/components/app/call-transcript-dialog.tsx) | Lead detail sheet, conversations table — chat-bubble render of parsed transcript turns, with raw-blob fallback |
 | `RemindersList` | [src/components/app/reminders-list.tsx](../src/components/app/reminders-list.tsx) | `/reminders` |
 | `ReminderDialog` | [src/components/app/reminder-dialog.tsx](../src/components/app/reminder-dialog.tsx) | `/pulse`, `/leads` (per-row), `/reminders`, NotificationsBell |
 | `WhatsAppDialog` | [src/components/app/whatsapp-dialog.tsx](../src/components/app/whatsapp-dialog.tsx) | `/leads` (per-row) |
@@ -203,6 +205,16 @@ The two action dialogs are designed to be triggered from any surface that has a 
 | --- | --- | --- |
 | `LoginForm` | [src/components/forms/login-form.tsx](../src/components/forms/login-form.tsx) | `/login` |
 | `SignupForm` | [src/components/forms/signup-form.tsx](../src/components/forms/signup-form.tsx) | `/signup` |
+
+### Realtime client hooks
+
+These subscribe to Supabase Postgres CHANGES so `(app)` pages auto-refresh when DB rows change. Both debounce events by 350 ms and call `router.refresh()` — server-side filter/sort/paging stay authoritative. See [api.md § Realtime](api.md#realtime).
+
+| Hook | File | Subscribed to | Used by |
+| --- | --- | --- | --- |
+| `useLeadsRealtime(orgSlug)` | [src/hooks/use-leads-realtime.ts](../src/hooks/use-leads-realtime.ts) | `public.leads` filtered by `org_slug=eq.<slug>` | `LeadsTable` |
+| `useCallsRealtime(orgId)` | [src/hooks/use-calls-realtime.ts](../src/hooks/use-calls-realtime.ts) | `public.calls` filtered by `organisation_id=eq.<id>` | `ConversationsTable` |
+| `useClientNow()` | [src/hooks/use-client-now.ts](../src/hooks/use-client-now.ts) | (no subscription) | Pages that render relative timestamps — gives a hydration-safe `Date.now()` ticker. |
 
 ---
 

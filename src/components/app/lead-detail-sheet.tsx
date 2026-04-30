@@ -14,6 +14,7 @@ import {
   PhoneIcon,
   PhoneIncomingIcon,
   PhoneOutgoingIcon,
+  PlayIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -397,6 +398,31 @@ export function LeadDetailSheet({
                     {now === null ? "" : formatRelative(lead.updated_at, now)}
                   </span>
                 </Field>
+                <Field label="Recording">
+                  {lead.recording_url ? (
+                    <a
+                      href={lead.recording_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-foreground transition-colors hover:text-muted-foreground"
+                    >
+                      <PlayIcon className="size-3" /> Listen
+                      <ExternalLinkIcon className="size-3" />
+                    </a>
+                  ) : (
+                    <Muted>—</Muted>
+                  )}
+                </Field>
+                {lead.actionable ? (
+                  <>
+                    <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
+                      Actionable
+                    </dt>
+                    <dd className="col-span-2 whitespace-pre-wrap rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm leading-relaxed">
+                      {lead.actionable}
+                    </dd>
+                  </>
+                ) : null}
                 {lead.summary ? (
                   <>
                     <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
@@ -666,6 +692,8 @@ interface EditForm {
   city: string;
   pincode: string;
   notes: string;
+  actionable: string;
+  recording_url: string;
   visit_date_time: string; // datetime-local value (YYYY-MM-DDTHH:mm), or ""
   wants_to_connect_on_watsapp: "yes" | "no" | "unknown";
 }
@@ -682,6 +710,8 @@ function leadToForm(lead: Lead): EditForm {
     city: lead.city ?? "",
     pincode: lead.pincode ?? "",
     notes: lead.notes ?? "",
+    actionable: lead.actionable ?? "",
+    recording_url: lead.recording_url ?? "",
     visit_date_time: lead.visit_date_time
       ? toLocalDateTimeInputValue(lead.visit_date_time)
       : "",
@@ -705,6 +735,8 @@ type LeadPatch = {
   city?: string | null;
   pincode?: string | null;
   notes?: string | null;
+  actionable?: string | null;
+  recording_url?: string | null;
   visit_date_time?: string | null;
   wants_to_connect_on_watsapp?: boolean | null;
 };
@@ -741,6 +773,16 @@ function diffForm(form: EditForm, lead: Lead): LeadPatch {
 
   const nextNotes = form.notes.trim() || null;
   if (nextNotes !== (lead.notes ?? null)) patch.notes = nextNotes;
+
+  const nextActionable = form.actionable.trim() || null;
+  if (nextActionable !== (lead.actionable ?? null)) {
+    patch.actionable = nextActionable;
+  }
+
+  const nextRecording = form.recording_url.trim() || null;
+  if (nextRecording !== (lead.recording_url ?? null)) {
+    patch.recording_url = nextRecording;
+  }
 
   const nextVisitIso = form.visit_date_time
     ? fromLocalDateTimeInput(form.visit_date_time)
@@ -906,6 +948,33 @@ function LeadEditForm({
           rows={4}
           placeholder="Conversation context, objections, preferences…"
         />
+      </div>
+      <div className="grid gap-1.5">
+        <Label htmlFor="edit-actionable">Actionable</Label>
+        <Textarea
+          id="edit-actionable"
+          value={form.actionable}
+          onChange={(e) => update("actionable", e.target.value)}
+          disabled={disabled}
+          maxLength={1000}
+          rows={2}
+          placeholder="Concrete next step (e.g. send quote, schedule visit)…"
+        />
+      </div>
+      <div className="grid gap-1.5">
+        <Label htmlFor="edit-recording-url">Recording URL</Label>
+        <Input
+          id="edit-recording-url"
+          type="url"
+          value={form.recording_url}
+          onChange={(e) => update("recording_url", e.target.value)}
+          disabled={disabled}
+          maxLength={2000}
+          placeholder="https://…"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Auto-filled by inbound calls. Leave blank to clear.
+        </p>
       </div>
       <div className="grid gap-1.5">
         <Label htmlFor="edit-visit">Visit</Label>

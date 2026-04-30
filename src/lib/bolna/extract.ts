@@ -9,17 +9,46 @@ const bolnaFieldSchema = z
   .object({
     subjective: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
     objective: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
-    reasoning_subjective: z.string().max(REASONING_MAX).optional(),
-    confidence: z.number().optional(),
-    confidence_label: z.string().max(200).optional(),
+    // Bolna leaves the per-side reasoning string `null` when only the
+    // opposite side was filled, so both reasoning fields must accept null.
+    reasoning_subjective: z.string().max(REASONING_MAX).nullish(),
+    reasoning_objective: z.string().max(REASONING_MAX).nullish(),
+    confidence: z.number().nullish(),
+    confidence_label: z.string().max(200).nullish(),
+    validation: z.unknown().nullish(),
   })
   .passthrough();
 
+// Bolna fires the webhook three times per call (in-progress → disconnected →
+// completed). Only the final event has `extracted_data` populated; the first
+// two send it as `null`. The schema must accept the missing case so we can
+// short-circuit them with a 200 instead of failing validation with a 400.
 export const bolnaLeadPayloadSchema = z
   .object({
-    extracted_data: z.object({
-      lead_data: z.record(z.string(), bolnaFieldSchema),
-    }),
+    extracted_data: z
+      .object({
+        lead_data: z.record(z.string(), bolnaFieldSchema),
+      })
+      .nullable()
+      .optional(),
+    status: z.string().nullish(),
+    user_number: z.string().nullish(),
+    transcript: z.string().nullish(),
+    summary: z.string().nullish(),
+    agent_id: z.string().nullish(),
+    conversation_duration: z.number().nullish(),
+    created_at: z.string().nullish(),
+    updated_at: z.string().nullish(),
+    error_message: z.string().nullish(),
+    telephony_data: z
+      .object({
+        to_number: z.string().nullish(),
+        from_number: z.string().nullish(),
+        recording_url: z.string().nullish(),
+        call_type: z.string().nullish(),
+      })
+      .passthrough()
+      .nullish(),
   })
   .passthrough();
 
@@ -60,14 +89,17 @@ export interface ExtractedLead {
   interest: string | null;
   customer_status: string | null;
   lead_intent: string | null;
+  actionable: string | null;
   connect_on_whatsapp: boolean | null;
   visit_scheduled_at: string | null;
   confidence: Record<string, number>;
   summary: string | null;
 }
 
-export function extractLead(payload: BolnaLeadPayload): ExtractedLead {
-  const ld = payload.extracted_data.lead_data;
+export function extractLead(
+  leadData: Record<string, BolnaField>,
+): ExtractedLead {
+  const ld = leadData;
 
   const confidence: Record<string, number> = {};
   for (const [key, field] of Object.entries(ld)) {
@@ -82,6 +114,7 @@ export function extractLead(payload: BolnaLeadPayload): ExtractedLead {
     interest: pickValue(ld.product),
     customer_status: pickValue(ld.customer_status),
     lead_intent: pickValue(ld.lead_intent),
+    actionable: pickValue(ld.actionable),
     connect_on_whatsapp: toBoolean(pickValue(ld.connect_on_whatsapp)),
     visit_scheduled_at: toTimestamp(pickValue(ld.date_and_time_of_visit)),
     confidence,

@@ -195,7 +195,7 @@ export default async function LeadsPage({ searchParams }: PageProps) {
           {result.error}
         </Card>
       ) : (
-        <LeadsTable leads={leads} organisationId={orgId} />
+        <LeadsTable leads={leads} organisationId={orgId} orgSlug={orgSlug} />
       )}
     </div>
   );

@@ -19,9 +19,10 @@ All mutations and queries live in Server Actions under [src/actions/](../src/act
 9. [Calls](#calls)
 10. [Call Transcripts](#call-transcripts)
 11. [Voice Agent Webhooks](#voice-agent-webhooks)
-12. [Analytics](#analytics)
-13. [Admin Console](#admin-console)
-14. [Security Model](#security-model)
+12. [Realtime](#realtime)
+13. [Analytics](#analytics)
+14. [Admin Console](#admin-console)
+15. [Security Model](#security-model)
 
 ---
 
@@ -108,6 +109,8 @@ Migrations:
 - `20260424000001_calls_direction_and_transcripts.sql` — enums `call_direction`, `call_transcript_status`, `call_turn_speaker`; `calls` gains `direction` (NOT NULL default `'outbound'`), `transcript`, `transcript_status`, `transcript_fetched_at`, `language`; `calls.to_phone` becomes nullable; new child table `call_transcripts` (one row per utterance) with RLS + FTS GIN index on `to_tsvector('simple', text)`.
 - `20260424000002_profiles_and_admin.sql` — new `profiles` table (one row per `auth.users` id) with `display_name` + `is_admin`; trigger `on_auth_user_created` auto-provisions profile rows on signup; backfills existing users; RLS lets a user read & update their own profile **except** `is_admin` (locked via `WITH CHECK`). Admin promotion goes through the service-role client.
 - `20260427000000_leads_rename_columns_and_summary.sql` — renames `leads.product` → `interest`; adds `summary text`; renames `contacted_on_watsapp` → `pending_action` and inverts the semantics (true = action still owed) with a default of `true`. Existing rows are flipped (`old true` → `false`, `old false/null` → `true`). The Status column was hidden from the leads table UI in the same change; the column itself is unchanged.
+- `20260428000000_calls_full_bolna_call_id_unique.sql` — promotes the partial unique index `calls (organisation_id, bolna_call_id) where bolna_call_id is not null` to a **full** unique constraint. PostgREST's `.upsert(..., { onConflict: "organisation_id,bolna_call_id" })` does not echo a partial-index `WHERE` clause, so the partial form raised `42P10 there is no unique or exclusion constraint matching the ON CONFLICT specification`. PostgreSQL still treats each NULL as distinct in unique constraints, so failed-before-dispatch call rows with NULL `bolna_call_id` continue to coexist.
+- `20260429000000_leads_actionable_and_recording.sql` — `leads.actionable text` (≤1000 chars) and `leads.recording_url text` (≤2000 chars), both nullable. `actionable` is a free-form string the agent extracts describing the concrete next step; `recording_url` points at the latest call recording on the provider's storage so operators can reach the audio without joining `calls`.
 
 ---
 
@@ -263,7 +266,18 @@ status   (enum lead_status:
          NOT NULL DEFAULT 'new',
 notes,
 city,
-pincode
+pincode,
+
+-- Added 2026-04-29 (20260429000000_leads_actionable_and_recording.sql):
+actionable,                    -- free-form string the voice agent extracts
+                               --   describing the concrete next step
+                               --   (e.g. "Send quote on Royal Enfield 2023",
+                               --   "Schedule visit Friday afternoon"). ≤1000.
+recording_url                  -- direct link to the latest call recording on
+                               --   the provider's storage. Stamped by the
+                               --   inbound webhook and overwritten on every
+                               --   subsequent inbound call from the same
+                               --   number. ≤2000 chars.
 ```
 
 Tenant scoping on `leads` is via **`org_slug` (text)**, enforced by FK `leads.org_slug → organisations.slug` (cascade on update/delete). All actions also gate on the caller owning that org.
@@ -335,10 +349,13 @@ Returns the full `Lead` including every column from the live schema. Caller must
   notes?: string | null;                               // ≤ 5000 chars
   city?: string | null;                                // ≤ 100 chars
   pincode?: string | null;                             // ≤ 20 chars
+  // Added 2026-04-29:
+  actionable?: string | null;                          // ≤ 1000 chars; concrete next step
+  recording_url?: string | null;                       // valid URL, ≤ 2000 chars
 }
 ```
 
-`LeadCreateDialog` stamps `source: "manual"` implicitly for anything captured through the UI; the inbound webhook stamps `source: "inbound_call"`.
+`LeadCreateDialog` stamps `source: "manual"` implicitly for anything captured through the UI; the inbound webhook stamps `source: "inbound_call"` and writes `actionable` + `recording_url` directly from the post-call payload.
 
 ### `updateLead(id, input)`
 
@@ -574,7 +591,7 @@ language,                                -- e.g. "hi-IN"
 created_at, updated_at
 ```
 
-**Idempotency:** unique index `(organisation_id, bolna_call_id) where bolna_call_id is not null`. Both the inbound and outbound webhook paths upsert on this key.
+**Idempotency:** **full** unique constraint `(organisation_id, bolna_call_id)` (promoted from a partial index in `20260428000000_calls_full_bolna_call_id_unique.sql`). NULL `bolna_call_id` rows still coexist because PostgreSQL treats nulls as distinct in unique constraints. PostgREST `.upsert(..., { onConflict: "organisation_id,bolna_call_id" })` matches this constraint cleanly — a partial index would need its `WHERE` clause echoed in the upsert, which `supabase-js` doesn't do.
 
 ### `initiateCall(input)`
 
@@ -604,19 +621,46 @@ Transcript fetch is **not** done here — it happens asynchronously when the cal
 ```ts
 {
   organisation_id: string;
-  limit?: number;                       // 1–200, default 50
+  limit?: number;                       // 1–500, default 50
   offset?: number;                      // default 0
   lead_id?: string;                     // filter to a single lead
   status?: CallStatus;                  // "initiated" | "ringing" | "in_progress"
                                         // | "completed" | "failed" | "no_answer"
                                         // | "busy" | "canceled"
+  // Added 2026-04-26:
+  direction?: "inbound" | "outbound";
+  agent_id?: string;                    // ≤ 200 chars
+  from?: string;                        // ISO datetime — started_at >= from
+  to?: string;                          // ISO datetime — started_at <= to
+  q?: string;                           // free-text over to_phone / from_phone /
+                                        //   bolna_call_id (uses ilike)
 }
 ```
 Returns `ActionResult<{ items: Call[]; total: number }>`, ordered by `started_at desc`. Each `Call` carries the full column set, including `direction`, `transcript`, and `transcript_status`.
 
-### UI trigger
+### `listConversations(input)`
 
-The leads table ([src/components/app/leads-table.tsx](../src/components/app/leads-table.tsx)) renders a **phone icon button** per row. Clicking it calls `initiateCall({ lead_id })`; the button is disabled when the lead has no phone. Call-history rows in the lead detail sheet show a direction glyph (↙ inbound / ↗ outbound) and expose a "View transcript" action when `transcript_status = 'ready'`.
+Same input as `listCalls` but each row is enriched with the linked lead's name and phone via a PostgREST embed (`lead:leads(name, phone)`). Used by the `/conversations` page so it can render **Lead / Number** in one query without a join in JS.
+
+```ts
+type CallWithLead = Call & {
+  lead: { name: string | null; phone: string | null } | null;
+};
+```
+
+**Returns** `ActionResult<{ items: CallWithLead[]; total: number }>`.
+
+### `listConversationAgents(organisationId)`
+
+Returns the distinct `agent_id` values seen on this org's most recent 500 calls. Drives the **All agents** dropdown on `/conversations`.
+
+**Returns** `ActionResult<string[]>`.
+
+### UI triggers
+
+- **Outbound:** the leads table ([src/components/app/leads-table.tsx](../src/components/app/leads-table.tsx)) renders a **phone icon button** per row. Clicking it calls `initiateCall({ lead_id })`; the button is disabled when the lead has no phone.
+- **Conversations page** ([src/app/(app)/conversations/page.tsx](../src/app/(app)/conversations/page.tsx)) lists every inbound + outbound call for the org with filters (range, agent, outcome, direction, search). Click a row → `CallTranscriptDialog`. **Audio → Play** opens `recording_url`.
+- Call-history rows in the lead detail sheet show a direction glyph (↙ inbound / ↗ outbound) and expose a "View transcript" action when `transcript_status = 'ready'`.
 
 ---
 
@@ -682,18 +726,27 @@ Helper in [src/lib/bolna/client.ts](../src/lib/bolna/client.ts) that hits `GET $
 
 Throws `BolnaApiError` on non-2xx.
 
-### Enrichment entry points
+### Inline ingestion (current path)
 
-`src/lib/bolna/enrich.ts` exposes two helpers. Both:
+The unified webhook (`/api/webhooks/bolna/leads`) writes transcripts **inline** during the request — the post-call payload already contains the full transcript blob, so no executions API roundtrip is needed:
+
+| Helper | File | Caller | Behavior |
+| --- | --- | --- | --- |
+| `recordInboundCall({ organisationId, leadId, externalId, payload })` | [src/lib/bolna/inbound.ts](../src/lib/bolna/inbound.ts) | Inbound webhook (sync) | Upserts the `calls` row (`direction='inbound'`) from the webhook payload — phones, duration, recording_url, transcript, status — then calls `writeTranscriptTurns()`. |
+| `recordOutboundResult({ externalId, payload })` | [src/lib/bolna/outbound.ts](../src/lib/bolna/outbound.ts) | Outbound webhook (sync) | Looks up the existing call by `bolna_call_id`, patches it with the outcome (status, duration, recording, transcript, summary, ended_at, error_message), flows agent extraction back to the linked lead, then calls `writeTranscriptTurns()`. |
+| `writeTranscriptTurns(callId, organisationId, transcript)` | [src/lib/bolna/inbound.ts](../src/lib/bolna/inbound.ts) | Both helpers above | Parses the transcript blob via `parseTranscript()`, deletes any prior turns for the call, and bulk-inserts the new ones. Updates `calls.transcript_status` to `ready` / `skipped` / `failed`. |
+
+### Legacy executions-API path
+
+`src/lib/bolna/enrich.ts` still exposes two helpers that fetch `GET /executions/{id}` and walk the same upsert/turn-insert flow. They were the original ingestion path before the post-call webhook was discovered to carry the full transcript inline.
+
+- `enrichInboundLead` — **no longer wired up**. The unified webhook does the work synchronously via `recordInboundCall`. Keep until we're confident no future provider quirk requires re-fetching.
+- `enrichOutboundCall` — still called from the legacy `/api/webhooks/bolna/calls` route. New agent configurations should use the unified `/api/webhooks/bolna/leads` endpoint, in which case `recordOutboundResult` runs inline and `enrichOutboundCall` is unused.
+
+Both legacy helpers:
 - Resolve the org's API key, skip cleanly if the integration is missing or disabled.
 - Fetch `GET /executions/{id}` with bounded retries (0s, 0.8s, 2s) because the provider is eventually consistent.
-- Upsert the `calls` row, then `DELETE FROM call_transcripts WHERE call_id = …` and bulk-insert parsed turns.
 - Never throw — logged failures mark `transcript_status = 'failed'`.
-
-| Function | Caller | Behavior |
-| --- | --- | --- |
-| `enrichInboundLead({ organisationId, leadId, orgSlug, executionId })` | Inbound lead webhook (via `after()`) | Upserts the `calls` row (`direction='inbound'`), updates `leads.phone` from `telephony_data.to_number`. |
-| `enrichOutboundCall({ organisationId, callId, executionId })` | Outbound calls webhook when status = `completed` | Updates the existing `calls` row (`duration_seconds`, `ended_at`), writes transcript + turns. |
 
 ### `listCallTranscript({ call_id })`
 
@@ -711,216 +764,207 @@ else setTurns(res.data);
 
 ## Voice Agent Webhooks
 
-Two separate endpoints — both share `BOLNA_WEBHOOK_SECRET` and use the same header-compare auth.
+### One unified endpoint (2026-04-28 redesign)
+
+The provider's agent dashboard exposes **one** post-call webhook URL per agent — it fires for every call from that agent regardless of direction. Skello uses a single endpoint for both inbound and outbound flows and dispatches internally on `telephony_data.call_type`.
 
 | Route | File | Purpose |
 | --- | --- | --- |
-| `POST /api/webhooks/bolna/leads` | [src/app/api/webhooks/bolna/leads/route.ts](../src/app/api/webhooks/bolna/leads/route.ts) | Inbound call → lead (also triggers enrichment for phone + transcript) |
-| `POST /api/webhooks/bolna/calls` | [src/app/api/webhooks/bolna/calls/route.ts](../src/app/api/webhooks/bolna/calls/route.ts) | Outbound call status updates (triggers transcript enrichment on `completed`) |
+| `POST /api/webhooks/bolna/leads` | [src/app/api/webhooks/bolna/leads/route.ts](../src/app/api/webhooks/bolna/leads/route.ts) | **The unified post-call webhook.** Routes inbound payloads to `recordInboundCall` (creates lead + call row) and outbound payloads to `recordOutboundResult` (patches the existing call row from `initiateCall`). |
+| `POST /api/webhooks/bolna/calls` | [src/app/api/webhooks/bolna/calls/route.ts](../src/app/api/webhooks/bolna/calls/route.ts) | **Legacy** status-only updater that expects a slim `{ call_id, status, ... }` payload. The unified route on `/api/webhooks/bolna/leads` supersedes it for new agent configurations. Kept for backward compatibility. |
 
 ### Shared auth
 
-The provider's dashboard webhook field is URL-only — no custom headers. The routes therefore accept the shared secret in **either** of two places, both compared in constant time:
+The provider's dashboard accepts a webhook URL only — no custom headers. Both endpoints accept the shared secret in **either** of two places, compared in constant time:
 
-1. `x-bolna-signature: <BOLNA_WEBHOOK_SECRET>` header — for curl tests or any caller that supports headers.
-2. `?secret=<BOLNA_WEBHOOK_SECRET>` query string — for the provider dashboard, where you paste the full URL including the query parameter.
+1. `x-bolna-signature: <BOLNA_WEBHOOK_SECRET>` header — for curl tests.
+2. `?secret=<BOLNA_WEBHOOK_SECRET>` query string — for the provider dashboard.
 
-Pick a long random secret (`openssl rand -hex 32`), put it in `.env.local`, and append it to the URL you paste into the provider dashboard.
+Generate a long random secret (`openssl rand -hex 32`), put it in `.env.local`, and append it to the URL you paste into the dashboard.
 
 > **If the provider later adds HMAC signing**, replace the comparison with `crypto.createHmac("sha256", secret).update(rawBody).digest("hex")` and drop the query-string path. The query-string route is a pragmatic workaround, not a permanent design.
 
-### Post-response enrichment
+### Per-call event lifecycle
 
-Both webhooks return `200` as soon as the core row is persisted. Expensive work (fetching `GET /executions/{id}`, parsing the transcript, upserting `call_transcripts`) runs via Next.js's `after()` so the webhook response is never held up by the retry budget. Failures inside `after()` are logged — they do not affect the `200`. See [`enrichInboundLead`](#enrichment-entry-points) / [`enrichOutboundCall`](#enrichment-entry-points).
+Bolna fires the webhook **three times per call** as the execution moves through its lifecycle:
 
-### Inbound: `POST /api/webhooks/bolna/leads`
+| # | `status` | `extracted_data` | What we do |
+| --- | --- | --- | --- |
+| 1 | `in-progress` | `null` | Validate, log, return `200 { ignored: "no extracted_data" }` |
+| 2 | `call-disconnected` | `null` | Same — wait for the final fire |
+| 3 | `completed` | populated | **Process** — branch on `telephony_data.call_type` |
 
-### Payload
+The early-return on missing `extracted_data` is what keeps Bolna from retrying the prelim events forever. The route never inserts partial state from those.
 
-At minimum the route expects:
+### Payload schema — [src/lib/bolna/extract.ts](../src/lib/bolna/extract.ts)
 
-```json
-{
-  "extracted_data": {
-    "lead_data": {
-      "business_slug":          { "subjective": "acme-motors", "reasoning_subjective": "Caller said they were calling Acme Motors.", ... },
-      "name":                   { "subjective": "Neem", "reasoning_subjective": "Caller introduced themselves as Neem.", ... },
-      "product":                { "subjective": "Honda Dio 2024", "reasoning_subjective": "Caller asked about the 2024 Dio.", ... },
-      "customer_status":        { "objective":  "Buyer", "reasoning_subjective": "Caller said they want to purchase, not service.", ... },
-      "lead_intent":            { "objective":  "Warm", "reasoning_subjective": "Caller is comparing models — interested but not ready to book.", ... },
-      "connect_on_whatsapp":    { "subjective": "false", ... },
-      "date_and_time_of_visit": { "subjective": "", ... }
-    }
-  },
-  "call_id":           "<optional — used as idempotency key>",
-  "from_phone_number": "<optional — stored on the lead>"
-}
-```
+The same payload schema covers both inbound and outbound — they only differ in `telephony_data.call_type` and which fields the agent populated. Notable points:
 
-Extra top-level keys are allowed and ignored (the full body is stored in `raw_payload`). The top-level `call_id` / `execution_id` / `id` (whichever the provider sends) is stored on the lead as `external_id` — that is the key used to fetch the full execution (transcript + telephony_data) during enrichment.
+- `extracted_data` is **nullable** — required so the prelim events validate.
+- Each field inside `extracted_data.lead_data.<field>` carries `subjective`, `objective`, `reasoning_subjective`, `reasoning_objective`, `confidence`, `confidence_label`, and `validation`. **All of these accept `null`** — the agent leaves the side it didn't pick as `null`, which broke a stricter older schema.
+- Top-level fields we consume: `status`, `user_number` (the caller, on inbound), `transcript`, `summary`, `agent_id`, `conversation_duration` (number, seconds), `created_at`, `updated_at`, `error_message`.
+- `telephony_data.{ to_number, from_number, recording_url, call_type }`.
+- Extra keys are allowed via `passthrough()` and ignored.
 
-### Extraction rules — [src/lib/bolna/extract.ts](../src/lib/bolna/extract.ts)
+### Extraction rules
 
-- For each field, `pickValue()` prefers `subjective`, falls back to `objective`. Empty strings are treated as absent.
+- For each `lead_data` field, `pickValue()` prefers `subjective`, falls back to `objective`. Empty strings are treated as absent.
+- `lead_data.product` → `leads.interest`. The webhook payload still uses `product` for backward compatibility.
+- `lead_data.actionable.subjective` → `leads.actionable` (free-form string the agent extracts describing the next step).
 - `connect_on_whatsapp` is coerced via `toBoolean()` (accepts `true|false|yes|no|1|0`).
-- `date_and_time_of_visit` is coerced via `toTimestamp()` (ISO parseable → stored as UTC ISO; otherwise null).
-- A per-field `confidence` map is captured and written to `leads.confidence`.
-- **Summary (added 2026-04-28):** `buildSummary()` walks every key in `extracted_data.lead_data`, picks the per-field `reasoning_subjective` string, and concatenates them as `<Humanised Field>: <reasoning>` paragraphs separated by a blank line. The result is written to `leads.summary` and surfaced in the lead detail sheet under a "Summary" block. Fields without `reasoning_subjective` are skipped; if no field carries reasoning, `summary` stays `null`. On idempotent retry the upsert overwrites the column — manual edits to `summary` will be replaced if the same `call_id` is re-delivered before any human input.
-- **Phone is *not* in `extracted_data`.** The provider delivers caller metadata separately on the execution record — it lands on the lead via `enrichInboundLead` (see below).
+- `date_and_time_of_visit` is coerced via `toTimestamp()` (parseable ISO → UTC ISO; otherwise null).
+- `lead_intent` is lowercased and matched against the `LeadIntent` enum.
+- A per-field `confidence` map is captured.
+- **Summary**: `buildSummary()` concatenates each field's `reasoning_subjective` as `<Humanised Field>: <reasoning>` paragraphs into `leads.summary`. On idempotent retry the upsert overwrites — manual edits to `summary` will be replaced.
+
+### Inbound flow — `recordInboundCall`
+
+File: [src/lib/bolna/inbound.ts](../src/lib/bolna/inbound.ts).
+
+When `telephony_data.call_type === "inbound"`:
+
+1. **Lead upsert** (admin client) keyed on `(org_slug, external_id)` so retries don't duplicate. Lead fields populated directly from the webhook: `name`, `interest`, `summary`, `customer_status`, `lead_intent`, `actionable`, `wants_to_connect_on_watsapp`, `visit_date_time`, `phone` (from top-level `user_number`), `recording_url` (from `telephony_data.recording_url`), `source: "inbound_call"`.
+2. **Call row upsert** keyed on `(organisation_id, bolna_call_id)`. Fields populated from the webhook: `direction: "inbound"`, `to_phone` (`telephony_data.to_number` — our agent line), `from_phone` (`telephony_data.from_number` — the caller), `agent_id`, `status` (mapped), `duration_seconds` (from `conversation_duration`), `recording_url`, `transcript`, `transcript_status` (`ready` if transcript present, else `skipped`), `started_at` / `ended_at` from the payload's `created_at` / `updated_at`.
+3. **Transcript turns** parsed inline via `parseTranscript()` and bulk-inserted into `call_transcripts` (existing turns deleted first so retries produce a clean set).
+
+The webhook payload has everything we need, so **no executions API roundtrip is required**. The legacy `enrichInboundLead` helper still exists in [src/lib/bolna/enrich.ts](../src/lib/bolna/enrich.ts) but is no longer called from the route.
+
+### Outbound flow — `recordOutboundResult`
+
+File: [src/lib/bolna/outbound.ts](../src/lib/bolna/outbound.ts).
+
+For outbound calls, the call row already exists in our DB — `initiateCall` created it the moment we placed the call. When `telephony_data.call_type === "outbound"`:
+
+1. **Find** the existing call by `bolna_call_id`. If none → `200 { matched: false }` (we didn't initiate it; benign no-op).
+2. **Patch** the call row with `status` (mapped), `duration_seconds`, `recording_url`, `transcript`, `transcript_status`, `transcript_fetched_at`, `ended_at`, `summary`, `error_message`.
+3. **Flow extraction back to the linked lead** — touch only fields the agent populated this turn: `actionable`, `summary`, `recording_url`, `lead_intent`, `customer_status`, `visit_date_time`, `wants_to_connect_on_watsapp`. Phone, name, address etc. are not overwritten.
+4. **Transcript turns** parsed and inserted via the same shared `writeTranscriptTurns()` helper.
+
+This is what turns "Calling …" rows into **Completed** rows on the Conversations page once Bolna delivers the final webhook event.
 
 ### Routing & idempotency
 
-- `business_slug` → lookup on `organisations.slug` via the **admin client** (webhook is not an authenticated user session).
-- If `call_id` / `execution_id` / `id` is present, the row is **upserted** on the unique index `(organisation_id, external_id)`. Retries produce at most one lead row.
-- No id → plain insert. (Enrichment is also skipped in this case — no id means no way to call `GET /executions/{id}`.)
-- After the lead upsert, the route schedules `enrichInboundLead` via `after()`. The enrichment job:
-  1. Resolves the org's API key.
-  2. Fetches `GET /executions/{external_id}` with retry.
-  3. Writes `telephony_data.to_number` to `leads.phone`.
-  4. Upserts a `calls` row (`direction='inbound'`).
-  5. Parses the transcript blob and populates `call_transcripts` turns.
-  6. Updates `calls.transcript_status` to `ready` / `skipped` / `failed`.
-  Failures are logged; the webhook response is already `200`.
+- Inbound `business_slug` → lookup on `organisations.slug` via the **admin client** (webhook is not an authenticated session).
+- Outbound: org is implied by the existing call row's `organisation_id` — no slug needed.
+- Lead upsert keyed on `(org_slug, external_id)`. Call upsert keyed on `(organisation_id, bolna_call_id)`. Both retries produce at most one row.
 
 ### Responses
 
 | Status | When |
 | --- | --- |
-| `200` | Lead inserted/upserted — body `{ "id": "<lead id>" }` |
-| `400` | Invalid JSON / schema / missing `business_slug` |
-| `401` | Missing or wrong signature |
-| `404` | No organisation matches the slug (Bolna will **not** retry) |
-| `500` | Supabase lookup/insert failed (Bolna will retry) |
+| `200 { ok: true, ignored: "no extracted_data" }` | Prelim event (`in-progress` / `call-disconnected`) |
+| `200 { id: "<lead uuid>" }` | Inbound lead recorded |
+| `200 { ok: true, callId, matched }` | Outbound call updated (or no-op match=false) |
+| `400` | Invalid JSON / schema / missing `business_slug` (inbound) / missing execution id (outbound) |
+| `401` | Missing or wrong secret |
+| `404` | Inbound `business_slug` doesn't match any org |
+| `500` | Supabase lookup/insert/update failed |
 
-### Test the inbound webhook with curl
+### Configuring the webhook in the Bolna dashboard
 
-```bash
-curl -X POST http://localhost:3000/api/webhooks/bolna/leads \
-  -H "Content-Type: application/json" \
-  -H "x-bolna-signature: $BOLNA_WEBHOOK_SECRET" \
-  -d '{
-    "call_id": "test-123",
-    "from_phone_number": "+91-99999-00000",
-    "extracted_data": {
-      "lead_data": {
-        "business_slug": { "subjective": "acme-motors", "confidence": 1 },
-        "name":          { "subjective": "Neem",        "confidence": 0.6 },
-        "product":       { "subjective": "Honda Dio",   "confidence": 0.8 },
-        "lead_intent":   { "objective":  "Warm",        "confidence": 0.7 },
-        "connect_on_whatsapp": { "subjective": "true",  "confidence": 0.9 }
-      }
-    }
-  }'
+Each Bolna agent has its own post-call webhook URL — the same URL is used by inbound and outbound calls from that agent. Open the agent settings (in **Bolna Dashboard → Agent → Analytics → Post Call Tasks** or the equivalent webhook field on your agent), and paste:
+
+```
+https://<your-public-host>/api/webhooks/bolna/leads?secret=<BOLNA_WEBHOOK_SECRET>
 ```
 
-Expected: `200 { "id": "<lead uuid>" }`. The new lead appears at `/leads`.
-
-### Point Bolna at your local server (ngrok)
-
-Bolna can only call public URLs. To test against `localhost:3000`:
+For local dev, expose `localhost:3000` with cloudflared / ngrok / similar:
 
 ```bash
 # in one terminal
 npm run dev
 # in another
-ngrok http 3000
-# copy the https://xxxx.ngrok-free.app URL
+ngrok http 3000        # or: cloudflared tunnel --url http://localhost:3000
+# copy the public https URL
 ```
 
-In the Bolna dashboard → **Agent → Analytics → Post Call Tasks**, paste the full URL with the secret as a query parameter (no header configuration is available in Bolna's UI):
+Then paste `https://<tunnel>/api/webhooks/bolna/leads?secret=<BOLNA_WEBHOOK_SECRET>` into the agent's webhook field.
 
-- Inbound lead: `https://xxxx.ngrok-free.app/api/webhooks/bolna/leads?secret=<BOLNA_WEBHOOK_SECRET>`
-- Call status: `https://xxxx.ngrok-free.app/api/webhooks/bolna/calls?secret=<BOLNA_WEBHOOK_SECRET>`
+**You configure the same URL on every agent** — inbound, outbound, hybrid. Skello dispatches internally on `telephony_data.call_type`. There is no "outbound webhook" you need to wire up separately; the Bolna UI doesn't surface one anyway.
 
-Trigger a test call from the Bolna dashboard; watch the Next.js terminal for the request and the `calls` / `leads` table for the new row.
+> **Why a query string?** Bolna's UI doesn't let you add custom headers, so the server accepts the secret either via `x-bolna-signature` header (for curl) or `?secret=…` query string (for Bolna). Rotate the secret if it ever leaks — proxy logs and referrers can capture URLs.
 
-> **Why a query string?** Bolna's current UI doesn't let you add custom headers, so the server accepts the secret either via `x-bolna-signature` header (for curl) or `?secret=…` query string (for Bolna). Rotate the secret if it ever leaks — logs and referrers can capture URLs.
+### Test inbound with curl
 
-### Outbound: `POST /api/webhooks/bolna/calls`
+PowerShell (use `Invoke-RestMethod` — `curl` is an alias for `Invoke-WebRequest` and chokes on bash-style line continuation):
 
-Fired by the provider when a call's status changes (ringing → in_progress → completed, or failed). When the mapped status is `completed`, the route schedules `enrichOutboundCall` via `after()` to fetch and store the transcript.
-
-**Expected payload (subset — extra keys allowed):**
-
-```json
+```powershell
+$body = @'
 {
-  "call_id":          "bolna-uuid",
-  "status":           "completed",
-  "started_at":       "2026-04-22T10:00:00Z",
-  "answered_at":      "2026-04-22T10:00:04Z",
-  "ended_at":         "2026-04-22T10:02:30Z",
-  "duration_seconds": 146,
-  "recording_url":    "https://.../rec.mp3",
-  "transcript_url":   "https://.../transcript.txt",
-  "summary":          "Lead confirmed visit on Saturday.",
-  "error_code":       null,
-  "error_message":    null
+  "id": "test-exec-001",
+  "status": "completed",
+  "user_number": "+919999900000",
+  "agent_id": "agent-uuid",
+  "conversation_duration": 12.5,
+  "created_at": "2026-04-29T10:00:00Z",
+  "updated_at": "2026-04-29T10:00:13Z",
+  "transcript": "assistant: Hello\nuser: hi",
+  "telephony_data": {
+    "call_type": "inbound",
+    "from_number": "+919999900000",
+    "to_number": "+918000000000",
+    "recording_url": "https://example.com/rec.mp3"
+  },
+  "extracted_data": {
+    "lead_data": {
+      "business_slug": { "subjective": "acme-motors", "confidence": 1 },
+      "name":          { "subjective": "Neem",        "confidence": 0.6 },
+      "product":       { "subjective": "Honda Dio",   "confidence": 0.8 },
+      "lead_intent":   { "objective":  "Warm",        "confidence": 0.7 },
+      "connect_on_whatsapp": { "subjective": "true",  "confidence": 0.9 },
+      "actionable":    { "subjective": "Send brochure on WhatsApp" }
+    }
+  }
 }
+'@
+
+Invoke-RestMethod `
+  -Uri "http://localhost:3000/api/webhooks/bolna/leads?secret=$env:BOLNA_WEBHOOK_SECRET" `
+  -Method POST -ContentType "application/json" -Body $body
 ```
 
-**Status mapping** (case-insensitive): `initiated|queued` → `initiated`, `ringing` → `ringing`, `answered|in_progress|in-progress` → `in_progress`, `completed|ended` → `completed`, `no_answer|no-answer`, `busy`, `canceled|cancelled`, `failed`.
-
-**Responses:**
-
-| Status | When |
-| --- | --- |
-| `200` | Call updated — body `{ "id": "<call uuid>", "status": "<mapped>" }` |
-| `400` | Invalid JSON / schema / missing `call_id` / unknown status |
-| `401` | Missing or wrong signature |
-| `404` | No call with that `bolna_call_id` (already deleted, or call was initiated elsewhere) |
-| `500` | Supabase update failed (Bolna will retry) |
-
-### Test the outbound webhook end-to-end
-
-1. **Configure** Bolna in Settings (see previous section).
-2. **Create or pick a lead** with a phone number at `/leads`.
-3. **Click the phone icon** on the lead row. The toast should say "Calling <name>…". A row appears in `public.calls` with `status = 'initiated'` and a `bolna_call_id`.
-4. **Watch the call complete** in Bolna's dashboard, or simulate the webhook manually:
-
-   ```bash
-   curl -X POST http://localhost:3000/api/webhooks/bolna/calls \
-     -H "Content-Type: application/json" \
-     -H "x-bolna-signature: $BOLNA_WEBHOOK_SECRET" \
-     -d '{
-       "call_id":          "<paste bolna_call_id from the DB>",
-       "status":           "completed",
-       "answered_at":      "2026-04-22T10:00:04Z",
-       "ended_at":         "2026-04-22T10:02:30Z",
-       "duration_seconds": 146,
-       "summary":          "Test: lead confirmed demo Saturday."
-     }'
-   ```
-
-   Expected: `200 { "id": "<call uuid>", "status": "completed" }`, and the matching `calls` row now has `status = 'completed'` with the duration and summary populated.
-
-5. **Negative test — wrong signature:**
-   ```bash
-   curl -X POST http://localhost:3000/api/webhooks/bolna/calls \
-     -H "Content-Type: application/json" \
-     -H "x-bolna-signature: nope" \
-     -d '{"call_id":"x","status":"completed"}'
-   # → 401 Unauthorized
-   ```
-
-6. **Negative test — unknown call id:** use a `call_id` that doesn't exist → `404`. Bolna will retry; fix the mismatch (usually a typo or a call started against a different environment).
-
-### Local-only manual test without Bolna
-
-You don't need Bolna set up to smoke the DB path end-to-end:
+Bash:
 
 ```bash
-# 1. Insert a fake integration row (run in Supabase SQL editor; ORG_ID is real):
-insert into public.bolna_integrations (organisation_id, agent_id, api_key)
-values ('<ORG_ID>', 'fake-agent', 'sk-fake')
-on conflict (organisation_id) do update set agent_id = excluded.agent_id;
-
-# 2. Point the client at a local mock:
-export BOLNA_API_BASE_URL=http://localhost:4000
-# and run any tiny server on :4000 that replies { "call_id": "mock-1", "status": "initiated" }.
-
-# 3. Click "Call" on a lead in the UI. A calls row should be created.
-# 4. Then POST to /api/webhooks/bolna/calls with call_id=mock-1, status=completed.
+curl -X POST http://localhost:3000/api/webhooks/bolna/leads \
+  -H "Content-Type: application/json" \
+  -H "x-bolna-signature: $BOLNA_WEBHOOK_SECRET" \
+  -d @inbound-test.json
 ```
+
+Expected: `200 { id: "<lead uuid>" }`. Lead appears at `/leads`, call appears at `/conversations`.
+
+### Test outbound end-to-end
+
+1. **Configure** the agent's post-call webhook to `…/api/webhooks/bolna/leads?secret=…` in the Bolna dashboard.
+2. **Pick a lead** with a phone number at `/leads`.
+3. **Click the phone icon** on the lead row. A row appears in `public.calls` with `status = 'initiated'` and a `bolna_call_id`.
+4. **Wait** for the call to complete. After Bolna fires the final `completed` event you should see:
+
+   ```
+   [bolna webhook] POST received
+   [outbound] updating call { callId, externalId, status: 'completed', durationSeconds, hasTranscript: true, hasRecording: true }
+   POST /api/webhooks/bolna/leads ... 200 in ...
+   ```
+
+5. The conversations page now shows the row as **Completed** with duration, **Audio → Play** linking the recording, and the transcript dialog populated when you click the row.
+
+If you see `[outbound] no matching call for execution …` — that means we don't have a call with that `bolna_call_id`. Most often the agent fired the webhook for a call we didn't initiate (manual test from the Bolna dashboard, calls placed against a different env, etc.).
+
+---
+
+## Realtime
+
+Two client hooks subscribe to Supabase Postgres CHANGES so the UI auto-refreshes without a manual reload:
+
+| Hook | File | Subscribed table | Filter | Used by |
+| --- | --- | --- | --- | --- |
+| `useLeadsRealtime(orgSlug)` | [src/hooks/use-leads-realtime.ts](../src/hooks/use-leads-realtime.ts) | `public.leads` | `org_slug=eq.<slug>` | `LeadsTable` |
+| `useCallsRealtime(orgId)` | [src/hooks/use-calls-realtime.ts](../src/hooks/use-calls-realtime.ts) | `public.calls` | `organisation_id=eq.<id>` | `ConversationsTable` |
+
+Both hooks debounce events by 350 ms and call `router.refresh()` on the trailing edge — the existing server-side filter / sort / pagination stay authoritative; we just re-render. Burst inserts (CSV imports, status-transition fan-out) coalesce into a single round-trip.
+
+> **Realtime publication.** Both tables must be in the `supabase_realtime` publication. Verify with `select * from pg_publication_tables where pubname = 'supabase_realtime';`. Add a missing one with `alter publication supabase_realtime add table public.calls;` (or via the Supabase dashboard). RLS still gates which events the client receives — the channel filter is a performance hint, not a security boundary.
 
 ---
 

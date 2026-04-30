@@ -26,21 +26,19 @@ import { LeadDetailSheet } from "@/components/app/lead-detail-sheet";
 import { ReminderDialog } from "@/components/app/reminder-dialog";
 import { WhatsAppDialog } from "@/components/app/whatsapp-dialog";
 import { WhatsAppIcon } from "@/components/brand/whatsapp-icon";
-import {
-  deleteLead,
-  toggleLeadPendingAction,
-} from "@/actions/leads";
+import { deleteLead, toggleLeadPendingAction } from "@/actions/leads";
 import { initiateCall } from "@/actions/calls";
 import { formatDateTime, formatRelative } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { useClientNow } from "@/hooks/use-client-now";
+import { useLeadsRealtime } from "@/hooks/use-leads-realtime";
 import type { Lead, LeadIntent } from "@/types/lead";
 
 // Hot stays destructive (red). Warm uses an amber/yellow chip. Cold uses our
 // brand primary so a "cold" lead reads as the baseline state, not as muted.
 const INTENT_CLASSES: Record<LeadIntent, string> = {
   hot: "border-transparent bg-destructive/10 text-destructive dark:bg-destructive/20",
-  warm:
-    "border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300",
+  warm: "border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300",
   cold: "border-transparent bg-primary text-primary-foreground",
 };
 
@@ -50,13 +48,158 @@ const INTENT_LABEL: Record<LeadIntent, string> = {
   cold: "Cold",
 };
 
+// Column metadata drives both <colgroup> widths and the resize handles. Order
+// here must match the visual order of <th>/<td> pairs below.
+const COLUMN_KEYS = [
+  "name",
+  "phone",
+  "interest",
+  "customer_type",
+  "visit",
+  "created",
+  "intent",
+  "actionable",
+  "pending_action",
+  "actions",
+] as const;
+type ColumnKey = (typeof COLUMN_KEYS)[number];
+
+const DEFAULT_WIDTHS: Record<ColumnKey, number> = {
+  name: 200,
+  phone: 180,
+  interest: 160,
+  customer_type: 160,
+  visit: 160,
+  created: 140,
+  intent: 100,
+  actionable: 240,
+  pending_action: 160,
+  actions: 180,
+};
+
+const MIN_COLUMN_WIDTH = 80;
+const COLUMN_WIDTH_STORAGE_KEY = "skello.leads-table.col-widths.v1";
+
+function useColumnWidths() {
+  const [widths, setWidths] =
+    React.useState<Record<ColumnKey, number>>(DEFAULT_WIDTHS);
+
+  // Hydrate from localStorage on the client only — SSR has no window.
+  React.useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(COLUMN_WIDTH_STORAGE_KEY);
+      if (!stored) return;
+      const parsed = JSON.parse(stored) as unknown;
+      if (!parsed || typeof parsed !== "object") return;
+      const next: Record<ColumnKey, number> = { ...DEFAULT_WIDTHS };
+      for (const key of COLUMN_KEYS) {
+        const value = (parsed as Record<string, unknown>)[key];
+        if (typeof value === "number" && Number.isFinite(value)) {
+          next[key] = Math.max(MIN_COLUMN_WIDTH, Math.round(value));
+        }
+      }
+      setWidths(next);
+    } catch {
+      // Corrupt entry — ignore, defaults are fine.
+    }
+  }, []);
+
+  const setWidth = React.useCallback((key: ColumnKey, width: number) => {
+    setWidths((prev) => {
+      const next = {
+        ...prev,
+        [key]: Math.max(MIN_COLUMN_WIDTH, Math.round(width)),
+      };
+      try {
+        window.localStorage.setItem(
+          COLUMN_WIDTH_STORAGE_KEY,
+          JSON.stringify(next),
+        );
+      } catch {
+        // Quota or denied storage — non-fatal.
+      }
+      return next;
+    });
+  }, []);
+
+  const totalWidth = COLUMN_KEYS.reduce((sum, k) => sum + widths[k], 0);
+  return { widths, setWidth, totalWidth };
+}
+
+function ColumnResizer({
+  columnKey,
+  getWidth,
+  setWidth,
+}: {
+  columnKey: ColumnKey;
+  getWidth: () => number;
+  setWidth: (key: ColumnKey, width: number) => void;
+}) {
+  const startXRef = React.useRef(0);
+  const startWidthRef = React.useRef(0);
+  const [dragging, setDragging] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!dragging) return;
+    const previousCursor = document.body.style.cursor;
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function onMove(e: MouseEvent) {
+      const delta = e.clientX - startXRef.current;
+      setWidth(columnKey, startWidthRef.current + delta);
+    }
+    function stopDrag() {
+      setDragging(false);
+    }
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", stopDrag);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", stopDrag);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelect;
+    };
+  }, [dragging, columnKey, setWidth]);
+
+  return (
+    <span
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize column"
+      onMouseDown={(e) => {
+        // Don't open the row, don't bubble to <th>.
+        e.preventDefault();
+        e.stopPropagation();
+        startXRef.current = e.clientX;
+        startWidthRef.current = getWidth();
+        setDragging(true);
+      }}
+      onClick={(e) => e.stopPropagation()}
+      className={cn(
+        "absolute right-0 top-1/4 z-10 h-1/2 w-1.5 cursor-col-resize select-none rounded-full bg-border transition-colors hover:bg-primary/60",
+        dragging && "bg-primary hover:bg-primary",
+      )}
+    />
+  );
+}
+
 interface LeadsTableProps {
   leads: Lead[];
   organisationId: string;
+  orgSlug: string;
 }
 
-export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
+export function LeadsTable({
+  leads,
+  organisationId,
+  orgSlug,
+}: LeadsTableProps) {
+  const { widths, setWidth, totalWidth } = useColumnWidths();
   const router = useRouter();
+  useLeadsRealtime(orgSlug);
   const [waLead, setWaLead] = React.useState<Lead | null>(null);
   const [waOpen, setWaOpen] = React.useState(false);
   const [reminderLead, setReminderLead] = React.useState<Lead | null>(null);
@@ -70,7 +213,8 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
   // Always read the freshest lead from the prop array so the sheet stays in
   // sync after router.refresh() (e.g., after Mark-done re-runs).
   const detailLead = React.useMemo(
-    () => (detailLeadId ? leads.find((l) => l.id === detailLeadId) ?? null : null),
+    () =>
+      detailLeadId ? (leads.find((l) => l.id === detailLeadId) ?? null) : null,
     [leads, detailLeadId],
   );
 
@@ -139,8 +283,8 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
         </span>
         <p className="text-base font-medium">No leads yet</p>
         <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
-          Inbound calls captured by your voice agent will appear here. You
-          can also add a lead manually from the top right.
+          Inbound calls captured by your voice agent will appear here. You can
+          also add a lead manually from the top right.
         </p>
       </Card>
     );
@@ -150,18 +294,101 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
     <>
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
+          <table
+            style={{ width: totalWidth, tableLayout: "fixed" }}
+            className="text-left text-sm"
+          >
+            <colgroup>
+              {COLUMN_KEYS.map((key) => (
+                <col key={key} style={{ width: widths[key] }} />
+              ))}
+            </colgroup>
             <thead className="border-b border-border/60 bg-muted/30">
               <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                <th scope="col" className="px-5 py-4 font-medium">Lead Name</th>
-                <th scope="col" className="px-5 py-4 font-medium">Phone</th>
-                <th scope="col" className="w-32 px-5 py-4 font-medium">Interest</th>
-                <th scope="col" className="px-5 py-4 font-medium">Customer Type</th>
-                <th scope="col" className="px-5 py-4 font-medium">Visit</th>
-                <th scope="col" className="px-5 py-4 font-medium">Created</th>
-                <th scope="col" className="px-5 py-4 font-medium">Intent</th>
-                <th scope="col" className="px-5 py-4 font-medium">Pending Action</th>
-                <th scope="col" className="px-5 py-4 text-right font-medium">Actions</th>
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Lead Name
+                  <ColumnResizer
+                    columnKey="name"
+                    getWidth={() => widths.name}
+                    setWidth={setWidth}
+                  />
+                </th>
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Phone
+                  <ColumnResizer
+                    columnKey="phone"
+                    getWidth={() => widths.phone}
+                    setWidth={setWidth}
+                  />
+                </th>
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Interest
+                  <ColumnResizer
+                    columnKey="interest"
+                    getWidth={() => widths.interest}
+                    setWidth={setWidth}
+                  />
+                </th>
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Created
+                  <ColumnResizer
+                    columnKey="created"
+                    getWidth={() => widths.created}
+                    setWidth={setWidth}
+                  />
+                </th>
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Customer Type
+                  <ColumnResizer
+                    columnKey="customer_type"
+                    getWidth={() => widths.customer_type}
+                    setWidth={setWidth}
+                  />
+                </th>
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Visit
+                  <ColumnResizer
+                    columnKey="visit"
+                    getWidth={() => widths.visit}
+                    setWidth={setWidth}
+                  />
+                </th>
+
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Intent
+                  <ColumnResizer
+                    columnKey="intent"
+                    getWidth={() => widths.intent}
+                    setWidth={setWidth}
+                  />
+                </th>
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Actionable
+                  <ColumnResizer
+                    columnKey="actionable"
+                    getWidth={() => widths.actionable}
+                    setWidth={setWidth}
+                  />
+                </th>
+                <th scope="col" className="relative px-5 py-4 font-medium">
+                  Pending Action
+                  <ColumnResizer
+                    columnKey="pending_action"
+                    getWidth={() => widths.pending_action}
+                    setWidth={setWidth}
+                  />
+                </th>
+                <th
+                  scope="col"
+                  className="relative px-5 py-4 text-right font-medium"
+                >
+                  Actions
+                  <ColumnResizer
+                    columnKey="actions"
+                    getWidth={() => widths.actions}
+                    setWidth={setWidth}
+                  />
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
@@ -187,7 +414,10 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                     className="group cursor-pointer align-middle transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
                   >
                     <td className="px-5 py-5">
-                      <span className="block truncate text-sm font-medium">
+                      <span
+                        className="block truncate text-sm font-medium"
+                        title={lead.name ?? undefined}
+                      >
                         {lead.name ?? "Unnamed lead"}
                       </span>
                     </td>
@@ -196,25 +426,38 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                         <a
                           href={`tel:${lead.phone}`}
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+                          title={lead.phone ?? undefined}
+                          className="flex items-center gap-1.5 truncate font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
                         >
-                          <PhoneIcon className="size-3.5" />
-                          {lead.phone}
+                          <PhoneIcon className="size-3.5 shrink-0" />
+                          <span className="truncate">{lead.phone}</span>
                         </a>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-xs italic text-muted-foreground">
-                          <PhoneIcon className="size-3.5" />
+                          <PhoneIcon className="size-3.5 shrink-0" />
                           No phone
                         </span>
                       )}
                     </td>
                     <td className="px-5 py-5 text-sm text-muted-foreground">
-                      <span className="block max-w-32 truncate">
+                      <span
+                        className="block truncate"
+                        title={lead.interest ?? undefined}
+                      >
                         {lead.interest ?? "—"}
                       </span>
                     </td>
+                    <td
+                      className="px-5 py-5 text-xs text-muted-foreground"
+                      suppressHydrationWarning
+                    >
+                      {now === null ? "" : formatRelative(lead.created_at, now)}
+                    </td>
                     <td className="px-5 py-5 text-sm text-muted-foreground">
-                      <span className="block max-w-40 truncate">
+                      <span
+                        className="block truncate"
+                        title={lead.customer_status ?? undefined}
+                      >
                         {lead.customer_status ?? "—"}
                       </span>
                     </td>
@@ -226,16 +469,19 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                         ? formatDateTime(lead.visit_date_time)
                         : "—"}
                     </td>
-                    <td
-                      className="px-5 py-5 text-xs text-muted-foreground"
-                      suppressHydrationWarning
-                    >
-                      {now === null ? "" : formatRelative(lead.created_at, now)}
-                    </td>
+
                     <td className="px-5 py-5">
                       <Badge className={INTENT_CLASSES[intent]}>
                         {INTENT_LABEL[intent]}
                       </Badge>
+                    </td>
+                    <td className="px-5 py-5 text-sm text-muted-foreground">
+                      <span
+                        className="block truncate"
+                        title={lead.actionable ?? undefined}
+                      >
+                        {lead.actionable ?? "—"}
+                      </span>
                     </td>
                     <td
                       className="px-5 py-5"
@@ -288,7 +534,9 @@ export function LeadsTable({ leads, organisationId }: LeadsTableProps) {
                           onClick={() => openWhatsApp(lead)}
                           disabled={!hasPhone}
                           aria-label="WhatsApp"
-                          title={hasPhone ? "Open WhatsApp" : "No phone on file"}
+                          title={
+                            hasPhone ? "Open WhatsApp" : "No phone on file"
+                          }
                         >
                           <WhatsAppIcon className="size-4" />
                         </Button>

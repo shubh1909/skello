@@ -38,4 +38,6 @@ export interface Lead {
   notes: string | null;
   city: string | null;
   pincode: string | null;
+  actionable: string | null;
+  recording_url: string | null;
 }

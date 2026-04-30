@@ -129,7 +129,7 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
           {callsResult.error}
         </Card>
       ) : (
-        <ConversationsTable calls={calls} />
+        <ConversationsTable calls={calls} organisationId={orgId} />
       )}
     </div>
   );
