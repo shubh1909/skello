@@ -106,12 +106,12 @@ export function extractLead(
     if (typeof field?.confidence === "number") confidence[key] = field.confidence;
   }
 
-  // Bolna's webhook still emits `product` for backward compatibility; we map
-  // it onto our `interest` column at the extraction boundary.
+  // Accept either `interest` (current agent schema) or `product` (legacy
+  // agents) as the source field — we map both onto the `interest` column.
   return {
     business_slug: pickValue(ld.business_slug),
     name: pickValue(ld.name),
-    interest: pickValue(ld.product),
+    interest: pickValue(ld.interest) ?? pickValue(ld.product),
     customer_status: pickValue(ld.customer_status),
     lead_intent: pickValue(ld.lead_intent),
     actionable: pickValue(ld.actionable),
