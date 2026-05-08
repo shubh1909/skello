@@ -1,6 +1,6 @@
 import { LockedCard } from "@/components/app/locked-card";
 
-export const metadata = { title: "Developer · Skello" };
+export const metadata = { title: "Developer · Skelo" };
 
 export default function DeveloperPage() {
   return (

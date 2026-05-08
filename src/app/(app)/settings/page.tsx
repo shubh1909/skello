@@ -6,7 +6,7 @@ import { VoiceAgentStatusCard } from "@/components/app/voice-agent-status-card";
 import { getBolnaIntegration } from "@/actions/bolna-integrations";
 import { requireSession } from "@/lib/auth/session";
 
-export const metadata = { title: "Settings · Skello" };
+export const metadata = { title: "Settings · Skelo" };
 
 export default async function SettingsPage() {
   const session = await requireSession();

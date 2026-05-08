@@ -1,8 +1,8 @@
-# Skello
+# Skelo
 
 ## Project Overview
 
-Skello is a high-performance, multi-tenant CRM designed for scale. This project prioritizes security, modularity, and a "Digital Showroom" aesthetic.
+Skelo is a high-performance, multi-tenant CRM designed for scale. This project prioritizes security, modularity, and a "Digital Showroom" aesthetic.
 
 ## Tech Stack
 
@@ -37,7 +37,7 @@ Maintain this hierarchy to ensure a strict Separation of Concerns:
 ### 2. Bespoke Engineering Only
 
 - **No Off-The-Shelf:** Strictly avoid recommending Shopify, WordPress, or similar third-party builders.
-- **Custom DNA:** Every module is built specifically for the Skello ecosystem.
+- **Custom DNA:** Every module is built specifically for the Skelo ecosystem.
 
 ### 3. Component Strategy
 
@@ -85,16 +85,16 @@ Migration files live under `supabase/migrations/`; [docs/api.md § Setup & Envir
 ## Branding & Provider Naming
 
 - **No third-party telephony vendor is ever named in the product.** User-facing copy, labels, tooltips, toasts, docs, and marketing pages refer to the feature as **"voice agent"** (lowercase in running copy, **"Voice Agent"** in titles). Never expose the vendor's brand in the CRM UI.
-- When discussing the feature externally, say "Skello's voice agent" or "voice agent integration" — not the underlying provider.
+- When discussing the feature externally, say "Skelo's voice agent" or "voice agent integration" — not the underlying provider.
 - This applies to new code, UI copy, error messages, marketing, and all documentation that ships with the product. Internal engineering comments, debug logs, and code identifiers are exempt (we may still reference the current provider internally for clarity), but those must not leak into anything a user can read.
 
 ## Third-Party Integrations
 
 ### Voice Agent (Telephony Provider)
 
-Skello is provider-agnostic at the product layer. A pluggable telephony provider powers the voice-driven lead pipeline.
+Skelo is provider-agnostic at the product layer. A pluggable telephony provider powers the voice-driven lead pipeline.
 
-- **Inbound Lead Capture:** The provider sends call transcripts, caller metadata, and extracted lead fields to a Skello webhook. The webhook persists the lead under the correct `organization_id` (see Law #1).
+- **Inbound Lead Capture:** The provider sends call transcripts, caller metadata, and extracted lead fields to a Skelo webhook. The webhook persists the lead under the correct `organization_id` (see Law #1).
 - **Outbound Call Initiation:** Server Actions trigger the provider's API to place outbound calls (follow-ups, nurture sequences, verification). Call status updates flow back via webhook.
 - **Implementation Location (internal):**
   - Provider client + API wrappers → `services/<provider>/` (current: `services/bolna/`)

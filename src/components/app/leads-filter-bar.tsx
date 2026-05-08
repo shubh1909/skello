@@ -67,6 +67,9 @@ export function LeadsFilterBar({
     } else {
       next.set(key, value);
     }
+    // Filter changes invalidate the current page — drop back to page 1 so
+    // users don't land on an empty paginated tail after narrowing results.
+    next.delete("page");
     startTransition(() => {
       router.replace(`${pathname}?${next.toString()}`, { scroll: false });
     });

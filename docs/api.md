@@ -1,4 +1,4 @@
-# Skello Backend API Reference
+# Skelo Backend API Reference
 
 All mutations and queries live in Server Actions under [src/actions/](../src/actions/). External integrations (current telephony provider — see the Voice Agent section) come in through Route Handlers under [src/app/api/](../src/app/api/). User-facing strings always say **"voice agent"** — see [CLAUDE.md](../CLAUDE.md) → *Branding & Provider Naming*.
 
@@ -19,10 +19,11 @@ All mutations and queries live in Server Actions under [src/actions/](../src/act
 9. [Calls](#calls)
 10. [Call Transcripts](#call-transcripts)
 11. [Voice Agent Webhooks](#voice-agent-webhooks)
-12. [Realtime](#realtime)
-13. [Analytics](#analytics)
-14. [Admin Console](#admin-console)
-15. [Security Model](#security-model)
+12. [Campaigns (Bulk Outbound)](#campaigns-bulk-outbound)
+13. [Realtime](#realtime)
+14. [Analytics](#analytics)
+15. [Admin Console](#admin-console)
+16. [Security Model](#security-model)
 
 ---
 
@@ -73,9 +74,10 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
 SUPABASE_SERVICE_ROLE_KEY=<service_role_key>   # server-only, never exposed
 BOLNA_WEBHOOK_SECRET=<shared_secret>           # for webhook signature check (inbound + call-status)
 BOLNA_API_BASE_URL=https://api.bolna.ai        # optional — override for testing / self-host
+CRON_SECRET=<shared_secret>                    # campaigns cron drainer; must match the value stored in Supabase Vault as `campaigns_cron_secret`
 ```
 
-> Provider **API keys** are **per-organisation** — stored in the `bolna_integrations` table and configured by each org admin in Settings. Skello itself does not hold a global provider key. The environment variable names above still reference `BOLNA_*` because that is the current provider; rename if you later abstract the service directory.
+> Provider **API keys** are **per-organisation** — stored in the `bolna_integrations` table and configured by each org admin in Settings. Skelo itself does not hold a global provider key. The environment variable names above still reference `BOLNA_*` because that is the current provider; rename if you later abstract the service directory.
 
 ### Supabase clients
 
@@ -111,6 +113,8 @@ Migrations:
 - `20260427000000_leads_rename_columns_and_summary.sql` — renames `leads.product` → `interest`; adds `summary text`; renames `contacted_on_watsapp` → `pending_action` and inverts the semantics (true = action still owed) with a default of `true`. Existing rows are flipped (`old true` → `false`, `old false/null` → `true`). The Status column was hidden from the leads table UI in the same change; the column itself is unchanged.
 - `20260428000000_calls_full_bolna_call_id_unique.sql` — promotes the partial unique index `calls (organisation_id, bolna_call_id) where bolna_call_id is not null` to a **full** unique constraint. PostgREST's `.upsert(..., { onConflict: "organisation_id,bolna_call_id" })` does not echo a partial-index `WHERE` clause, so the partial form raised `42P10 there is no unique or exclusion constraint matching the ON CONFLICT specification`. PostgreSQL still treats each NULL as distinct in unique constraints, so failed-before-dispatch call rows with NULL `bolna_call_id` continue to coexist.
 - `20260429000000_leads_actionable_and_recording.sql` — `leads.actionable text` (≤1000 chars) and `leads.recording_url text` (≤2000 chars), both nullable. `actionable` is a free-form string the agent extracts describing the concrete next step; `recording_url` points at the latest call recording on the provider's storage so operators can reach the audio without joining `calls`.
+- `20260508000000_campaigns.sql` — bulk outbound calling. New tables `campaigns` (per-batch row with retry config + denormalized counters) and `campaign_contacts` (one row per CSV phone). `calls` gains a nullable `campaign_contact_id uuid` FK so the existing dial pipeline can carry campaign provenance with no other changes. RLS on both new tables follows the `calls` pattern (own-org SELECT/INSERT/UPDATE/DELETE). An AFTER trigger on `campaign_contacts` keeps the counters fresh and auto-flips the parent campaign to `completed` once nothing remains pending or in-flight. Both tables are added to the `supabase_realtime` publication.
+- `20260508000001_campaigns_cron.sql` — companion migration. Enables `pg_cron` and `pg_net`, creates `public.campaigns_cron_tick()` (a `security definer` function that reads the cron URL and shared secret from **Supabase Vault** under names `campaigns_cron_target_url` and `campaigns_cron_secret`), and schedules `campaign-tick` to run every minute. Apply only after enabling the two extensions in the Supabase dashboard, and after running `select vault.create_secret(...)` for both names. The function is a no-op until both secrets are present, so the migration is safe to apply ahead of secret creation.
 
 ---
 
@@ -406,7 +410,7 @@ Session-authed (not a webhook). The organisation slug is resolved from the calle
 
 | Status | Body |
 | --- | --- |
-| `200` | `text/csv; charset=utf-8` — `Content-Disposition: attachment; filename="skello-leads-<range>-<YYYY-MM-DD>.csv"` |
+| `200` | `text/csv; charset=utf-8` — `Content-Disposition: attachment; filename="skelo-leads-<range>-<YYYY-MM-DD>.csv"` |
 | `400` | `{ error: "Invalid range. Use today, yesterday, last_week, last_month, or all." }` |
 | `500` | `{ error: "<supabase message>" }` |
 
@@ -549,7 +553,7 @@ Removes the integration. Outbound calls will fail with `"Voice agent not configu
 
 ### Testing the integration from Settings
 
-1. Log into Skello as an org owner.
+1. Log into Skelo as an org owner.
 2. Navigate to **Settings → Voice agent integration**.
 3. Paste the agent ID and API key from your voice agent provider's dashboard → **Connect voice agent**.
 4. The card should flip to **Connected**. The api_key field clears; the placeholder shows `sk-••••<last 4>` as confirmation.
@@ -766,7 +770,7 @@ else setTurns(res.data);
 
 ### One unified endpoint (2026-04-28 redesign)
 
-The provider's agent dashboard exposes **one** post-call webhook URL per agent — it fires for every call from that agent regardless of direction. Skello uses a single endpoint for both inbound and outbound flows and dispatches internally on `telephony_data.call_type`.
+The provider's agent dashboard exposes **one** post-call webhook URL per agent — it fires for every call from that agent regardless of direction. Skelo uses a single endpoint for both inbound and outbound flows and dispatches internally on `telephony_data.call_type`.
 
 | Route | File | Purpose |
 | --- | --- | --- |
@@ -880,7 +884,7 @@ ngrok http 3000        # or: cloudflared tunnel --url http://localhost:3000
 
 Then paste `https://<tunnel>/api/webhooks/bolna/leads?secret=<BOLNA_WEBHOOK_SECRET>` into the agent's webhook field.
 
-**You configure the same URL on every agent** — inbound, outbound, hybrid. Skello dispatches internally on `telephony_data.call_type`. There is no "outbound webhook" you need to wire up separately; the Bolna UI doesn't surface one anyway.
+**You configure the same URL on every agent** — inbound, outbound, hybrid. Skelo dispatches internally on `telephony_data.call_type`. There is no "outbound webhook" you need to wire up separately; the Bolna UI doesn't surface one anyway.
 
 > **Why a query string?** Bolna's UI doesn't let you add custom headers, so the server accepts the secret either via `x-bolna-signature` header (for curl) or `?secret=…` query string (for Bolna). Rotate the secret if it ever leaks — proxy logs and referrers can capture URLs.
 
@@ -953,6 +957,247 @@ If you see `[outbound] no matching call for execution …` — that means we don
 
 ---
 
+## Campaigns (Bulk Outbound)
+
+Files:
+- Action: [src/actions/campaigns.ts](../src/actions/campaigns.ts)
+- Validation: [src/lib/validations/campaign.ts](../src/lib/validations/campaign.ts)
+- Type: [src/types/campaign.ts](../src/types/campaign.ts)
+- Client CSV parser: [src/lib/campaigns/csv-parse.ts](../src/lib/campaigns/csv-parse.ts) (PapaParse wrapper)
+- Webhook post-step: [src/lib/campaigns/outcome.ts](../src/lib/campaigns/outcome.ts)
+- Cron drainer: [src/app/api/cron/campaigns/tick/route.ts](../src/app/api/cron/campaigns/tick/route.ts)
+- Results CSV export: [src/app/api/campaigns/[id]/export/route.ts](../src/app/api/campaigns/[id]/export/route.ts)
+- UI: [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx), [src/components/app/campaign-upload-dialog.tsx](../src/components/app/campaign-upload-dialog.tsx), [src/components/app/campaigns-table.tsx](../src/components/app/campaigns-table.tsx), [src/components/app/campaign-call-log-sheet.tsx](../src/components/app/campaign-call-log-sheet.tsx)
+
+A campaign is a CSV upload of phone numbers + a retry config. Skelo dials each contact through the org's existing voice agent (the same `initiateBolnaCall` primitive used by single-lead dials), and re-arms failures up to a user-set cap.
+
+### Live tables
+
+`public.campaigns` (one row per uploaded batch, tenant-scoped by `organisation_id`):
+
+```
+id, organisation_id, created_by,
+name, file_name,
+agent_id,                                -- nullable; falls back to bolna_integrations.agent_id
+status (text check:
+  draft | scheduled | in_progress | paused | stopped | completed | failed),
+scheduled_at,                            -- when "Schedule" was picked; null = run-now
+started_at, completed_at,
+
+-- Retry config (snapshot at upload, immutable for the batch):
+max_attempts (smallint, 1..6),           -- 1 initial + up to 5 retries
+retry_interval_seconds (int, 60..86400),
+retry_on (text[], subset of { no_answer, busy, failed, canceled }),
+
+-- Denormalized counters maintained by AFTER trigger on campaign_contacts:
+total_contacts, valid_contacts,
+succeeded_count, failed_count, in_flight_count,
+
+created_at, updated_at
+```
+
+`public.campaign_contacts` (one row per CSV phone; lifecycle pending → in_flight → succeeded/failed/skipped):
+
+```
+id, campaign_id, organisation_id,
+raw_phone,                               -- as uploaded (e.g. "+91-99999 00000")
+phone,                                   -- digits only, dedupe key (5..32)
+name, metadata (jsonb),                  -- extra CSV columns → passed to Bolna user_data
+status (text check:
+  pending | in_flight | succeeded | failed | skipped),
+attempt (smallint, default 0),
+next_attempt_at,
+last_call_id (uuid → calls.id),
+last_status, last_error,
+lead_id,                                 -- filled in by webhook post-step on first 'completed' call
+created_at, updated_at
+```
+
+`public.calls.campaign_contact_id` (uuid, nullable, FK to `campaign_contacts.id` on delete set null) — the seam between the existing dial pipeline and a campaign run. The Bolna webhook reads it after every status update to drive the campaign-contact state machine.
+
+### CSV format (uploaded by users)
+
+The upload dialog parses the file in the browser with PapaParse before sending anything to the server.
+
+- **Required column:** `phone` — header detection accepts case-insensitive matches for `phone`, `mobile`, `number`, `msisdn`, `contact`. The dialog tells the user which header it picked.
+- **Optional column:** `name` — also matches `full_name`, `fullname`, `contact_name`.
+- **Any other columns** are stored on `campaign_contacts.metadata` and passed through to the voice agent as `user_data` for prompt personalization (`{{vehicle}}`, `{{interest}}`, etc.).
+- **Row validation:** `normalisePhoneForWa()` strips non-digits; rows with 7–15 digits after normalization are kept. Duplicates within the file (same normalized number) are skipped — the first wins. The dialog reports `valid / total` and `duplicates skipped` before the user confirms.
+- **Encoding:** UTF-8. A BOM is fine. Comma-separated; quote any field containing commas, quotes, CR, or LF (RFC 4180).
+
+**Sample CSV** — minimum viable:
+
+```csv
+phone,name
++91 99999 00000,Neem Kumar
+9810000111,Priya Sharma
++1 (415) 555-0199,Alex Patel
+```
+
+**Sample CSV** — with extra columns the agent uses for context:
+
+```csv
+phone,name,vehicle,city,last_visit
++91 99999 00000,Neem Kumar,Honda Dio,Bengaluru,2026-04-22
+9810000111,Priya Sharma,Royal Enfield Classic 350,Pune,
++1 (415) 555-0199,Alex Patel,Tesla Model 3,San Francisco,2026-04-30
+```
+
+In the second sample, `vehicle`, `city`, and `last_visit` are merged into `campaign_contacts.metadata` and forwarded as `user_data.vehicle` / etc. on the Bolna `POST /call` payload — the agent prompt template can interpolate them.
+
+### `createCampaign(input)`
+
+**Input** (validated by `createCampaignSchema`):
+
+```ts
+{
+  organisation_id: string;                          // uuid
+  name: string;                                     // 1..200
+  file_name?: string | null;
+  schedule_mode: "now" | "later";
+  scheduled_at?: string | null;                     // ISO datetime, required when schedule_mode === "later"
+  max_attempts: number;                             // 1..6 (slider 0..5 retries → +1)
+  retry_interval_seconds: number;                   // 60..86400
+  retry_on: ("no_answer" | "busy" | "failed" | "canceled")[];
+  contacts: Array<{
+    raw_phone: string;
+    phone: string;                                  // digits only
+    name?: string | null;
+    metadata?: Record<string, unknown>;
+  }>;                                               // 1..10000
+}
+```
+
+**Returns** `ActionResult<Campaign>`.
+
+**Flow:**
+1. `userOwnsOrg()` gate.
+2. Reject if `bolna_integrations` is missing or `enabled = false` for the org — saves us from creating a campaign that can never dial.
+3. Insert `campaigns` row (status `in_progress` if run-now, else `scheduled`).
+4. Bulk-insert `campaign_contacts` with `next_attempt_at = now()` (run-now) or `= scheduled_at` (schedule-later).
+5. Trigger fires → counters populate.
+6. The cron drainer picks contacts up on the next minute tick. For run-now, the row is already due; for schedule-later, the cron promotes the campaign from `scheduled` → `in_progress` once `scheduled_at <= now()`.
+
+If contact insert fails, the action rolls back the parent `campaigns` row so the user isn't left with an empty shell.
+
+### `runCampaignNow(input)`
+
+**Input** `{ id: string }` (uuid).
+**Returns** `ActionResult<Campaign>`.
+
+Flips a `scheduled` / `paused` / `stopped` / `completed` campaign back to `in_progress`, re-arms still-pending contacts (`next_attempt_at = now()`), and clears `completed_at`. Refuses on a campaign already in `in_progress`.
+
+### `stopCampaign(input)`
+
+**Input** `{ id: string }`. **Returns** `ActionResult<Campaign>`.
+
+Marks every still-`pending` contact as `skipped` and flips the campaign to `stopped`. **In-flight calls are left alone** — their webhook will resolve them naturally; the trigger will flip the campaign to `completed` once nothing remains pending or in-flight.
+
+### `deleteCampaign(input)`
+
+Hard-deletes the `campaigns` row. FK cascade drops `campaign_contacts`; `calls.campaign_contact_id` becomes `null` (call history is preserved on the `calls` table).
+
+### `listCampaigns(input)`
+
+**Input**
+
+```ts
+{
+  organisation_id: string;
+  limit?: number;     // 1..100, default 20
+  offset?: number;
+  status?: CampaignStatus;
+}
+```
+
+**Returns** `ActionResult<{ items: Campaign[]; total: number }>`. Ordered `created_at desc`.
+
+### `getCampaignCalls(input)`
+
+**Input** `{ id: string }`. **Returns** `ActionResult<CampaignCallRow[]>`.
+
+Drives the call-log sheet. Joins `calls` to the contact via `campaign_contact_id`, returning the recipient phone, attempt number, status, duration, recording URL, and any error message. Ordered `started_at desc` — newest call first across all attempts.
+
+### `POST /api/cron/campaigns/tick`
+
+The drainer. Called every minute by `pg_cron` via `pg_net.http_post` (see [the cron migration](../supabase/migrations/20260508000001_campaigns_cron.sql)).
+
+**Auth:** header `x-cron-secret` must equal `process.env.CRON_SECRET`. The Postgres function reads the same secret from Supabase Vault.
+
+**Per tick:**
+1. Promote any `scheduled` campaigns whose `scheduled_at` has passed → `in_progress`.
+2. Select up to **25** due contacts globally, capped at **10 per campaign** so a 1000-row campaign can't starve smaller batches behind it.
+3. For each: optimistic CAS (`update ... where status='pending'`) to claim → fire `initiateBolnaCall` → insert a `calls` row with `campaign_contact_id` set → patch the contact (`attempt++`, `last_call_id`, leave `status` at `in_flight`).
+4. Bolna failures get a `calls` row inserted with `status='failed'` for visibility, and the contact is either re-armed for another attempt or marked `failed` if the cap is hit.
+
+The Bolna webhook ([src/app/api/webhooks/bolna/calls/route.ts](../src/app/api/webhooks/bolna/calls/route.ts)) handles the rest — see the **Campaign post-step** subsection below.
+
+### Campaign post-step (in the Bolna webhook)
+
+After the existing call update, when `calls.campaign_contact_id` is non-null, [src/lib/campaigns/outcome.ts](../src/lib/campaigns/outcome.ts) runs in `after()`:
+
+- `completed` → contact `succeeded`. **Lead conversion happens here**: look up an existing lead in the org by exact `phone`; if absent, insert a new `leads` row (`source = 'manual'`, `status = 'contacted'`, name carried from the CSV). Cache the resulting `lead_id` on the contact.
+- Status in `retry_on` AND `attempt < max_attempts` → contact `pending`, `next_attempt_at = now() + retry_interval_seconds`.
+- Status in `retry_on` but cap hit, OR a non-retry final status → contact `failed`.
+- Non-terminal status (`ringing`, `in_progress`) → no-op.
+
+The campaign trigger keeps the parent counters in sync and auto-flips the campaign to `completed` once nothing remains pending or in-flight.
+
+### `GET /api/campaigns/[id]/export`
+
+Session-authed. Generates a CSV from `campaign_contacts` on demand — no original file is stored. Verifies the campaign belongs to the caller's org before returning.
+
+**Columns:** Phone, Name, Status, Attempts, Next Attempt At, Last Call Status, Last Error, Started At, Ended At, Duration (s), Recording.
+
+Reuses the shared CSV helper at [src/lib/csv.ts](../src/lib/csv.ts) (`csvEscape` + `toCsv` + `withBom`).
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| `200` | `text/csv; charset=utf-8` — `Content-Disposition: attachment; filename="skelo-campaign-<safe-name>-<YYYY-MM-DD>.csv"` |
+| `400` | `{ error: "Invalid campaign id" }` |
+| `403` | `{ error: "Forbidden" }` |
+| `404` | `{ error: "Not found" }` |
+| `500` | `{ error: "<supabase message>" }` |
+
+### Operational setup
+
+After applying both campaigns migrations:
+
+1. **Enable extensions** in the Supabase dashboard — `pg_cron` and `pg_net`. Vault is on by default.
+2. **Store the cron URL + secret in Vault**, in the SQL editor:
+
+   ```sql
+   select vault.create_secret(
+     'https://<your-deploy>/api/cron/campaigns/tick',
+     'campaigns_cron_target_url'
+   );
+   select vault.create_secret(
+     '<long random string>',
+     'campaigns_cron_secret'
+   );
+   ```
+
+   The `alter database … set` GUC approach won't work on Supabase hosted (requires superuser).
+
+3. **Mirror the secret** in Next.js as `CRON_SECRET=<long random string>` (same value).
+4. **Verify the schedule:** `select jobid, schedule, jobname, active from cron.job where jobname = 'campaign-tick';` — one active row, schedule `* * * * *`.
+5. **Verify the secrets:** `select name from vault.secrets where name like 'campaigns_cron%';` — two rows.
+
+For local dev without cron, trigger the drainer manually:
+
+```bash
+curl -X POST http://localhost:3000/api/cron/campaigns/tick \
+  -H "x-cron-secret: $CRON_SECRET"
+```
+
+### Realtime
+
+`useCampaignsRealtime(orgId)` ([src/hooks/use-campaigns-realtime.ts](../src/hooks/use-campaigns-realtime.ts)) subscribes to `public.campaigns` AND `public.campaign_contacts` filtered by `organisation_id=eq.<id>`, with the same 350 ms debounced `router.refresh()` pattern as `useCallsRealtime`. Both tables must be in the `supabase_realtime` publication — the schema migration adds them.
+
+---
+
 ## Realtime
 
 Two client hooks subscribe to Supabase Postgres CHANGES so the UI auto-refreshes without a manual reload:
@@ -961,6 +1206,7 @@ Two client hooks subscribe to Supabase Postgres CHANGES so the UI auto-refreshes
 | --- | --- | --- | --- | --- |
 | `useLeadsRealtime(orgSlug)` | [src/hooks/use-leads-realtime.ts](../src/hooks/use-leads-realtime.ts) | `public.leads` | `org_slug=eq.<slug>` | `LeadsTable` |
 | `useCallsRealtime(orgId)` | [src/hooks/use-calls-realtime.ts](../src/hooks/use-calls-realtime.ts) | `public.calls` | `organisation_id=eq.<id>` | `ConversationsTable` |
+| `useCampaignsRealtime(orgId)` | [src/hooks/use-campaigns-realtime.ts](../src/hooks/use-campaigns-realtime.ts) | `public.campaigns` + `public.campaign_contacts` | `organisation_id=eq.<id>` | `CampaignsTable` |
 
 Both hooks debounce events by 350 ms and call `router.refresh()` on the trailing edge — the existing server-side filter / sort / pagination stay authoritative; we just re-render. Burst inserts (CSV imports, status-transition fan-out) coalesce into a single round-trip.
 
@@ -998,7 +1244,7 @@ Files:
 
 ### Design
 
-The admin panel is for **Skello staff** (not org owners). All admin Server Actions run through the **service-role client** (`createAdminClient()`), bypassing RLS, and are gated at the top by `requireAdmin()`. Every gate is checked on both the route layout and the action itself — defense in depth. Owners lose the ability to configure the voice agent; that moved here entirely. Settings now renders a read-only `VoiceAgentStatusCard`.
+The admin panel is for **Skelo staff** (not org owners). All admin Server Actions run through the **service-role client** (`createAdminClient()`), bypassing RLS, and are gated at the top by `requireAdmin()`. Every gate is checked on both the route layout and the action itself — defense in depth. Owners lose the ability to configure the voice agent; that moved here entirely. Settings now renders a read-only `VoiceAgentStatusCard`.
 
 ### `requireAdmin()`
 
@@ -1006,7 +1252,7 @@ Returns `{ userId, email }` on success. Redirects:
 
 - no auth user → `/login`
 - user is not an admin → `/dashboard` (no enumeration signal)
-- user is an admin → returns, **regardless of whether they own an organisation**. Admins are typically org-less Skello staff.
+- user is an admin → returns, **regardless of whether they own an organisation**. Admins are typically org-less Skelo staff.
 
 ### Organisation management — `src/actions/admin/organisations.ts`
 

@@ -1,6 +1,6 @@
 -- Profiles table + platform-admin flag.
 --
--- Platform admin (Skello staff) is a property of a user, not an organisation.
+-- Platform admin (Skelo staff) is a property of a user, not an organisation.
 -- This table holds the flag and any future per-user app-level fields
 -- (display name, preferences, etc.) that don't belong in auth.users.
 --

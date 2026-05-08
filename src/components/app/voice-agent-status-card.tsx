@@ -57,7 +57,7 @@ export function VoiceAgentStatusCard({ integration }: Props) {
             </dd>
           </dl>
           <p className="mt-4 text-[11px] text-muted-foreground">
-            Need to change anything? Contact your Skello support rep.
+            Need to change anything? Contact your Skelo support rep.
           </p>
         </CardContent>
       ) : null}

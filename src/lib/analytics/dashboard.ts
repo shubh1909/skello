@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
-import type { CallStatus } from "@/types/call";
+import type { CallDirection, CallStatus } from "@/types/call";
 import type { LeadIntent } from "@/types/lead";
 
 export type AnalyticsRange = "24h" | "7d" | "14d" | "30d";
@@ -57,7 +57,16 @@ interface CallRow {
   started_at: string;
   status: CallStatus;
   duration_seconds: number | null;
-  to_phone: string;
+  direction: CallDirection;
+  to_phone: string | null;
+  from_phone: string | null;
+}
+
+// The phone we treat as "the other party". On inbound rows `to_phone` is our
+// agent DID and `from_phone` is the caller; on outbound rows it's reversed.
+// Dedup on this so inbound traffic doesn't collapse to a single "user".
+function counterpartyPhone(c: CallRow): string | null {
+  return c.direction === "inbound" ? c.from_phone : c.to_phone;
 }
 
 /** UTC day bucket key, e.g. "2026-04-24". */
@@ -103,7 +112,7 @@ export async function getDashboardAnalytics(input: {
 
   const { data: callsRaw } = await supabase
     .from("calls")
-    .select("started_at, status, duration_seconds, to_phone")
+    .select("started_at, status, duration_seconds, direction, to_phone, from_phone")
     .eq("organisation_id", orgId)
     .gte("started_at", prevWindowStart)
     .order("started_at", { ascending: false })
@@ -124,9 +133,17 @@ export async function getDashboardAnalytics(input: {
     previous: callsPrevious.length,
   };
 
+  const uniquePhones = (rows: CallRow[]) => {
+    const set = new Set<string>();
+    for (const c of rows) {
+      const phone = counterpartyPhone(c);
+      if (phone) set.add(phone);
+    }
+    return set.size;
+  };
   const uniqueUsers = {
-    current: new Set(callsCurrent.map((c) => c.to_phone)).size,
-    previous: new Set(callsPrevious.map((c) => c.to_phone)).size,
+    current: uniquePhones(callsCurrent),
+    previous: uniquePhones(callsPrevious),
   };
 
   const avg = (rows: CallRow[]) => {

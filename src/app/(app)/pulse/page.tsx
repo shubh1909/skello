@@ -24,7 +24,7 @@ import { formatRelative, initialsOf, renderNow } from "@/lib/format";
 import type { CallStatus } from "@/types/call";
 import type { LeadIntent } from "@/types/lead";
 
-export const metadata = { title: "Pulse · Skello" };
+export const metadata = { title: "Pulse · Skelo" };
 
 const INTENT_VARIANT: Record<
   LeadIntent,

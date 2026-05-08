@@ -7,7 +7,7 @@ import { getCurrentUser } from "@/actions/auth";
 import { getIsAdmin } from "@/lib/auth/admin";
 
 export const metadata = {
-  title: "Sign up · Skello",
+  title: "Sign up · Skelo",
 };
 
 export default async function SignupPage() {
@@ -27,7 +27,7 @@ export default async function SignupPage() {
               Create your workspace
             </h1>
             <p className="text-sm leading-relaxed text-muted-foreground">
-              Spin up Skello for your team in under a minute.
+              Spin up Skelo for your team in under a minute.
             </p>
           </div>
           <SignupForm />

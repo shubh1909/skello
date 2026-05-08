@@ -2,15 +2,18 @@ import { ClockIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Pagination } from "@/components/app/pagination";
 import { ReminderDialog } from "@/components/app/reminder-dialog";
 import { RemindersList } from "@/components/app/reminders-list";
 import { listReminders } from "@/actions/reminders";
 import { requireSession } from "@/lib/auth/session";
 
-export const metadata = { title: "Reminders · Skello" };
+export const metadata = { title: "Reminders · Skelo" };
+
+const PAGE_SIZE = 10;
 
 interface PageProps {
-  searchParams?: Promise<{ status?: string }>;
+  searchParams?: Promise<{ status?: string; page?: string }>;
 }
 
 export default async function RemindersPage({ searchParams }: PageProps) {
@@ -18,15 +21,18 @@ export default async function RemindersPage({ searchParams }: PageProps) {
   const sp = (await searchParams) ?? {};
   const status =
     sp.status === "done" || sp.status === "dismissed" ? sp.status : "pending";
+  const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1);
+  const offset = (page - 1) * PAGE_SIZE;
 
   const result = await listReminders({
     organisation_id: session.organisation.id,
-    limit: 100,
-    offset: 0,
+    limit: PAGE_SIZE,
+    offset,
     status,
   });
 
   const items = result.success ? result.data.items : [];
+  const total = result.success ? result.data.total : 0;
 
   return (
     <div className="flex flex-col gap-6">
@@ -36,7 +42,7 @@ export default async function RemindersPage({ searchParams }: PageProps) {
             Reminders
           </h1>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            {items.length} {status} · scoped to {session.organisation.name}
+            {total} {status} · scoped to {session.organisation.name}
           </p>
         </div>
         <ReminderDialog
@@ -60,7 +66,16 @@ export default async function RemindersPage({ searchParams }: PageProps) {
           {result.error}
         </Card>
       ) : (
-        <RemindersList reminders={items} />
+        <>
+          <RemindersList reminders={items} />
+          <Pagination
+            total={total}
+            pageSize={PAGE_SIZE}
+            currentPage={page}
+            baseHref="/reminders"
+            preserveParams={{ status }}
+          />
+        </>
       )}
     </div>
   );

@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireSession } from "@/lib/auth/session";
+import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
 import { createClient } from "@/lib/supabase/server";
 import type { Lead } from "@/types/lead";
 
@@ -44,40 +45,25 @@ function rangeBounds(
   }
 }
 
-const CSV_COLUMNS: { key: keyof Lead; header: string }[] = [
-  { key: "id", header: "ID" },
-  { key: "created_at", header: "Created At" },
-  { key: "name", header: "Name" },
-  { key: "phone", header: "Phone" },
-  { key: "interest", header: "Interest" },
-  { key: "summary", header: "Summary" },
-  { key: "lead_intent", header: "Intent" },
-  { key: "status", header: "Status" },
-  { key: "source", header: "Source" },
-  { key: "customer_status", header: "Customer Type" },
-  { key: "city", header: "City" },
-  { key: "pincode", header: "Pincode" },
-  { key: "visit_date_time", header: "Visit" },
-  { key: "pending_action", header: "Pending Action" },
-  { key: "wants_to_connect_on_watsapp", header: "Wants WA" },
-  { key: "notes", header: "Notes" },
-  { key: "external_id", header: "Capture ID" },
+const CSV_COLUMNS: CsvColumn<Lead>[] = [
+  { header: "ID", value: (l) => l.id },
+  { header: "Created At", value: (l) => l.created_at },
+  { header: "Name", value: (l) => l.name },
+  { header: "Phone", value: (l) => l.phone },
+  { header: "Interest", value: (l) => l.interest },
+  { header: "Summary", value: (l) => l.summary },
+  { header: "Intent", value: (l) => l.lead_intent },
+  { header: "Status", value: (l) => l.status },
+  { header: "Source", value: (l) => l.source },
+  { header: "Customer Type", value: (l) => l.customer_status },
+  { header: "City", value: (l) => l.city },
+  { header: "Pincode", value: (l) => l.pincode },
+  { header: "Visit", value: (l) => l.visit_date_time },
+  { header: "Pending Action", value: (l) => l.pending_action },
+  { header: "Wants WA", value: (l) => l.wants_to_connect_on_watsapp },
+  { header: "Notes", value: (l) => l.notes },
+  { header: "Capture ID", value: (l) => l.external_id },
 ];
-
-function csvEscape(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  const s = typeof value === "boolean" ? (value ? "yes" : "no") : String(value);
-  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function toCsv(leads: Lead[]): string {
-  const header = CSV_COLUMNS.map((c) => csvEscape(c.header)).join(",");
-  const rows = leads.map((lead) =>
-    CSV_COLUMNS.map((c) => csvEscape(lead[c.key])).join(","),
-  );
-  return [header, ...rows].join("\r\n");
-}
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
@@ -110,12 +96,10 @@ export async function GET(request: NextRequest) {
   }
 
   const leads = (data ?? []) as unknown as Lead[];
-  const csv = toCsv(leads);
-  // BOM so Excel opens UTF-8 correctly.
-  const body = `﻿${csv}`;
+  const body = withBom(toCsv(leads, CSV_COLUMNS));
 
   const stamp = new Date().toISOString().slice(0, 10);
-  const filename = `skello-leads-${range}-${stamp}.csv`;
+  const filename = `skelo-leads-${range}-${stamp}.csv`;
 
   return new NextResponse(body, {
     status: 200,

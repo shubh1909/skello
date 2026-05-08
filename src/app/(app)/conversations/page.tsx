@@ -4,11 +4,14 @@ import {
   type ConversationsFilters,
 } from "@/components/app/conversations-filter-bar";
 import { ConversationsTable } from "@/components/app/conversations-table";
+import { Pagination } from "@/components/app/pagination";
 import { listConversationAgents, listConversations } from "@/actions/calls";
 import { requireSession } from "@/lib/auth/session";
 import type { CallDirection, CallStatus } from "@/types/call";
 
-export const metadata = { title: "Conversations · Skello" };
+export const metadata = { title: "Conversations · Skelo" };
+
+const PAGE_SIZE = 10;
 
 interface PageProps {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -87,12 +90,15 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
   const sp = (await searchParams) ?? {};
   const filters = readFilters(sp);
   const from = rangeToFrom(filters.range);
+  const pageParam = Array.isArray(sp.page) ? sp.page[0] : sp.page;
+  const page = Math.max(1, Number.parseInt(pageParam ?? "1", 10) || 1);
+  const offset = (page - 1) * PAGE_SIZE;
 
   const [callsResult, agentsResult] = await Promise.all([
     listConversations({
       organisation_id: orgId,
-      limit: 200,
-      offset: 0,
+      limit: PAGE_SIZE,
+      offset,
       direction: filters.direction,
       status: filters.status,
       agent_id: filters.agent,
@@ -129,7 +135,16 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
           {callsResult.error}
         </Card>
       ) : (
-        <ConversationsTable calls={calls} organisationId={orgId} />
+        <>
+          <ConversationsTable calls={calls} organisationId={orgId} />
+          <Pagination
+            total={total}
+            pageSize={PAGE_SIZE}
+            currentPage={page}
+            baseHref="/conversations"
+            preserveParams={sp}
+          />
+        </>
       )}
     </div>
   );

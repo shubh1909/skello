@@ -7,7 +7,7 @@ import { requireAdmin } from "@/lib/auth/admin";
 import { listAllUsers } from "@/actions/admin/users";
 import { formatRelative } from "@/lib/format";
 
-export const metadata = { title: "Users · Admin · Skello" };
+export const metadata = { title: "Users · Admin · Skelo" };
 
 export default async function AdminUsersPage() {
   const session = await requireAdmin();

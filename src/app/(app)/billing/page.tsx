@@ -1,6 +1,6 @@
 import { LockedCard } from "@/components/app/locked-card";
 
-export const metadata = { title: "Billing · Skello" };
+export const metadata = { title: "Billing · Skelo" };
 
 export default function BillingPage() {
   return (

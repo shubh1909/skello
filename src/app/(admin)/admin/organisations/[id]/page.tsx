@@ -16,7 +16,7 @@ import { getOrganisationAdmin } from "@/actions/admin/organisations";
 import { getVoiceAgentAdmin } from "@/actions/admin/voice-agent";
 import { formatDateTime, formatRelative } from "@/lib/format";
 
-export const metadata = { title: "Organisation · Admin · Skello" };
+export const metadata = { title: "Organisation · Admin · Skelo" };
 
 interface PageProps {
   params: Promise<{ id: string }>;

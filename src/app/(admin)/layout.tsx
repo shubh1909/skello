@@ -1,7 +1,7 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { AdminSidebar } from "@/components/admin/admin-sidebar";
 
-export const metadata = { title: "Admin · Skello" };
+export const metadata = { title: "Admin · Skelo" };
 
 export default async function AdminLayout({
   children,

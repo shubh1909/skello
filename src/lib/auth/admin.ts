@@ -11,7 +11,7 @@ export interface AdminSession {
 
 /**
  * Gate for any page under `(admin)/`. Unlike `requireSession()`, this does
- * NOT require the user to belong to an organisation — Skello staff don't
+ * NOT require the user to belong to an organisation — Skelo staff don't
  * have their own workspace.
  *
  *   - no user          → /login
