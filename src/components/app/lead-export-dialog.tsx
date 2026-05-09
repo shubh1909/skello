@@ -63,7 +63,7 @@ export function LeadExportDialog() {
       const blob = await res.blob();
       const cd = res.headers.get("content-disposition") ?? "";
       const match = /filename="?([^"]+)"?/.exec(cd);
-      const filename = match?.[1] ?? `skello-leads-${range}.csv`;
+      const filename = match?.[1] ?? `skelo-leads-${range}.csv`;
 
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

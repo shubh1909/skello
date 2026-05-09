@@ -83,6 +83,8 @@ export function ConversationsFilterBar({
     } else {
       next.set(key, value);
     }
+    // Filter changes invalidate the current page — drop back to page 1.
+    next.delete("page");
     startTransition(() => {
       router.replace(`${pathname}?${next.toString()}`, { scroll: false });
     });

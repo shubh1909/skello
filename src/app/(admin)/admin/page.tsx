@@ -14,7 +14,7 @@ import { StatCard } from "@/components/app/stat-card";
 import { listAllOrganisations } from "@/actions/admin/organisations";
 import { formatRelative } from "@/lib/format";
 
-export const metadata = { title: "Admin Overview · Skello" };
+export const metadata = { title: "Admin Overview · Skelo" };
 
 export default async function AdminOverviewPage() {
   const result = await listAllOrganisations({ limit: 10, offset: 0 });
@@ -43,7 +43,7 @@ export default async function AdminOverviewPage() {
           Overview
         </h1>
         <p className="text-sm leading-relaxed text-muted-foreground">
-          Every workspace on Skello and the state of its voice agent.
+          Every workspace on Skelo and the state of its voice agent.
         </p>
       </header>
 

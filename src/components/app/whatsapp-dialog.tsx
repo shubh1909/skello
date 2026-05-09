@@ -40,6 +40,7 @@ const TEMPLATES = [
   { id: "intro", label: "Friendly intro" },
   { id: "followup", label: "Follow-up nudge" },
   { id: "demo", label: "Demo invite" },
+  { id: "showroom", label: "Showroom invite (Bike World)" },
   { id: "custom", label: "Custom" },
 ] as const;
 
@@ -50,11 +51,24 @@ function templateText(id: TemplateId, lead: Lead | null): string {
   const interest = lead?.interest ?? "your enquiry";
   switch (id) {
     case "intro":
-      return `Hi ${name}, this is the team at Skello — thanks for reaching out about ${interest}. Is now a good time to chat?`;
+      return `Hi ${name}, this is the team at Skelo — thanks for reaching out about ${interest}. Is now a good time to chat?`;
     case "followup":
       return `Hey ${name}, just circling back on ${interest}. Happy to answer anything that's on your mind.`;
     case "demo":
-      return `Hi ${name} — I'd love to show you how Skello can help with ${interest}. Are you free for a quick 15-min walkthrough this week?`;
+      return `Hi ${name} — I'd love to show you how Skelo can help with ${interest}. Are you free for a quick 15-min walkthrough this week?`;
+    case "showroom":
+      return [
+        "Thank you for speaking to Bike World !",
+        "We look forward to seeing you at our showroom 🏍️🛞",
+        "",
+        "Address :  https://share.google/m26IoOTGpv6hcQ1Kn",
+        "",
+        "Website : https://bikeworld.co.in/",
+        "",
+        "Instagram : https://www.instagram.com/bikeworld__official",
+        "",
+        "Contact : +919535414546",
+      ].join("\n");
     case "custom":
       return "";
   }

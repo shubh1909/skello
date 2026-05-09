@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   CodeIcon,
   CreditCardIcon,
+  HeadphonesIcon,
   LayoutGridIcon,
   LogOutIcon,
   MessageCircleIcon,
@@ -19,13 +20,14 @@ import { toast } from "sonner";
 import { logout } from "@/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/brand/logo";
+import { useAppShell } from "@/components/app/app-shell";
 import { cn } from "@/lib/utils";
 
 type NavItem = {
   href: string;
   label: string;
   icon: LucideIcon;
-  badgeKey?: "leads";
+  badgeKey?: "leads" | "unique_leads";
 };
 
 type NavSection = {
@@ -45,7 +47,18 @@ const SECTIONS: readonly NavSection[] = [
   {
     label: "Leads",
     items: [
-      { href: "/leads", label: "Leads", icon: UsersIcon, badgeKey: "leads" },
+      {
+        href: "/leads",
+        label: "Leads",
+        icon: UsersIcon,
+        badgeKey: "unique_leads",
+      },
+      {
+        href: "/callers",
+        label: "Callers",
+        icon: HeadphonesIcon,
+        badgeKey: "leads",
+      },
       {
         href: "/conversations",
         label: "Conversations",
@@ -71,13 +84,16 @@ export function SidebarNav({
   organisationName,
   organisationSlug,
   leadCount,
+  uniqueLeadCount,
 }: {
   organisationName: string;
   organisationSlug: string;
   leadCount: number;
+  uniqueLeadCount: number;
 }) {
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
+  const { collapsed } = useAppShell();
 
   function onLogout() {
     startTransition(async () => {
@@ -87,13 +103,20 @@ export function SidebarNav({
   }
 
   function getBadge(item: NavItem): string | null {
-    if (item.badgeKey !== "leads") return null;
-    if (leadCount <= 0) return null;
-    return leadCount > 999 ? "999+" : String(leadCount);
+    if (!item.badgeKey) return null;
+    const count =
+      item.badgeKey === "unique_leads" ? uniqueLeadCount : leadCount;
+    if (count <= 0) return null;
+    return count > 999 ? "999+" : String(count);
   }
 
   return (
-    <aside className="sticky top-0 hidden h-screen flex-col border-r border-border/60 bg-sidebar text-sidebar-foreground md:flex">
+    <aside
+      className={cn(
+        "sticky top-0 h-screen flex-col border-r border-border/60 bg-sidebar text-sidebar-foreground",
+        collapsed ? "hidden" : "hidden md:flex",
+      )}
+    >
       <div className="px-5 py-5">
         <Logo />
       </div>
@@ -145,7 +168,11 @@ export function SidebarNav({
                               ? "bg-background/60 text-sidebar-accent-foreground"
                               : "bg-muted text-muted-foreground group-hover:bg-background group-hover:text-foreground",
                           )}
-                          aria-label={`${leadCount} total leads`}
+                          aria-label={
+                            item.badgeKey === "unique_leads"
+                              ? `${uniqueLeadCount} unique leads`
+                              : `${leadCount} total leads`
+                          }
                         >
                           {badge}
                         </span>

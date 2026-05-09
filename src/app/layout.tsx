@@ -17,9 +17,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Skello — Modern CRM for B2B Teams",
+  title: "Skelo — Modern CRM for B2B Teams",
   description:
-    "Skello is a high-performance, multi-tenant CRM built for ambitious B2B teams. Capture leads, automate outreach, and close faster.",
+    "Skelo is a high-performance, multi-tenant CRM built for ambitious B2B teams. Capture leads, automate outreach, and close faster.",
 };
 
 export default function RootLayout({

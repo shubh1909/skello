@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: "skello",
+      name: "skelo",
       script: "node_modules/next/dist/bin/next",
       args: "start -p 3000",
       cwd: "./",
@@ -14,8 +14,8 @@ module.exports = {
         NODE_ENV: "production",
         PORT: 3000,
       },
-      error_file: "./logs/skello-error.log",
-      out_file: "./logs/skello-out.log",
+      error_file: "./logs/skelo-error.log",
+      out_file: "./logs/skelo-out.log",
       time: true,
     },
   ],

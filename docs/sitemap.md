@@ -1,4 +1,4 @@
-# Skello Sitemap
+# Skelo Sitemap
 
 A map of every route in the app, who can reach it, what it renders, and how the user moves through it. Pair this with [api.md](api.md) for the server-side surface.
 
@@ -24,7 +24,9 @@ A map of every route in the app, who can reach it, what it renders, and how the 
 ├── /onboarding             → Org bootstrap (rare fallback)
 ├── /api/
 │   ├── webhooks/bolna/*    → External webhooks (no UI)
-│   └── leads/export        → Authenticated CSV export (GET)
+│   ├── leads/export        → Authenticated CSV export (GET)
+│   ├── campaigns/[id]/export → Authenticated campaign-results CSV (GET)
+│   └── cron/campaigns/tick → Cron drainer; called by pg_cron each minute (POST, secret-gated)
 │
 ├── (admin)/                → Platform-admin shell — separate sidebar
 │   └── /admin
@@ -41,7 +43,7 @@ A map of every route in the app, who can reach it, what it renders, and how the 
     │   ├── /leads          → Lead CRM table + export + column resize
     │   └── /conversations  → Inbound + outbound call log w/ filters & realtime
     ├── Outreach
-    │   └── /campaigns      → Placeholder (Access denied)
+    │   └── /campaigns      → Bulk outbound: CSV upload, schedule/run, retries, live progress
     ├── System
     │   ├── /settings       → Workspace + voice agent integration
     │   ├── /developer      → Placeholder (Access denied)
@@ -66,12 +68,14 @@ A map of every route in the app, who can reach it, what it renders, and how the 
 | `/pulse` | [src/app/(app)/pulse/page.tsx](../src/app/(app)/pulse/page.tsx) | Authed + org required · **hidden from sidebar (2026-04-28)** — reachable only by deep link | Operator snapshot — hot-but-uncontacted alert card, recent leads, upcoming reminders, recent calls |
 | `/leads` | [src/app/(app)/leads/page.tsx](../src/app/(app)/leads/page.tsx) | Authed + org required | Leads table (tabular) + Export dialog + filter bar (Status, Intent, Source, Contacted, Wants WA) + 4 contextual stat cards. Columns are drag-resizable (persisted in `localStorage`). Realtime updates via `useLeadsRealtime`. New **Actionable** column (between Intent and Pending Action) shows the agent's extracted next-step note. |
 | `/conversations` | [src/app/(app)/conversations/page.tsx](../src/app/(app)/conversations/page.tsx) | Authed + org required | Unified call log (inbound + outbound). Columns: Call ID, Lead / Number, Date & Time, Duration, Direction, Outcome, Audio. Filter bar: Range (24h / 7d / 30d / all), Agent, Outcome, Direction, search. Click a row → `CallTranscriptDialog`. **Audio → Play** opens `recording_url`. Realtime updates via `useCallsRealtime`. |
-| `/campaigns` | [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx) | Authed + org required | Placeholder — plan-gated (Access denied) |
+| `/campaigns` | [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx) | Authed + org required | **Bulk outbound calling.** Header + 4 stat cards (Total / Running / Scheduled / Completed) + the campaigns table (ID, File, Contacts `valid/total`, Status, Progress bar `succeeded·in-flight·failed`, Workflow, Created, row actions). Click the ID or the list icon → call-log sheet. New-campaign button opens [`CampaignUploadDialog`](../src/components/app/campaign-upload-dialog.tsx) (drag-and-drop CSV, run-now or schedule, retries 0–5, retry interval, retry-on triggers). Realtime via `useCampaignsRealtime`. See [api.md § Campaigns](api.md#campaigns-bulk-outbound). |
 | `/reminders` | [src/app/(app)/reminders/page.tsx](../src/app/(app)/reminders/page.tsx) | Authed + org required | Tabbed reminder list. Query: `?status=pending\|done\|dismissed` (default `pending`). Not in sidebar — reached from dashboard widgets and the lead detail sheet. |
 | `/settings` | [src/app/(app)/settings/page.tsx](../src/app/(app)/settings/page.tsx) | Authed + org required | Workspace + account view; includes the voice agent integration card |
 | `/developer` | [src/app/(app)/developer/page.tsx](../src/app/(app)/developer/page.tsx) | Authed + org required | Placeholder — role-gated (Access denied) |
 | `/billing` | [src/app/(app)/billing/page.tsx](../src/app/(app)/billing/page.tsx) | Authed + org required | Placeholder — owner-gated (Access denied) |
 | `GET /api/leads/export` | [src/app/api/leads/export/route.ts](../src/app/api/leads/export/route.ts) | Session-authed | CSV download. Query: `?range=today\|yesterday\|last_week\|last_month\|all`. Scoped to the caller's org. |
+| `GET /api/campaigns/[id]/export` | [src/app/api/campaigns/[id]/export/route.ts](../src/app/api/campaigns/[id]/export/route.ts) | Session-authed | Campaign-results CSV. One row per `campaign_contacts` entry: phone, name, status, attempts, next attempt, last call status/error/timing/recording. No file is stored — the CSV is built on the fly. |
+| `POST /api/cron/campaigns/tick` | [src/app/api/cron/campaigns/tick/route.ts](../src/app/api/cron/campaigns/tick/route.ts) | Header `x-cron-secret` must equal `CRON_SECRET` | Drainer. Called every minute by `pg_cron`. Promotes due `scheduled` campaigns to `in_progress`, fires up to 25 calls per tick (≤ 10/campaign for fairness) via `initiateBolnaCall`. See [api.md § Campaigns](api.md#campaigns-bulk-outbound). |
 | `POST /api/webhooks/bolna/leads` | [src/app/api/webhooks/bolna/leads/route.ts](../src/app/api/webhooks/bolna/leads/route.ts) | Signed (header `x-bolna-signature` or `?secret=`) | **Unified post-call webhook.** Dispatches on `telephony_data.call_type`: inbound → creates lead + records call inline (`recordInboundCall`); outbound → patches the existing call row from `initiateCall` and flows extraction back to the lead (`recordOutboundResult`). Same URL on every Bolna agent regardless of direction. See [api.md](api.md#voice-agent-webhooks). |
 | `POST /api/webhooks/bolna/calls` | [src/app/api/webhooks/bolna/calls/route.ts](../src/app/api/webhooks/bolna/calls/route.ts) | Signed | **Legacy** status-only updater. Superseded by the unified `/api/webhooks/bolna/leads` route for new agent configurations; kept for backward compatibility. |
 | `/admin` | [src/app/(admin)/admin/page.tsx](../src/app/(admin)/admin/page.tsx) | **Admin required** (`requireAdmin()`) | Platform-admin overview — org counts, voice agent states, recent signups |
@@ -160,7 +164,7 @@ These render across multiple routes inside `(app)`. Consult the file directly fo
 | `NotificationsBell` | [src/components/app/notifications-bell.tsx](../src/components/app/notifications-bell.tsx) | Topbar — popover of pending reminders, inline mark-done |
 | `UserMenu` | [src/components/app/user-menu.tsx](../src/components/app/user-menu.tsx) | Topbar — avatar dropdown, logout |
 | `StatCard` | [src/components/app/stat-card.tsx](../src/components/app/stat-card.tsx) | Analytics dashboard, `/leads` — icon + label + value + "vs. previous period" trend |
-| `LeadsTable` | [src/components/app/leads-table.tsx](../src/components/app/leads-table.tsx) | `/leads` — true `<table>` with status/intent/pending-action badges. **Drag-resizable columns** via per-`<th>` handle, widths persisted in `localStorage` (`skello.leads-table.col-widths.v1`). Includes the **Actionable** column. Realtime via `useLeadsRealtime`. |
+| `LeadsTable` | [src/components/app/leads-table.tsx](../src/components/app/leads-table.tsx) | `/leads` — true `<table>` with status/intent/pending-action badges. **Drag-resizable columns** via per-`<th>` handle, widths persisted in `localStorage` (`skelo.leads-table.col-widths.v1`). Includes the **Actionable** column. Realtime via `useLeadsRealtime`. |
 | `LeadsFilterBar` | [src/components/app/leads-filter-bar.tsx](../src/components/app/leads-filter-bar.tsx) | `/leads` — labelled filter controls for Status, Intent, Source, Contacted, Wants WA |
 | `LeadCreateDialog` | [src/components/app/lead-create-dialog.tsx](../src/components/app/lead-create-dialog.tsx) | `/leads`, `/pulse` — captures name/phone/product/intent/status/city/pincode/notes; `source` stamped as `manual` implicitly |
 | `LeadExportDialog` | [src/components/app/lead-export-dialog.tsx](../src/components/app/lead-export-dialog.tsx) | `/leads` header — duration picker + CSV download |
@@ -171,7 +175,10 @@ These render across multiple routes inside `(app)`. Consult the file directly fo
 | `RemindersList` | [src/components/app/reminders-list.tsx](../src/components/app/reminders-list.tsx) | `/reminders` |
 | `ReminderDialog` | [src/components/app/reminder-dialog.tsx](../src/components/app/reminder-dialog.tsx) | `/pulse`, `/leads` (per-row), `/reminders`, NotificationsBell |
 | `WhatsAppDialog` | [src/components/app/whatsapp-dialog.tsx](../src/components/app/whatsapp-dialog.tsx) | `/leads` (per-row) |
-| `LockedCard` | [src/components/app/locked-card.tsx](../src/components/app/locked-card.tsx) | `/campaigns`, `/developer`, `/billing`, `/conversations` — shared "Access denied" / "Coming soon" placeholder |
+| `LockedCard` | [src/components/app/locked-card.tsx](../src/components/app/locked-card.tsx) | `/developer`, `/billing` — shared "Access denied" / "Coming soon" placeholder |
+| `CampaignsTable` | [src/components/app/campaigns-table.tsx](../src/components/app/campaigns-table.tsx) | `/campaigns` — `<table>` of `Campaign` rows with status badge, segmented progress bar (succeeded · in-flight · failed), and per-row actions (Run Now, Stop, Download, Call Log, Delete). Realtime via `useCampaignsRealtime`. |
+| `CampaignUploadDialog` | [src/components/app/campaign-upload-dialog.tsx](../src/components/app/campaign-upload-dialog.tsx) | `/campaigns` header — name, **drag-and-drop CSV** (or click-to-browse) with inline phone-column detection and `valid / total` count, run-now vs schedule (datetime), retry slider 0–5, retry interval Select (5 min → 24 hr), retry-on checkboxes (no_answer / busy / failed / canceled). Submits via `createCampaign`. |
+| `CampaignCallLogSheet` | [src/components/app/campaign-call-log-sheet.tsx](../src/components/app/campaign-call-log-sheet.tsx) | Triggered from `CampaignsTable` (ID column or list icon). Right-side `Sheet` listing every dial across all attempts for the campaign — phone, attempt #, status, duration, recording link, error message. |
 | `VoiceAgentStatusCard` | [src/components/app/voice-agent-status-card.tsx](../src/components/app/voice-agent-status-card.tsx) | `/settings` — **read-only** view of the org's voice agent provisioned by an admin |
 | `VoiceAgentBanner` | [src/components/app/voice-agent-banner.tsx](../src/components/app/voice-agent-banner.tsx) | `/dashboard`, `/pulse` — "awaiting provisioning" if no integration, celebration banner for 7 days after connection |
 
@@ -214,6 +221,7 @@ These subscribe to Supabase Postgres CHANGES so `(app)` pages auto-refresh when 
 | --- | --- | --- | --- |
 | `useLeadsRealtime(orgSlug)` | [src/hooks/use-leads-realtime.ts](../src/hooks/use-leads-realtime.ts) | `public.leads` filtered by `org_slug=eq.<slug>` | `LeadsTable` |
 | `useCallsRealtime(orgId)` | [src/hooks/use-calls-realtime.ts](../src/hooks/use-calls-realtime.ts) | `public.calls` filtered by `organisation_id=eq.<id>` | `ConversationsTable` |
+| `useCampaignsRealtime(orgId)` | [src/hooks/use-campaigns-realtime.ts](../src/hooks/use-campaigns-realtime.ts) | `public.campaigns` + `public.campaign_contacts` filtered by `organisation_id=eq.<id>` | `CampaignsTable` |
 | `useClientNow()` | [src/hooks/use-client-now.ts](../src/hooks/use-client-now.ts) | (no subscription) | Pages that render relative timestamps — gives a hydration-safe `Date.now()` ticker. |
 
 ---
@@ -227,7 +235,7 @@ All gating is server-side — there is no client-side route guard. Four primitiv
    - No user → `/login`
    - User has no org → `/onboarding`
    This is the single gate for every `(app)` page.
-3. **`requireAdmin()`** / **`getIsAdmin()`** — [src/lib/auth/admin.ts](../src/lib/auth/admin.ts). The hard gate (redirects non-admins to `/dashboard`) and a non-redirecting read for conditional UI. Platform admins are Skello staff — they may not belong to any organisation.
+3. **`requireAdmin()`** / **`getIsAdmin()`** — [src/lib/auth/admin.ts](../src/lib/auth/admin.ts). The hard gate (redirects non-admins to `/dashboard`) and a non-redirecting read for conditional UI. Platform admins are Skelo staff — they may not belong to any organisation.
 4. **`updateSession()`** — [src/lib/supabase/middleware.ts](../src/lib/supabase/middleware.ts), wired in [src/middleware.ts](../src/middleware.ts). Refreshes the Supabase session cookie on every non-asset request. Does not block — just keeps the session alive.
 
 ### Landing logic

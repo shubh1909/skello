@@ -9,7 +9,7 @@ import { createOrganisation, listOrganisations } from "@/actions/organisations";
 import { getCurrentUser } from "@/actions/auth";
 import { getIsAdmin } from "@/lib/auth/admin";
 
-export const metadata = { title: "Set up workspace · Skello" };
+export const metadata = { title: "Set up workspace · Skelo" };
 
 function slugify(input: string): string {
   return input

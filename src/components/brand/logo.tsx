@@ -26,7 +26,7 @@ export function Logo({
       </span>
       {showWordmark ? (
         <span className="font-heading text-[15px] font-semibold tracking-tight">
-          Skello
+          Skelo
         </span>
       ) : null}
     </span>

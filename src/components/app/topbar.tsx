@@ -10,9 +10,11 @@ import type { Reminder } from "@/types/reminder";
 export async function Topbar({
   email,
   organisationId,
+  leftSlot,
 }: {
   email: string;
   organisationId: string;
+  leftSlot?: React.ReactNode;
 }) {
   const [reminders, isAdmin] = await Promise.all([
     fetchPendingReminders(organisationId),
@@ -21,6 +23,7 @@ export async function Topbar({
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/60 bg-background/80 px-4 backdrop-blur-xl md:px-6">
+      {leftSlot}
       <div className="relative hidden w-full max-w-sm md:block">
         <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input

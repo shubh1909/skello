@@ -4,10 +4,13 @@ import { Building2Icon, SearchIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Pagination } from "@/components/app/pagination";
 import { listAllOrganisations } from "@/actions/admin/organisations";
 import { formatRelative } from "@/lib/format";
 
-export const metadata = { title: "Organisations · Admin · Skello" };
+export const metadata = { title: "Organisations · Admin · Skelo" };
+
+const PAGE_SIZE = 10;
 
 interface PageProps {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -19,8 +22,11 @@ export default async function AdminOrganisationsPage({
   const sp = (await searchParams) ?? {};
   const qParam = Array.isArray(sp.q) ? sp.q[0] : sp.q;
   const q = qParam?.trim() || undefined;
+  const pageParam = Array.isArray(sp.page) ? sp.page[0] : sp.page;
+  const page = Math.max(1, Number.parseInt(pageParam ?? "1", 10) || 1);
+  const offset = (page - 1) * PAGE_SIZE;
 
-  const result = await listAllOrganisations({ q, limit: 200, offset: 0 });
+  const result = await listAllOrganisations({ q, limit: PAGE_SIZE, offset });
   if (!result.success) {
     return (
       <Card className="border-destructive/40 p-6 text-sm text-destructive">
@@ -133,6 +139,14 @@ export default async function AdminOrganisationsPage({
           </div>
         )}
       </Card>
+
+      <Pagination
+        total={total}
+        pageSize={PAGE_SIZE}
+        currentPage={page}
+        baseHref="/admin/organisations"
+        preserveParams={{ q }}
+      />
     </div>
   );
 }

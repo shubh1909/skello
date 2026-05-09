@@ -2,6 +2,7 @@ import { after, NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { enrichOutboundCall } from "@/lib/bolna/enrich";
+import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { CallStatus } from "@/types/call";
 
@@ -127,8 +128,12 @@ export async function POST(request: NextRequest) {
     .from("calls")
     .update(patch)
     .eq("bolna_call_id", bolnaCallId)
-    .select("id, organisation_id")
-    .maybeSingle<{ id: string; organisation_id: string }>();
+    .select("id, organisation_id, campaign_contact_id")
+    .maybeSingle<{
+      id: string;
+      organisation_id: string;
+      campaign_contact_id: string | null;
+    }>();
 
   if (error) {
     console.error("[bolna calls webhook] update failed", error);
@@ -154,6 +159,25 @@ export async function POST(request: NextRequest) {
         });
       } catch (err) {
         console.error("[calls webhook] enrichment failed", err);
+      }
+    });
+  }
+
+  // Campaign-aware post-step: advance the contact state machine (success
+  // → succeeded + lead conversion; retry-eligible status → re-arm; cap hit
+  // → failed). Runs after the response so the webhook stays snappy.
+  if (data.campaign_contact_id) {
+    const contactId = data.campaign_contact_id;
+    const callId = data.id;
+    after(async () => {
+      try {
+        await applyCampaignContactOutcome({
+          contactId,
+          callId,
+          callStatus: mapped,
+        });
+      } catch (err) {
+        console.error("[calls webhook] campaign outcome failed", err);
       }
     });
   }

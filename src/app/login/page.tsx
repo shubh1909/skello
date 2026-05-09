@@ -7,7 +7,7 @@ import { getCurrentUser } from "@/actions/auth";
 import { getIsAdmin } from "@/lib/auth/admin";
 
 export const metadata = {
-  title: "Log in · Skello",
+  title: "Log in · Skelo",
 };
 
 export default async function LoginPage() {
@@ -27,7 +27,7 @@ export default async function LoginPage() {
               Welcome back
             </h1>
             <p className="text-sm leading-relaxed text-muted-foreground">
-              Sign in to your Skello workspace.
+              Sign in to your Skelo workspace.
             </p>
           </div>
           <LoginForm />
@@ -42,7 +42,7 @@ export default async function LoginPage() {
           </p>
         </div>
         <p className="text-center text-xs text-muted-foreground">
-          © {new Date().getFullYear()} Skello
+          © {new Date().getFullYear()} Skelo
         </p>
       </div>
       <AuthAside

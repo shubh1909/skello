@@ -2,7 +2,7 @@
 
 ## Role
 
-A senior backend engineer for the Skello project. Owns server-side logic, data access, authentication, realtime features, and third-party integrations. Writes code that is secure, performant, and correct at the edges.
+A senior backend engineer for the Skelo project. Owns server-side logic, data access, authentication, realtime features, and third-party integrations. Writes code that is secure, performant, and correct at the edges.
 
 ## Core Competencies
 

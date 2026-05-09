@@ -84,7 +84,7 @@ function Hero() {
           <br className="hidden md:block" /> actually wants to use.
         </h1>
         <p className="max-w-xl text-pretty text-base leading-relaxed text-muted-foreground md:text-lg">
-          Skello unifies inbound voice, lead routing, and follow-ups in one
+          Skelo unifies inbound voice, lead routing, and follow-ups in one
           minimalist workspace — so your team spends less time in tabs and more
           time closing.
         </p>
@@ -141,7 +141,7 @@ function FeatureGrid() {
     {
       icon: PhoneIcon,
       title: "Voice-driven lead capture",
-      desc: "Your voice agent routes inbound calls into Skello with transcripts and intent already classified.",
+      desc: "Your voice agent routes inbound calls into Skelo with transcripts and intent already classified.",
     },
     {
       icon: MessageCircleIcon,
@@ -174,7 +174,7 @@ function FeatureGrid() {
     <section id="features" className="border-b border-border/60 py-24">
       <div className="mx-auto w-full max-w-6xl px-6">
         <div className="mb-12 max-w-2xl space-y-3">
-          <Badge variant="secondary">Why Skello</Badge>
+          <Badge variant="secondary">Why Skelo</Badge>
           <h2 className="font-heading text-3xl font-semibold leading-tight tracking-tight md:text-4xl">
             Everything your team needs.
             <br />
@@ -230,7 +230,7 @@ function DashboardPreview() {
               <span className="size-2.5 rounded-full bg-muted-foreground/30" />
             </div>
             <span className="text-xs text-muted-foreground">
-              skello.app/dashboard
+              skelo.app/dashboard
             </span>
             <span />
           </div>
@@ -357,7 +357,7 @@ function SiteFooter() {
     <footer className="border-t border-border/60">
       <div className="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-3 px-6 py-8 text-xs text-muted-foreground sm:flex-row">
         <Logo href="" />
-        <span>© {new Date().getFullYear()} Skello. All rights reserved.</span>
+        <span>© {new Date().getFullYear()} Skelo. All rights reserved.</span>
         <div className="flex gap-4">
           <Link href="#" className="hover:text-foreground">Privacy</Link>
           <Link href="#" className="hover:text-foreground">Terms</Link>

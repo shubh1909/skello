@@ -26,7 +26,7 @@ import {
 } from "@/lib/analytics/dashboard";
 import { requireSession } from "@/lib/auth/session";
 
-export const metadata = { title: "Analytics · Skello" };
+export const metadata = { title: "Analytics · Skelo" };
 
 interface PageProps {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
