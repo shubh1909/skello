@@ -63,10 +63,11 @@ export async function POST(request: NextRequest) {
 
   const ipCheck = clientIpAllowed(request);
   if (!ipCheck.allowed) {
-    console.warn(
-      "[inbound webhook] rejecting non-allowlisted IP",
-      ipCheck.ip,
-    );
+    console.warn("[inbound webhook] rejecting non-allowlisted IP", {
+      resolved: ipCheck.ip,
+      headers: ipCheck.headers,
+      allowlist: process.env.BOLNA_WEBHOOK_ALLOWED_IPS ?? null,
+    });
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
