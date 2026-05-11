@@ -27,6 +27,7 @@ export interface Campaign {
   name: string;
   file_name: string | null;
   agent_id: string | null;
+  from_phone_number: string | null;
   status: CampaignStatus;
   scheduled_at: string | null;
   started_at: string | null;

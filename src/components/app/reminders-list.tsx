@@ -24,14 +24,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import {
   deleteReminder,
+  listReminders,
   markReminderDone,
   markReminderPending,
 } from "@/actions/reminders";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { useClientNow } from "@/hooks/use-client-now";
-import type { Reminder, ReminderType } from "@/types/reminder";
+import { useInfiniteList } from "@/hooks/use-infinite-list";
+import type { Reminder, ReminderStatus, ReminderType } from "@/types/reminder";
 
 const TYPE_ICON: Record<ReminderType, typeof CalendarIcon> = {
   call: PhoneIcon,
@@ -49,10 +52,54 @@ const TYPE_LABEL: Record<ReminderType, string> = {
   other: "Other",
 };
 
-export function RemindersList({ reminders }: { reminders: Reminder[] }) {
+interface RemindersListProps {
+  reminders: Reminder[];
+  total: number;
+  pageSize: number;
+  organisationId: string;
+  status: ReminderStatus;
+}
+
+export function RemindersList({
+  reminders,
+  total,
+  pageSize,
+  organisationId,
+  status,
+}: RemindersListProps) {
   const router = useRouter();
   const [pending, startTransition] = React.useTransition();
   const now = useClientNow();
+
+  const fetchPage = React.useCallback(
+    async (offset: number, limit: number) => {
+      const res = await listReminders({
+        organisation_id: organisationId,
+        limit,
+        offset,
+        status,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return null;
+      }
+      return res.data;
+    },
+    [organisationId, status],
+  );
+
+  const {
+    items,
+    total: liveTotal,
+    loading,
+    hasMore,
+    sentinelRef,
+  } = useInfiniteList<Reminder>({
+    initialItems: reminders,
+    initialTotal: total,
+    pageSize,
+    fetchPage,
+  });
 
   function run(fn: () => Promise<{ success: boolean; error?: string } | unknown>, msg: string) {
     startTransition(async () => {
@@ -66,7 +113,7 @@ export function RemindersList({ reminders }: { reminders: Reminder[] }) {
     });
   }
 
-  if (reminders.length === 0) {
+  if (items.length === 0) {
     return (
       <Card className="items-center gap-2 py-16 text-center">
         <span className="grid size-10 place-items-center rounded-full bg-muted">
@@ -82,9 +129,10 @@ export function RemindersList({ reminders }: { reminders: Reminder[] }) {
   }
 
   return (
-    <Card className="overflow-hidden p-0">
-      <ul className="divide-y divide-border/60">
-        {reminders.map((r) => {
+    <>
+      <Card className="overflow-hidden p-0">
+        <ul className="divide-y divide-border/60">
+          {items.map((r) => {
           const Icon = TYPE_ICON[r.type] ?? CalendarIcon;
           const overdue =
             r.status === "pending" &&
@@ -205,7 +253,16 @@ export function RemindersList({ reminders }: { reminders: Reminder[] }) {
             </li>
           );
         })}
-      </ul>
-    </Card>
+        </ul>
+      </Card>
+
+      <InfiniteScrollFooter
+        loading={loading}
+        hasMore={hasMore}
+        loadedCount={items.length}
+        total={liveTotal}
+        sentinelRef={sentinelRef}
+      />
+    </>
   );
 }

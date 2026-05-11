@@ -5,6 +5,7 @@ import {
   extractLead,
 } from "@/lib/bolna/extract";
 import { recordInboundCall } from "@/lib/bolna/inbound";
+import { clientIpAllowed } from "@/lib/bolna/ip-allowlist";
 import { recordOutboundResult } from "@/lib/bolna/outbound";
 import type { LeadIntent } from "@/types/lead";
 
@@ -59,6 +60,15 @@ function verifySecret(request: NextRequest): boolean {
 
 export async function POST(request: NextRequest) {
   console.log("[inbound webhook] POST received");
+
+  const ipCheck = clientIpAllowed(request);
+  if (!ipCheck.allowed) {
+    console.warn(
+      "[inbound webhook] rejecting non-allowlisted IP",
+      ipCheck.ip,
+    );
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   if (!verifySecret(request)) {
     console.warn("[inbound webhook] secret check failed");

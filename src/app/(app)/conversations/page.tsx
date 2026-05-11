@@ -4,14 +4,13 @@ import {
   type ConversationsFilters,
 } from "@/components/app/conversations-filter-bar";
 import { ConversationsTable } from "@/components/app/conversations-table";
-import { Pagination } from "@/components/app/pagination";
 import { listConversationAgents, listConversations } from "@/actions/calls";
 import { requireSession } from "@/lib/auth/session";
 import type { CallDirection, CallStatus } from "@/types/call";
 
 export const metadata = { title: "Conversations · Skelo" };
 
-const PAGE_SIZE = 10;
+const INITIAL_PAGE_SIZE = 50;
 
 interface PageProps {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -90,15 +89,12 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
   const sp = (await searchParams) ?? {};
   const filters = readFilters(sp);
   const from = rangeToFrom(filters.range);
-  const pageParam = Array.isArray(sp.page) ? sp.page[0] : sp.page;
-  const page = Math.max(1, Number.parseInt(pageParam ?? "1", 10) || 1);
-  const offset = (page - 1) * PAGE_SIZE;
 
   const [callsResult, agentsResult] = await Promise.all([
     listConversations({
       organisation_id: orgId,
-      limit: PAGE_SIZE,
-      offset,
+      limit: INITIAL_PAGE_SIZE,
+      offset: 0,
       direction: filters.direction,
       status: filters.status,
       agent_id: filters.agent,
@@ -113,6 +109,10 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
   const agents = agentsResult.success
     ? agentsResult.data.map((id) => ({ id, label: shortAgentLabel(id) }))
     : [];
+
+  // Remount the table when filters change so the infinite-scroll buffer
+  // resets to the fresh first page rather than appending across filter sets.
+  const tableKey = `${filters.range}|${filters.direction ?? ""}|${filters.status ?? ""}|${filters.agent ?? ""}|${filters.q ?? ""}`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -135,16 +135,20 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
           {callsResult.error}
         </Card>
       ) : (
-        <>
-          <ConversationsTable calls={calls} organisationId={orgId} />
-          <Pagination
-            total={total}
-            pageSize={PAGE_SIZE}
-            currentPage={page}
-            baseHref="/conversations"
-            preserveParams={sp}
-          />
-        </>
+        <ConversationsTable
+          key={tableKey}
+          calls={calls}
+          total={total}
+          pageSize={INITIAL_PAGE_SIZE}
+          organisationId={orgId}
+          filters={{
+            direction: filters.direction,
+            status: filters.status,
+            agent: filters.agent,
+            from,
+            q: filters.q,
+          }}
+        />
       )}
     </div>
   );

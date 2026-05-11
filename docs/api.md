@@ -97,24 +97,13 @@ npx supabase link --project-ref <ref>
 npx supabase db push
 ```
 
-Migrations:
-- `20260420000000_create_organisations.sql`
-- `20260420000001_create_leads.sql`
-- `20260420000002_leads_contacted_on_whatsapp.sql`
-- `20260420000003_create_reminders.sql`
-- `20260420000004_leads_schema_fixes.sql`
-- `20260421000000_leads_add_phone.sql` — adds nullable `phone` column + `(org_slug, phone)` partial index. Required for the WhatsApp dialog.
-- `20260421000001_leads_rls_policies.sql` — enables RLS + policies on `leads`.
-- `20260422000000_bolna_integrations_and_calls.sql` — per-org voice agent config (service-role only) and outbound `calls` table. Required for the outbound dialler.
-- `20260422000001_leads_external_id_full_unique.sql` — replaces the partial unique index on `(org_slug, external_id)` with a full one so the inbound-lead webhook's `onConflict` upsert works.
-- `20260424000000_leads_add_crm_fields.sql` — enums `lead_source`, `lead_status`; columns `source`, `status` (NOT NULL default `'new'`), `notes`, `city`, `pincode`; composite indexes on `(org_slug, status)` and `(org_slug, source)`; backfills `source` to `inbound_call` when `external_id IS NOT NULL`, else `manual`.
-- `20260424000001_calls_direction_and_transcripts.sql` — enums `call_direction`, `call_transcript_status`, `call_turn_speaker`; `calls` gains `direction` (NOT NULL default `'outbound'`), `transcript`, `transcript_status`, `transcript_fetched_at`, `language`; `calls.to_phone` becomes nullable; new child table `call_transcripts` (one row per utterance) with RLS + FTS GIN index on `to_tsvector('simple', text)`.
-- `20260424000002_profiles_and_admin.sql` — new `profiles` table (one row per `auth.users` id) with `display_name` + `is_admin`; trigger `on_auth_user_created` auto-provisions profile rows on signup; backfills existing users; RLS lets a user read & update their own profile **except** `is_admin` (locked via `WITH CHECK`). Admin promotion goes through the service-role client.
-- `20260427000000_leads_rename_columns_and_summary.sql` — renames `leads.product` → `interest`; adds `summary text`; renames `contacted_on_watsapp` → `pending_action` and inverts the semantics (true = action still owed) with a default of `true`. Existing rows are flipped (`old true` → `false`, `old false/null` → `true`). The Status column was hidden from the leads table UI in the same change; the column itself is unchanged.
-- `20260428000000_calls_full_bolna_call_id_unique.sql` — promotes the partial unique index `calls (organisation_id, bolna_call_id) where bolna_call_id is not null` to a **full** unique constraint. PostgREST's `.upsert(..., { onConflict: "organisation_id,bolna_call_id" })` does not echo a partial-index `WHERE` clause, so the partial form raised `42P10 there is no unique or exclusion constraint matching the ON CONFLICT specification`. PostgreSQL still treats each NULL as distinct in unique constraints, so failed-before-dispatch call rows with NULL `bolna_call_id` continue to coexist.
-- `20260429000000_leads_actionable_and_recording.sql` — `leads.actionable text` (≤1000 chars) and `leads.recording_url text` (≤2000 chars), both nullable. `actionable` is a free-form string the agent extracts describing the concrete next step; `recording_url` points at the latest call recording on the provider's storage so operators can reach the audio without joining `calls`.
+Migrations (cleaned up 2026-05-08 — historical migrations consolidated into a single baseline; see `git log -- supabase/migrations/` for the original 18-file evolution):
+
+- `20260507000000_baseline_schema.sql` — **consolidated baseline** capturing every table, enum, RLS policy, trigger, index, and RPC needed before campaigns. Idempotent (`IF NOT EXISTS` everywhere; drop-then-recreate on policies), so safe to re-apply on existing databases. Use as the single bootstrap for any fresh DB (UAT, local dev, new staging). Includes: `organisations`, `leads` (with all final-state columns: `interest`, `summary`, `pending_action`, `source`, `status`, `notes`, `city`, `pincode`, `actionable`, `recording_url`), `reminders`, `bolna_integrations`, `calls` (with `direction`, `transcript`, `transcript_status`, `transcript_fetched_at`, `language`, full unique constraint on `(organisation_id, bolna_call_id)`), `call_transcripts` (with FTS GIN index), `profiles` (with `is_admin`, `on_auth_user_created` trigger), and the `lead_call_activity` / `lead_call_activity_count` RPCs.
 - `20260508000000_campaigns.sql` — bulk outbound calling. New tables `campaigns` (per-batch row with retry config + denormalized counters) and `campaign_contacts` (one row per CSV phone). `calls` gains a nullable `campaign_contact_id uuid` FK so the existing dial pipeline can carry campaign provenance with no other changes. RLS on both new tables follows the `calls` pattern (own-org SELECT/INSERT/UPDATE/DELETE). An AFTER trigger on `campaign_contacts` keeps the counters fresh and auto-flips the parent campaign to `completed` once nothing remains pending or in-flight. Both tables are added to the `supabase_realtime` publication.
 - `20260508000001_campaigns_cron.sql` — companion migration. Enables `pg_cron` and `pg_net`, creates `public.campaigns_cron_tick()` (a `security definer` function that reads the cron URL and shared secret from **Supabase Vault** under names `campaigns_cron_target_url` and `campaigns_cron_secret`), and schedules `campaign-tick` to run every minute. Apply only after enabling the two extensions in the Supabase dashboard, and after running `select vault.create_secret(...)` for both names. The function is a no-op until both secrets are present, so the migration is safe to apply ahead of secret creation.
+
+> Need to spin up a UAT or fresh-dev environment? See [uat.md](uat.md).
 
 ---
 
