@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Loader2Icon, PhoneIcon } from "lucide-react";
+import { PhoneIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   getCampaignCalls,
   type CampaignCallRow,
@@ -104,9 +105,7 @@ export function CampaignCallLogSheet({
 
         <div className="flex-1 overflow-y-auto px-4 pb-4">
           {loading ? (
-            <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-              <Loader2Icon className="mr-2 size-4 animate-spin" /> Loading…
-            </div>
+            <CallLogSkeleton />
           ) : !calls || calls.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-16 text-center">
               <span className="grid size-10 place-items-center rounded-full bg-muted">
@@ -168,5 +167,24 @@ export function CampaignCallLogSheet({
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+function CallLogSkeleton() {
+  return (
+    <ul className="divide-y divide-border/60">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <li key={i} className="grid gap-2 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 space-y-1.5">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-3 w-32" />
+            </div>
+            <Skeleton className="h-5 w-20 shrink-0 rounded-full" />
+          </div>
+          <Skeleton className="h-3 w-3/4" />
+        </li>
+      ))}
+    </ul>
   );
 }

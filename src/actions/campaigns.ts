@@ -16,7 +16,7 @@ import type { Campaign, CampaignContact } from "@/types/campaign";
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const CAMPAIGN_COLUMNS =
-  "id, organisation_id, created_by, name, file_name, agent_id, status, scheduled_at, started_at, completed_at, max_attempts, retry_interval_seconds, retry_on, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
+  "id, organisation_id, created_by, name, file_name, agent_id, from_phone_number, status, scheduled_at, started_at, completed_at, max_attempts, retry_interval_seconds, retry_on, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -62,14 +62,45 @@ export async function createCampaign(
 
   // Confirm the org actually has an outbound voice agent configured before
   // we accept the upload — saves us from creating a campaign that can never
-  // dial anyone.
+  // dial anyone. We also pull the saved agent/number lists so we can verify
+  // the user's selections belong to this tenant (no free-form values from
+  // the client without a Manage-dialog round-trip first).
   const { data: integration } = await admin
     .from("bolna_integrations")
-    .select("agent_id, enabled")
+    .select(
+      "agent_id, agent_ids, from_phone_number, from_phone_numbers, enabled",
+    )
     .eq("organisation_id", parsed.data.organisation_id)
-    .maybeSingle<{ agent_id: string; enabled: boolean }>();
+    .maybeSingle<{
+      agent_id: string;
+      agent_ids: string[];
+      from_phone_number: string | null;
+      from_phone_numbers: string[];
+      enabled: boolean;
+    }>();
   if (!integration) return fail("Voice agent not configured. Set it up in Settings.");
   if (!integration.enabled) return fail("Voice agent is disabled for this workspace.");
+
+  // Resolve picks. null = inherit org default at dispatch time. Anything
+  // explicit must match a saved option to prevent injecting an unowned
+  // agent/number via crafted requests.
+  const allowedAgents = new Set<string>([
+    integration.agent_id,
+    ...(integration.agent_ids ?? []),
+  ]);
+  if (parsed.data.agent_id && !allowedAgents.has(parsed.data.agent_id)) {
+    return fail("Selected agent is not in this workspace's saved agents");
+  }
+  const allowedNumbers = new Set<string>([
+    ...(integration.from_phone_number ? [integration.from_phone_number] : []),
+    ...(integration.from_phone_numbers ?? []),
+  ]);
+  if (
+    parsed.data.from_phone_number &&
+    !allowedNumbers.has(parsed.data.from_phone_number)
+  ) {
+    return fail("Selected dialling number is not in this workspace's saved numbers");
+  }
 
   const isRunNow = parsed.data.schedule_mode === "now";
   const scheduledAt = isRunNow ? null : parsed.data.scheduled_at!;
@@ -81,7 +112,8 @@ export async function createCampaign(
       created_by: user.id,
       name: parsed.data.name,
       file_name: parsed.data.file_name ?? null,
-      agent_id: null, // v1 always falls back to the org default
+      agent_id: parsed.data.agent_id,
+      from_phone_number: parsed.data.from_phone_number,
       status: isRunNow ? "in_progress" : "scheduled",
       scheduled_at: scheduledAt,
       started_at: isRunNow ? new Date().toISOString() : null,

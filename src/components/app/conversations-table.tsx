@@ -8,12 +8,22 @@ import {
   PlayIcon,
 } from "lucide-react";
 
+import { toast } from "sonner";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CallTranscriptDialog } from "@/components/app/call-transcript-dialog";
+import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
+import { listConversations } from "@/actions/calls";
 import { useCallsRealtime } from "@/hooks/use-calls-realtime";
-import type { Call, CallStatus, CallWithLead } from "@/types/call";
+import { useInfiniteList } from "@/hooks/use-infinite-list";
+import type {
+  Call,
+  CallDirection,
+  CallStatus,
+  CallWithLead,
+} from "@/types/call";
 
 const OUTCOME_LABEL: Record<CallStatus, string> = {
   initiated: "Dialling",
@@ -63,14 +73,73 @@ function formatDateTime(iso: string): string {
   }).format(d);
 }
 
+export interface ConversationsTableFilters {
+  direction?: CallDirection;
+  status?: CallStatus;
+  agent?: string;
+  from?: string;
+  q?: string;
+}
+
+interface ConversationsTableProps {
+  calls: CallWithLead[];
+  total: number;
+  pageSize: number;
+  organisationId: string;
+  filters: ConversationsTableFilters;
+}
+
 export function ConversationsTable({
   calls,
+  total,
+  pageSize,
   organisationId,
-}: {
-  calls: CallWithLead[];
-  organisationId: string;
-}) {
-  useCallsRealtime(organisationId);
+  filters,
+}: ConversationsTableProps) {
+  const fetchPage = React.useCallback(
+    async (offset: number, limit: number) => {
+      const res = await listConversations({
+        organisation_id: organisationId,
+        limit,
+        offset,
+        direction: filters.direction,
+        status: filters.status,
+        agent_id: filters.agent,
+        from: filters.from,
+        q: filters.q,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return null;
+      }
+      return res.data;
+    },
+    [
+      organisationId,
+      filters.direction,
+      filters.status,
+      filters.agent,
+      filters.from,
+      filters.q,
+    ],
+  );
+
+  const {
+    items,
+    total: liveTotal,
+    loading,
+    hasMore,
+    pagedBeyondInitial,
+    sentinelRef,
+  } = useInfiniteList<CallWithLead>({
+    initialItems: calls,
+    initialTotal: total,
+    pageSize,
+    fetchPage,
+  });
+
+  useCallsRealtime(organisationId, pagedBeyondInitial);
+
   const [transcriptCall, setTranscriptCall] = React.useState<Call | null>(null);
   const [transcriptOpen, setTranscriptOpen] = React.useState(false);
 
@@ -79,7 +148,7 @@ export function ConversationsTable({
     setTranscriptOpen(true);
   }
 
-  if (calls.length === 0) {
+  if (items.length === 0) {
     return (
       <Card className="items-center gap-3 py-16 text-center">
         <span className="grid size-12 place-items-center rounded-full bg-muted">
@@ -128,7 +197,7 @@ export function ConversationsTable({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {calls.map((call) => {
+              {items.map((call) => {
                 const inbound = call.direction === "inbound";
                 const counterparty = inbound ? call.from_phone : call.to_phone;
                 const phone = call.lead?.phone ?? counterparty ?? null;
@@ -232,6 +301,14 @@ export function ConversationsTable({
           </table>
         </div>
       </Card>
+
+      <InfiniteScrollFooter
+        loading={loading}
+        hasMore={hasMore}
+        loadedCount={items.length}
+        total={liveTotal}
+        sentinelRef={sentinelRef}
+      />
 
       <CallTranscriptDialog
         call={transcriptCall}

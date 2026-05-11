@@ -60,9 +60,37 @@ export async function recordOutboundResult(
     console.error("[outbound] call lookup failed", findErr);
     return { callId: null, transcriptStatus: "failed", matchedExisting: false };
   }
-  if (!existingCall) {
-    console.warn("[outbound] no matching call for execution", externalId);
-    return { callId: null, transcriptStatus: "skipped", matchedExisting: false };
+
+  // Bootstrap a row for direct-from-Bolna dials. Our /campaigns and per-lead
+  // dial flows pre-insert the row in `calls` so the webhook just patches it;
+  // calls placed straight from Bolna's dashboard skip that step. Without
+  // this branch the data was being dropped on the floor (see the
+  // "no matching call for execution …" warnings).
+  let call: {
+    id: string;
+    organisation_id: string;
+    lead_id: string | null;
+  } | null = existingCall;
+  const matchedExisting = !!existingCall;
+
+  if (!call) {
+    const bootstrapped = await bootstrapDirectOutboundCall(
+      admin,
+      externalId,
+      payload,
+    );
+    if (!bootstrapped) {
+      console.warn(
+        "[outbound] no matching call and org could not be resolved",
+        { externalId, agentId: payload.agent_id ?? null },
+      );
+      return {
+        callId: null,
+        transcriptStatus: "skipped",
+        matchedExisting: false,
+      };
+    }
+    call = bootstrapped;
   }
 
   const transcript = payload.transcript ?? null;
@@ -77,12 +105,13 @@ export async function recordOutboundResult(
     : "skipped";
 
   console.log("[outbound] updating call", {
-    callId: existingCall.id,
+    callId: call.id,
     externalId,
     status,
     durationSeconds,
     hasTranscript: !!transcript,
     hasRecording: !!recordingUrl,
+    bootstrapped: !matchedExisting,
   });
 
   const { error: updateErr } = await admin
@@ -98,21 +127,21 @@ export async function recordOutboundResult(
       error_message: payload.error_message ?? null,
       summary: payload.summary ?? null,
     })
-    .eq("id", existingCall.id);
+    .eq("id", call.id);
 
   if (updateErr) {
     console.error("[outbound] call update failed", updateErr);
     return {
-      callId: existingCall.id,
+      callId: call.id,
       transcriptStatus: "failed",
-      matchedExisting: true,
+      matchedExisting,
     };
   }
 
   // Flow the extraction back to the linked lead so the operator sees the new
   // takeaways without opening the transcript. We touch only the fields the
   // agent populates — phone, name, etc. were set when the lead was created.
-  if (existingCall.lead_id && payload.extracted_data) {
+  if (call.lead_id && payload.extracted_data) {
     const extracted = extractLead(payload.extracted_data.lead_data);
     const leadPatch: Record<string, unknown> = {};
     if (extracted.actionable !== null) leadPatch.actionable = extracted.actionable;
@@ -134,19 +163,102 @@ export async function recordOutboundResult(
       const { error: leadErr } = await admin
         .from("leads")
         .update(leadPatch)
-        .eq("id", existingCall.lead_id);
+        .eq("id", call.lead_id);
       if (leadErr) console.error("[outbound] lead patch failed", leadErr);
     }
   }
 
   const finalStatus = await writeTranscriptTurns(
-    existingCall.id,
-    existingCall.organisation_id,
+    call.id,
+    call.organisation_id,
     transcript,
   );
   return {
-    callId: existingCall.id,
+    callId: call.id,
     transcriptStatus: finalStatus,
-    matchedExisting: true,
+    matchedExisting,
   };
+}
+
+/**
+ * Insert a fresh `calls` row for a webhook that arrived without a pre-existing
+ * record. We resolve the tenant via `agent_id` → `bolna_integrations` (matching
+ * either the default `agent_id` or the additional `agent_ids[]` column), then
+ * insert with the basics (phones, agent, direction). The caller patches the
+ * outcome fields (status, transcript, …) immediately after.
+ *
+ * Returns null when the org can't be resolved — most likely the agent isn't
+ * registered to any workspace, so writing the row would orphan it.
+ *
+ * Idempotency: `calls` has UNIQUE (organisation_id, bolna_call_id), so a
+ * duplicate webhook delivery is rejected by the DB. We swallow that error
+ * and refetch the existing row.
+ */
+async function bootstrapDirectOutboundCall(
+  admin: ReturnType<typeof createAdminClient>,
+  externalId: string,
+  payload: BolnaLeadPayload,
+): Promise<{
+  id: string;
+  organisation_id: string;
+  lead_id: string | null;
+} | null> {
+  const agentId = payload.agent_id?.trim();
+  if (!agentId) return null;
+
+  // Match either the default agent_id column or an entry in the additional
+  // `agent_ids[]` array (campaigns can pick from a list of agents).
+  const { data: integration, error: intErr } = await admin
+    .from("bolna_integrations")
+    .select("organisation_id")
+    .or(`agent_id.eq.${agentId},agent_ids.cs.{${agentId}}`)
+    .maybeSingle<{ organisation_id: string }>();
+
+  if (intErr) {
+    console.error("[outbound] integration lookup failed", intErr);
+    return null;
+  }
+  if (!integration) return null;
+
+  const toPhone = payload.telephony_data?.to_number?.trim() ?? null;
+  const fromPhone = payload.telephony_data?.from_number?.trim() ?? null;
+
+  const { data: inserted, error: insertErr } = await admin
+    .from("calls")
+    .insert({
+      organisation_id: integration.organisation_id,
+      bolna_call_id: externalId,
+      agent_id: agentId,
+      direction: "outbound",
+      to_phone: toPhone,
+      from_phone: fromPhone,
+      status: "initiated",
+    })
+    .select("id, organisation_id, lead_id")
+    .single<{
+      id: string;
+      organisation_id: string;
+      lead_id: string | null;
+    }>();
+
+  if (!insertErr && inserted) return inserted;
+
+  // Unique-violation (23505) means the row already exists — a sibling webhook
+  // delivery beat us to it. Refetch and continue with the patch path.
+  if (insertErr && insertErr.code === "23505") {
+    const { data: refetched } = await admin
+      .from("calls")
+      .select("id, organisation_id, lead_id")
+      .eq("organisation_id", integration.organisation_id)
+      .eq("bolna_call_id", externalId)
+      .maybeSingle<{
+        id: string;
+        organisation_id: string;
+        lead_id: string | null;
+      }>();
+    if (refetched) return refetched;
+  }
+
+  console.error("[outbound] bootstrap insert failed", insertErr);
+  return null;
 }

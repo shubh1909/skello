@@ -22,17 +22,19 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { LeadDetailSheet } from "@/components/app/lead-detail-sheet";
 import { ReminderDialog } from "@/components/app/reminder-dialog";
 import { WhatsAppDialog } from "@/components/app/whatsapp-dialog";
 import { WhatsAppIcon } from "@/components/brand/whatsapp-icon";
-import { deleteLead, toggleLeadPendingAction } from "@/actions/leads";
+import { deleteLead, listLeads, toggleLeadPendingAction } from "@/actions/leads";
 import { initiateCall } from "@/actions/calls";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useClientNow } from "@/hooks/use-client-now";
+import { useInfiniteList } from "@/hooks/use-infinite-list";
 import { useLeadsRealtime } from "@/hooks/use-leads-realtime";
-import type { Lead, LeadIntent } from "@/types/lead";
+import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
 
 // Hot stays destructive (red). Warm uses an amber/yellow chip. Cold uses our
 // brand primary so a "cold" lead reads as the baseline state, not as muted.
@@ -186,20 +188,71 @@ function ColumnResizer({
   );
 }
 
+export interface LeadsTableFilters {
+  q?: string;
+  intent?: LeadIntent;
+  pending_action?: boolean;
+  status?: LeadStatus;
+}
+
 interface LeadsTableProps {
   leads: Lead[];
+  total: number;
+  pageSize: number;
   organisationId: string;
   orgSlug: string;
+  filters: LeadsTableFilters;
 }
 
 export function LeadsTable({
   leads,
+  total,
+  pageSize,
   organisationId,
   orgSlug,
+  filters,
 }: LeadsTableProps) {
   const { widths, setWidth, totalWidth } = useColumnWidths();
   const router = useRouter();
-  useLeadsRealtime(orgSlug);
+
+  const fetchPage = React.useCallback(
+    async (offset: number, limit: number) => {
+      const res = await listLeads({
+        org_slug: orgSlug,
+        limit,
+        offset,
+        q: filters.q,
+        lead_intent: filters.intent,
+        pending_action: filters.pending_action,
+        status: filters.status,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return null;
+      }
+      return res.data;
+    },
+    [orgSlug, filters.q, filters.intent, filters.pending_action, filters.status],
+  );
+
+  const {
+    items,
+    total: liveTotal,
+    loading,
+    hasMore,
+    pagedBeyondInitial,
+    sentinelRef,
+  } = useInfiniteList<Lead>({
+    initialItems: leads,
+    initialTotal: total,
+    pageSize,
+    fetchPage,
+  });
+
+  // Pause realtime once we've scrolled past the initial page so a single
+  // event doesn't snap the user back to row 50.
+  useLeadsRealtime(orgSlug, pagedBeyondInitial);
+
   const [waLead, setWaLead] = React.useState<Lead | null>(null);
   const [waOpen, setWaOpen] = React.useState(false);
   const [reminderLead, setReminderLead] = React.useState<Lead | null>(null);
@@ -210,12 +263,12 @@ export function LeadsTable({
   const [pending, startTransition] = React.useTransition();
   const now = useClientNow();
 
-  // Always read the freshest lead from the prop array so the sheet stays in
+  // Always read the freshest lead from the live array so the sheet stays in
   // sync after router.refresh() (e.g., after Mark-done re-runs).
   const detailLead = React.useMemo(
     () =>
-      detailLeadId ? (leads.find((l) => l.id === detailLeadId) ?? null) : null,
-    [leads, detailLeadId],
+      detailLeadId ? (items.find((l) => l.id === detailLeadId) ?? null) : null,
+    [items, detailLeadId],
   );
 
   function openWhatsApp(lead: Lead) {
@@ -275,7 +328,7 @@ export function LeadsTable({
     });
   }
 
-  if (leads.length === 0) {
+  if (items.length === 0) {
     return (
       <Card className="items-center gap-3 py-24 text-center">
         <span className="grid size-14 place-items-center rounded-full bg-muted">
@@ -392,7 +445,7 @@ export function LeadsTable({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {leads.map((lead) => {
+              {items.map((lead) => {
                 const intent = lead.lead_intent ?? "cold";
                 const isPending = pending && pendingLeadId === lead.id;
                 const hasPhone = Boolean(lead.phone);
@@ -591,6 +644,14 @@ export function LeadsTable({
           </table>
         </div>
       </Card>
+
+      <InfiniteScrollFooter
+        loading={loading}
+        hasMore={hasMore}
+        loadedCount={items.length}
+        total={liveTotal}
+        sentinelRef={sentinelRef}
+      />
 
       <WhatsAppDialog
         key={waLead?.id ?? "wa-empty"}

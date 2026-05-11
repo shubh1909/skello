@@ -16,8 +16,15 @@ const REFRESH_DEBOUNCE_MS = 350;
  * RLS still gates which events the client receives, so cross-tenant leaks
  * are not possible from this subscription alone.
  */
-export function useLeadsRealtime(orgSlug: string | null | undefined) {
+export function useLeadsRealtime(
+  orgSlug: string | null | undefined,
+  paused: boolean = false,
+) {
   const router = useRouter();
+  // Read-through ref so the subscription callback always sees the latest
+  // pause state without rebuilding the channel.
+  const pausedRef = React.useRef(paused);
+  pausedRef.current = paused;
 
   React.useEffect(() => {
     if (!orgSlug) return;
@@ -26,6 +33,7 @@ export function useLeadsRealtime(orgSlug: string | null | undefined) {
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     function queueRefresh() {
+      if (pausedRef.current) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         router.refresh();

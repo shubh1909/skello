@@ -2,7 +2,6 @@ import { ClockIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Pagination } from "@/components/app/pagination";
 import { ReminderDialog } from "@/components/app/reminder-dialog";
 import { RemindersList } from "@/components/app/reminders-list";
 import { listReminders } from "@/actions/reminders";
@@ -10,10 +9,10 @@ import { requireSession } from "@/lib/auth/session";
 
 export const metadata = { title: "Reminders · Skelo" };
 
-const PAGE_SIZE = 10;
+const INITIAL_PAGE_SIZE = 50;
 
 interface PageProps {
-  searchParams?: Promise<{ status?: string; page?: string }>;
+  searchParams?: Promise<{ status?: string }>;
 }
 
 export default async function RemindersPage({ searchParams }: PageProps) {
@@ -21,13 +20,11 @@ export default async function RemindersPage({ searchParams }: PageProps) {
   const sp = (await searchParams) ?? {};
   const status =
     sp.status === "done" || sp.status === "dismissed" ? sp.status : "pending";
-  const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1);
-  const offset = (page - 1) * PAGE_SIZE;
 
   const result = await listReminders({
     organisation_id: session.organisation.id,
-    limit: PAGE_SIZE,
-    offset,
+    limit: INITIAL_PAGE_SIZE,
+    offset: 0,
     status,
   });
 
@@ -66,16 +63,16 @@ export default async function RemindersPage({ searchParams }: PageProps) {
           {result.error}
         </Card>
       ) : (
-        <>
-          <RemindersList reminders={items} />
-          <Pagination
-            total={total}
-            pageSize={PAGE_SIZE}
-            currentPage={page}
-            baseHref="/reminders"
-            preserveParams={{ status }}
-          />
-        </>
+        <RemindersList
+          // Remount when the status tab changes so useInfiniteList resets
+          // to the fresh first page rather than appending across statuses.
+          key={status}
+          reminders={items}
+          total={total}
+          pageSize={INITIAL_PAGE_SIZE}
+          organisationId={session.organisation.id}
+          status={status}
+        />
       )}
     </div>
   );

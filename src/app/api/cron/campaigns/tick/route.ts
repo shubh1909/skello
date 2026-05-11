@@ -24,6 +24,8 @@ interface DueContact {
     organisation_id: string;
     status: string;
     max_attempts: number;
+    agent_id: string | null;
+    from_phone_number: string | null;
   } | null;
 }
 
@@ -64,7 +66,7 @@ export async function POST(request: NextRequest) {
   const { data, error } = await admin
     .from("campaign_contacts")
     .select(
-      "id, campaign_id, organisation_id, phone, name, metadata, attempt, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts)",
+      "id, campaign_id, organisation_id, phone, name, metadata, attempt, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number)",
     )
     .eq("status", "pending")
     .lte("next_attempt_at", nowIso)
@@ -142,12 +144,20 @@ export async function POST(request: NextRequest) {
         return { id: contact.id, ok: false, reason: "lost_claim" };
       }
 
+      // Per-campaign overrides win; null fields fall back to the org default
+      // stored on bolna_integrations. This is the seam that makes the
+      // multi-agent / multi-from-number picker work without per-call branching.
+      const resolvedAgentId =
+        contact.campaign?.agent_id ?? integration.agent_id;
+      const resolvedFromPhone =
+        contact.campaign?.from_phone_number ?? integration.from_phone_number;
+
       try {
         const result = await initiateBolnaCall({
           apiKey: integration.api_key,
-          agentId: integration.agent_id,
+          agentId: resolvedAgentId,
           recipientPhone: contact.phone,
-          fromPhone: integration.from_phone_number,
+          fromPhone: resolvedFromPhone,
           metadata: {
             organisation_id: contact.organisation_id,
             campaign_id: contact.campaign_id,
@@ -165,8 +175,8 @@ export async function POST(request: NextRequest) {
             bolna_call_id: result.bolnaCallId,
             direction: "outbound",
             to_phone: contact.phone,
-            from_phone: integration.from_phone_number,
-            agent_id: integration.agent_id,
+            from_phone: resolvedFromPhone,
+            agent_id: resolvedAgentId,
             status: "initiated",
           })
           .select("id")
@@ -210,8 +220,8 @@ export async function POST(request: NextRequest) {
           organisation_id: contact.organisation_id,
           campaign_contact_id: contact.id,
           to_phone: contact.phone,
-          from_phone: integration.from_phone_number,
-          agent_id: integration.agent_id,
+          from_phone: resolvedFromPhone,
+          agent_id: resolvedAgentId,
           status: "failed",
           direction: "outbound",
           error_message: reason.slice(0, 500),

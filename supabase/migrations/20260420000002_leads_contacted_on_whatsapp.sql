@@ -1,3 +1,0 @@
--- Superseded. `contacted_on_watsapp` (note: spelling in live schema) is already
--- defined in 20260420000001_create_leads.sql. This file is kept as a no-op
--- for migration-history continuity.

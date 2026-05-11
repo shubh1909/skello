@@ -2,6 +2,7 @@ import { after, NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { enrichOutboundCall } from "@/lib/bolna/enrich";
+import { clientIpAllowed } from "@/lib/bolna/ip-allowlist";
 import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { CallStatus } from "@/types/call";
@@ -73,6 +74,14 @@ function verifySecret(request: NextRequest): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  const ipCheck = clientIpAllowed(request);
+  if (!ipCheck.allowed) {
+    console.warn(
+      "[bolna/calls] rejecting webhook from non-allowlisted IP",
+      ipCheck.ip,
+    );
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
   if (!verifySecret(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

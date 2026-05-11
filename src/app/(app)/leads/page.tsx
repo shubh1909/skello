@@ -10,31 +10,28 @@ import { Card } from "@/components/ui/card";
 import { LeadCreateDialog } from "@/components/app/lead-create-dialog";
 import { LeadExportDialog } from "@/components/app/lead-export-dialog";
 import { LeadsActivityTable } from "@/components/app/leads-activity-table";
-import { Pagination } from "@/components/app/pagination";
 import { StatCard } from "@/components/app/stat-card";
 import { listLeadsWithCallActivity } from "@/actions/lead-activity";
 import { requireSession } from "@/lib/auth/session";
 
 export const metadata = { title: "Leads · Skelo" };
 
-const PAGE_SIZE = 10;
+const INITIAL_PAGE_SIZE = 50;
 
 interface PageProps {
-  searchParams?: Promise<{ include?: string; page?: string }>;
+  searchParams?: Promise<{ include?: string }>;
 }
 
 export default async function LeadsPage({ searchParams }: PageProps) {
   const session = await requireSession();
   const sp = (await searchParams) ?? {};
   const includeZero = sp.include === "all";
-  const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1);
-  const offset = (page - 1) * PAGE_SIZE;
 
   const result = await listLeadsWithCallActivity({
     org_slug: session.organisation.slug,
     include_zero_calls: includeZero,
-    limit: PAGE_SIZE,
-    offset,
+    limit: INITIAL_PAGE_SIZE,
+    offset: 0,
   });
 
   if (!result.success) {
@@ -109,17 +106,15 @@ export default async function LeadsPage({ searchParams }: PageProps) {
       </nav>
 
       <LeadsActivityTable
+        // Remount when the filter flips so useInfiniteList re-initializes
+        // from the fresh first page rather than appending across filters.
+        key={includeZero ? "all" : "with-calls"}
         rows={rows}
+        total={total}
+        pageSize={INITIAL_PAGE_SIZE}
         organisationId={session.organisation.id}
         orgSlug={session.organisation.slug}
-      />
-
-      <Pagination
-        total={total}
-        pageSize={PAGE_SIZE}
-        currentPage={page}
-        baseHref="/leads"
-        preserveParams={{ include: includeZero ? "all" : undefined }}
+        includeZeroCalls={includeZero}
       />
     </div>
   );

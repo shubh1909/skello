@@ -35,6 +35,23 @@ export const createCampaignSchema = z.object({
   schedule_mode: z.enum(["now", "later"]),
   // ISO datetime, required when schedule_mode === "later"
   scheduled_at: z.string().datetime().nullish(),
+  // Either of these can be left null/empty to inherit the org default from
+  // bolna_integrations. If supplied, the action verifies the value is one of
+  // the saved options (or the default itself).
+  agent_id: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .nullish()
+    .transform((v) => (v && v.length > 0 ? v : null)),
+  from_phone_number: z
+    .string()
+    .trim()
+    .min(5)
+    .max(32)
+    .nullish()
+    .transform((v) => (v && v.length > 0 ? v : null)),
   max_attempts: z.number().int().min(1).max(6),
   retry_interval_seconds: z.number().int().min(60).max(86400),
   retry_on: z.array(campaignRetryTriggerSchema).max(4),

@@ -14,18 +14,23 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { LeadDetailSheet } from "@/components/app/lead-detail-sheet";
 import { ReminderDialog } from "@/components/app/reminder-dialog";
 import { WhatsAppDialog } from "@/components/app/whatsapp-dialog";
 import { WhatsAppIcon } from "@/components/brand/whatsapp-icon";
 import { deleteLead, toggleLeadPendingAction } from "@/actions/leads";
 import { initiateCall } from "@/actions/calls";
+import {
+  listLeadsWithCallActivity,
+  type LeadWithCallActivity,
+} from "@/actions/lead-activity";
 import { formatRelative, initialsOf } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useClientNow } from "@/hooks/use-client-now";
 import { useCallsRealtime } from "@/hooks/use-calls-realtime";
+import { useInfiniteList } from "@/hooks/use-infinite-list";
 import { useLeadsRealtime } from "@/hooks/use-leads-realtime";
-import type { LeadWithCallActivity } from "@/actions/lead-activity";
 import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
 
 const INTENT_CLASSES: Record<LeadIntent, string> = {
@@ -71,22 +76,59 @@ function formatDuration(totalSeconds: number): string {
 
 interface LeadsActivityTableProps {
   rows: LeadWithCallActivity[];
+  total: number;
+  pageSize: number;
   organisationId: string;
   orgSlug: string;
+  includeZeroCalls: boolean;
 }
 
 export function LeadsActivityTable({
   rows,
+  total,
+  pageSize,
   organisationId,
   orgSlug,
+  includeZeroCalls,
 }: LeadsActivityTableProps) {
   const router = useRouter();
   const now = useClientNow();
-  // Refresh on bursts of lead OR call changes — both shift the displayed
-  // counts and ordering. Hooks debounce internally so concurrent fires
-  // collapse to one server round-trip.
-  useLeadsRealtime(orgSlug);
-  useCallsRealtime(organisationId);
+
+  const fetchPage = React.useCallback(
+    async (offset: number, limit: number) => {
+      const res = await listLeadsWithCallActivity({
+        org_slug: orgSlug,
+        include_zero_calls: includeZeroCalls,
+        limit,
+        offset,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return null;
+      }
+      return res.data;
+    },
+    [orgSlug, includeZeroCalls],
+  );
+
+  const {
+    items,
+    total: liveTotal,
+    loading,
+    hasMore,
+    pagedBeyondInitial,
+    sentinelRef,
+  } = useInfiniteList<LeadWithCallActivity>({
+    initialItems: rows,
+    initialTotal: total,
+    pageSize,
+    fetchPage,
+  });
+
+  // Pause realtime once we've loaded beyond the initial page so a single
+  // event doesn't snap the user back to row 50.
+  useLeadsRealtime(orgSlug, pagedBeyondInitial);
+  useCallsRealtime(organisationId, pagedBeyondInitial);
 
   const [waLead, setWaLead] = React.useState<Lead | null>(null);
   const [waOpen, setWaOpen] = React.useState(false);
@@ -99,8 +141,8 @@ export function LeadsActivityTable({
 
   const detailLead = React.useMemo(
     () =>
-      detailLeadId ? (rows.find((l) => l.id === detailLeadId) ?? null) : null,
-    [rows, detailLeadId],
+      detailLeadId ? (items.find((l) => l.id === detailLeadId) ?? null) : null,
+    [items, detailLeadId],
   );
 
   function openWhatsApp(lead: Lead) {
@@ -160,7 +202,7 @@ export function LeadsActivityTable({
     });
   }
 
-  if (rows.length === 0) {
+  if (items.length === 0) {
     return (
       <Card className="items-center gap-3 py-24 text-center">
         <span className="grid size-14 place-items-center rounded-full bg-muted">
@@ -210,7 +252,7 @@ export function LeadsActivityTable({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {rows.map((row) => {
+              {items.map((row) => {
                 const intent = row.lead_intent ?? "cold";
                 const status = row.status;
                 const isPending = pending && pendingLeadId === row.id;
@@ -377,6 +419,14 @@ export function LeadsActivityTable({
           </table>
         </div>
       </Card>
+
+      <InfiniteScrollFooter
+        loading={loading}
+        hasMore={hasMore}
+        loadedCount={items.length}
+        total={liveTotal}
+        sentinelRef={sentinelRef}
+      />
 
       <WhatsAppDialog
         key={waLead?.id ?? "wa-empty"}

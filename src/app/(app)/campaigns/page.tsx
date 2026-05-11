@@ -8,40 +8,60 @@ import {
 import { Card } from "@/components/ui/card";
 import { CampaignUploadDialog } from "@/components/app/campaign-upload-dialog";
 import { CampaignsTable } from "@/components/app/campaigns-table";
-import { Pagination } from "@/components/app/pagination";
 import { StatCard } from "@/components/app/stat-card";
+import { VoiceConfigDialog } from "@/components/app/voice-config-dialog";
 import { listCampaigns } from "@/actions/campaigns";
 import { requireSession } from "@/lib/auth/session";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const metadata = { title: "Campaigns · Skelo" };
 
-const PAGE_SIZE = 20;
+const INITIAL_PAGE_SIZE = 50;
 
-interface PageProps {
-  searchParams?: Promise<{ page?: string }>;
-}
-
-export default async function CampaignsPage({ searchParams }: PageProps) {
+export default async function CampaignsPage() {
   const session = await requireSession();
-  const sp = (await searchParams) ?? {};
-  const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1);
-  const offset = (page - 1) * PAGE_SIZE;
 
-  const [listResult, agentResult] = await Promise.all([
+  const [listResult, voiceLabels] = await Promise.all([
     listCampaigns({
       organisation_id: session.organisation.id,
-      limit: PAGE_SIZE,
-      offset,
+      limit: INITIAL_PAGE_SIZE,
+      offset: 0,
     }),
     (async () => {
+      // Build lookup tables so the table can render labels next to each
+      // campaign's chosen agent / dialling number without N+1 queries.
       const admin = createAdminClient();
       const { data } = await admin
         .from("bolna_integrations")
-        .select("agent_id")
+        .select(
+          "agent_id, agent_labels, from_phone_number, from_phone_labels",
+        )
         .eq("organisation_id", session.organisation.id)
-        .maybeSingle<{ agent_id: string }>();
-      return data?.agent_id ?? null;
+        .maybeSingle<{
+          agent_id: string;
+          agent_labels: Record<string, unknown>;
+          from_phone_number: string | null;
+          from_phone_labels: Record<string, unknown>;
+        }>();
+      const agentLabels: Record<string, string> = {};
+      const numberLabels: Record<string, string> = {};
+      if (data) {
+        for (const [k, v] of Object.entries(data.agent_labels ?? {})) {
+          if (typeof v === "string" && v.length > 0) agentLabels[k] = v;
+        }
+        for (const [k, v] of Object.entries(data.from_phone_labels ?? {})) {
+          if (typeof v === "string" && v.length > 0) numberLabels[k] = v;
+        }
+        if (data.agent_id && !agentLabels[data.agent_id]) {
+          agentLabels[data.agent_id] = "Default agent";
+        }
+      }
+      return {
+        defaultAgentId: data?.agent_id ?? null,
+        defaultFromPhone: data?.from_phone_number ?? null,
+        agentLabels,
+        numberLabels,
+      };
     })(),
   ]);
 
@@ -73,6 +93,7 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <VoiceConfigDialog organisationId={session.organisation.id} />
           <CampaignUploadDialog organisationId={session.organisation.id} />
         </div>
       </header>
@@ -106,15 +127,13 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
 
       <CampaignsTable
         rows={rows}
-        organisationId={session.organisation.id}
-        agentName={agentResult}
-      />
-
-      <Pagination
         total={total}
-        pageSize={PAGE_SIZE}
-        currentPage={page}
-        baseHref="/campaigns"
+        pageSize={INITIAL_PAGE_SIZE}
+        organisationId={session.organisation.id}
+        defaultAgentId={voiceLabels.defaultAgentId}
+        defaultFromPhone={voiceLabels.defaultFromPhone}
+        agentLabels={voiceLabels.agentLabels}
+        numberLabels={voiceLabels.numberLabels}
       />
     </div>
   );

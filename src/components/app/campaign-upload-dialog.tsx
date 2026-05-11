@@ -33,23 +33,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { VoiceConfigDialog } from "@/components/app/voice-config-dialog";
 import { createCampaign } from "@/actions/campaigns";
+import { getVoiceConfig } from "@/actions/voice-config";
 import {
   parseCampaignCsv,
   type ParsedCsv,
 } from "@/lib/campaigns/csv-parse";
 import { cn } from "@/lib/utils";
 import type { CampaignRetryTrigger } from "@/types/campaign";
+import type { VoiceConfig } from "@/types/voice-config";
 
 type ScheduleMode = "now" | "later";
 
 const RETRY_INTERVAL_OPTIONS: { value: number; label: string }[] = [
-  { value: 5 * 60, label: "5 minutes" },
-  { value: 15 * 60, label: "15 minutes" },
-  { value: 30 * 60, label: "30 minutes" },
-  { value: 60 * 60, label: "1 hour" },
-  { value: 4 * 60 * 60, label: "4 hours" },
-  { value: 24 * 60 * 60, label: "24 hours" },
+  { value: 5 * 60, label: "5 min" },
+  { value: 15 * 60, label: "15 min" },
+  { value: 30 * 60, label: "30 min" },
+  { value: 60 * 60, label: "60 min" },
+  { value: 4 * 60 * 60, label: "4 hr" },
+  { value: 24 * 60 * 60, label: "24 hr" },
 ];
 
 const RETRY_TRIGGER_OPTIONS: { value: CampaignRetryTrigger; label: string; hint: string }[] = [
@@ -94,6 +97,19 @@ function defaultScheduleAt(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function defaultAgentPlaceholder(c: VoiceConfig | null): string {
+  if (!c) return "Loading…";
+  if (c.agents.length === 0) return "No agents — open Manage to add one";
+  return "Workspace default";
+}
+
+function defaultNumberPlaceholder(c: VoiceConfig | null): string {
+  if (!c) return "Loading…";
+  if (c.dial_numbers.length === 0)
+    return "No numbers — open Manage to add one";
+  return "Workspace default";
+}
+
 interface CampaignUploadDialogProps {
   organisationId: string;
 }
@@ -120,6 +136,38 @@ export function CampaignUploadDialog({
   );
   const [submitting, setSubmitting] = React.useState(false);
 
+  // Voice config (agents + dialling numbers). Fetched lazily once the dialog
+  // opens; the empty-string select value means "use the workspace default".
+  const [voiceConfig, setVoiceConfig] = React.useState<VoiceConfig | null>(
+    null,
+  );
+  const [voiceLoading, setVoiceLoading] = React.useState(false);
+  const [agentChoice, setAgentChoice] = React.useState<string>("");
+  const [fromPhoneChoice, setFromPhoneChoice] = React.useState<string>("");
+
+  const loadVoiceConfig = React.useCallback(async () => {
+    setVoiceLoading(true);
+    const res = await getVoiceConfig({ organisation_id: organisationId });
+    setVoiceLoading(false);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    setVoiceConfig(res.data);
+    // Auto-select the workspace default so the user doesn't have to think
+    // about it for the common case. Only sets if the user hasn't picked yet.
+    setAgentChoice((prev) => {
+      if (prev) return prev;
+      const def = res.data.agents.find((a) => a.is_default);
+      return def ? def.id : "";
+    });
+    setFromPhoneChoice((prev) => {
+      if (prev) return prev;
+      const def = res.data.dial_numbers.find((n) => n.is_default);
+      return def ? def.phone : "";
+    });
+  }, [organisationId]);
+
   function reset() {
     setName("");
     setFile(null);
@@ -132,12 +180,15 @@ export function CampaignUploadDialog({
     setRetryInterval(15 * 60);
     setRetryOn(DEFAULT_RETRY_TRIGGERS);
     setSubmitting(false);
+    setAgentChoice("");
+    setFromPhoneChoice("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function onOpenChange(next: boolean) {
     setOpen(next);
     if (!next) reset();
+    if (next) void loadVoiceConfig();
   }
 
   async function ingestFile(f: File | null) {
@@ -232,6 +283,10 @@ export function CampaignUploadDialog({
           scheduleMode === "later"
             ? new Date(scheduledAt).toISOString()
             : null,
+        // Empty string = "use workspace default"; the action treats null/empty
+        // identically and falls back at dispatch time.
+        agent_id: agentChoice || null,
+        from_phone_number: fromPhoneChoice || null,
         max_attempts: retries + 1,
         retry_interval_seconds: retryInterval,
         retry_on: retryOn,
@@ -266,7 +321,7 @@ export function CampaignUploadDialog({
           </Button>
         }
       />
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>New campaign</DialogTitle>
           <DialogDescription>
@@ -418,6 +473,115 @@ export function CampaignUploadDialog({
             </p>
           </div>
 
+          <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/30 p-3.5">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+                Voice setup
+              </Label>
+              <VoiceConfigDialog
+                organisationId={organisationId}
+                onConfigChange={(c) => {
+                  setVoiceConfig(c);
+                  // Drop choices that no longer exist after a removal so the
+                  // select doesn't show a stale value.
+                  const agentSet = new Set(c.agents.map((a) => a.id));
+                  if (agentChoice && !agentSet.has(agentChoice)) {
+                    setAgentChoice("");
+                  }
+                  const phoneSet = new Set(c.dial_numbers.map((n) => n.phone));
+                  if (fromPhoneChoice && !phoneSet.has(fromPhoneChoice)) {
+                    setFromPhoneChoice("");
+                  }
+                }}
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="campaign-agent" className="text-xs">
+                  Voice agent
+                </Label>
+                <Select
+                  value={agentChoice}
+                  onValueChange={(v) => setAgentChoice(v ?? "")}
+                  disabled={submitting || voiceLoading}
+                >
+                  <SelectTrigger id="campaign-agent" className="w-full">
+                    {/* Render the label, not the underlying agent_id, so the
+                        trigger reads as a friendly name rather than the
+                        cryptic Bolna id. */}
+                    <SelectValue
+                      placeholder={defaultAgentPlaceholder(voiceConfig)}
+                    >
+                      {(value: unknown) => {
+                        if (typeof value !== "string" || !value) {
+                          return defaultAgentPlaceholder(voiceConfig);
+                        }
+                        const found = voiceConfig?.agents.find(
+                          (a) => a.id === value,
+                        );
+                        return found ? found.label : value;
+                      }}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(voiceConfig?.agents ?? []).map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        <span className="font-medium">{a.label}</span>
+                        {a.is_default ? (
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            (default)
+                          </span>
+                        ) : null}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="campaign-from-phone" className="text-xs">
+                  Dialling number
+                </Label>
+                <Select
+                  value={fromPhoneChoice}
+                  onValueChange={(v) => setFromPhoneChoice(v ?? "")}
+                  disabled={submitting || voiceLoading}
+                >
+                  <SelectTrigger id="campaign-from-phone" className="w-full">
+                    <SelectValue
+                      placeholder={defaultNumberPlaceholder(voiceConfig)}
+                    >
+                      {(value: unknown) => {
+                        if (typeof value !== "string" || !value) {
+                          return defaultNumberPlaceholder(voiceConfig);
+                        }
+                        const found = voiceConfig?.dial_numbers.find(
+                          (n) => n.phone === value,
+                        );
+                        return found ? found.label : value;
+                      }}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(voiceConfig?.dial_numbers ?? []).map((n) => (
+                      <SelectItem key={n.phone} value={n.phone}>
+                        <span className="font-medium">{n.label}</span>
+                        <span className="ml-1 font-mono text-[10px] text-muted-foreground">
+                          {n.phone}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              Pick a voice agent from your saved list. If you don&apos;t pick
+              a dialling number, we&apos;ll use the default caller ID
+              configured on that voice agent.
+            </p>
+          </div>
+
           <div className="grid gap-2">
             <Label>When to run</Label>
             <div className="grid grid-cols-2 gap-2">
@@ -487,7 +651,17 @@ export function CampaignUploadDialog({
                 disabled={submitting || retries === 0}
               >
                 <SelectTrigger id="campaign-interval" className="w-full">
-                  <SelectValue />
+                  {/* base-ui's Value renders the underlying string value
+                      ("900") by default; map it back to the friendly label
+                      ("15 min") so the trigger doesn't show seconds. */}
+                  <SelectValue>
+                    {(value: unknown) => {
+                      const found = RETRY_INTERVAL_OPTIONS.find(
+                        (o) => String(o.value) === value,
+                      );
+                      return found ? found.label : "—";
+                    }}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {RETRY_INTERVAL_OPTIONS.map((o) => (

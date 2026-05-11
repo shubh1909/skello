@@ -13,7 +13,6 @@ import {
   type LeadFilters,
 } from "@/components/app/leads-filter-bar";
 import { LeadsTable } from "@/components/app/leads-table";
-import { Pagination } from "@/components/app/pagination";
 import { StatCard } from "@/components/app/stat-card";
 import { listLeads } from "@/actions/leads";
 import { listReminders } from "@/actions/reminders";
@@ -23,7 +22,7 @@ import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
 
 export const metadata = { title: "Callers · Skelo" };
 
-const PAGE_SIZE = 10;
+const INITIAL_PAGE_SIZE = 50;
 
 interface PageProps {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -70,23 +69,21 @@ export default async function CallersPage({ searchParams }: PageProps) {
   const orgSlug = session.organisation.slug;
   const sp = (await searchParams) ?? {};
   const filters = readFilters(sp);
-  const pageParam = Array.isArray(sp.page) ? sp.page[0] : sp.page;
-  const page = Math.max(1, Number.parseInt(pageParam ?? "1", 10) || 1);
-  const offset = (page - 1) * PAGE_SIZE;
+  const pendingAction =
+    filters.pending === "yes"
+      ? true
+      : filters.pending === "no"
+        ? false
+        : undefined;
 
   const [result, remindersResult] = await Promise.all([
     listLeads({
       org_slug: orgSlug,
-      limit: PAGE_SIZE,
-      offset,
+      limit: INITIAL_PAGE_SIZE,
+      offset: 0,
       q: filters.q,
       lead_intent: filters.intent,
-      pending_action:
-        filters.pending === "yes"
-          ? true
-          : filters.pending === "no"
-            ? false
-            : undefined,
+      pending_action: pendingAction,
       status: filters.status,
     }),
     listReminders({
@@ -197,16 +194,22 @@ export default async function CallersPage({ searchParams }: PageProps) {
           {result.error}
         </Card>
       ) : (
-        <>
-          <LeadsTable leads={leads} organisationId={orgId} orgSlug={orgSlug} />
-          <Pagination
-            total={total}
-            pageSize={PAGE_SIZE}
-            currentPage={page}
-            baseHref="/callers"
-            preserveParams={sp}
-          />
-        </>
+        <LeadsTable
+          // Remount when any filter changes so useInfiniteList resets to the
+          // fresh first page rather than appending across filter sets.
+          key={`${filters.q ?? ""}|${filters.intent ?? ""}|${filters.pending ?? ""}|${filters.status ?? ""}`}
+          leads={leads}
+          total={total}
+          pageSize={INITIAL_PAGE_SIZE}
+          organisationId={orgId}
+          orgSlug={orgSlug}
+          filters={{
+            q: filters.q,
+            intent: filters.intent,
+            pending_action: pendingAction,
+            status: filters.status,
+          }}
+        />
       )}
     </div>
   );

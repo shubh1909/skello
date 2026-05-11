@@ -16,13 +16,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CampaignCallLogSheet } from "@/components/app/campaign-call-log-sheet";
+import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import {
   deleteCampaign,
+  listCampaigns,
   runCampaignNow,
   stopCampaign,
 } from "@/actions/campaigns";
 import { useCampaignsRealtime } from "@/hooks/use-campaigns-realtime";
 import { useClientNow } from "@/hooks/use-client-now";
+import { useInfiniteList } from "@/hooks/use-infinite-list";
 import { formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Campaign, CampaignStatus } from "@/types/campaign";
@@ -51,18 +54,59 @@ const STATUS_CLASS: Record<CampaignStatus, string> = {
 
 interface CampaignsTableProps {
   rows: Campaign[];
+  total: number;
+  pageSize: number;
   organisationId: string;
-  agentName: string | null;
+  defaultAgentId: string | null;
+  defaultFromPhone: string | null;
+  agentLabels: Record<string, string>;
+  numberLabels: Record<string, string>;
 }
 
 export function CampaignsTable({
   rows,
+  total,
+  pageSize,
   organisationId,
-  agentName,
+  defaultAgentId,
+  defaultFromPhone,
+  agentLabels,
+  numberLabels,
 }: CampaignsTableProps) {
   const router = useRouter();
   const now = useClientNow();
-  useCampaignsRealtime(organisationId);
+
+  const fetchPage = React.useCallback(
+    async (offset: number, limit: number) => {
+      const res = await listCampaigns({
+        organisation_id: organisationId,
+        limit,
+        offset,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return null;
+      }
+      return res.data;
+    },
+    [organisationId],
+  );
+
+  const {
+    items,
+    total: liveTotal,
+    loading,
+    hasMore,
+    pagedBeyondInitial,
+    sentinelRef,
+  } = useInfiniteList<Campaign>({
+    initialItems: rows,
+    initialTotal: total,
+    pageSize,
+    fetchPage,
+  });
+
+  useCampaignsRealtime(organisationId, pagedBeyondInitial);
 
   const [pendingId, setPendingId] = React.useState<string | null>(null);
   const [pending, startTransition] = React.useTransition();
@@ -133,11 +177,11 @@ export function CampaignsTable({
   }
 
   const logCampaign = React.useMemo(
-    () => rows.find((r) => r.id === logCampaignId) ?? null,
-    [rows, logCampaignId],
+    () => items.find((r) => r.id === logCampaignId) ?? null,
+    [items, logCampaignId],
   );
 
-  if (rows.length === 0) {
+  if (items.length === 0) {
     return (
       <Card className="items-center gap-3 py-24 text-center">
         <span className="grid size-14 place-items-center rounded-full bg-muted">
@@ -172,7 +216,7 @@ export function CampaignsTable({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {rows.map((c) => {
+              {items.map((c) => {
                 const isBusy = pending && pendingId === c.id;
                 const canRun =
                   c.status === "scheduled" ||
@@ -251,7 +295,26 @@ export function CampaignsTable({
                       </div>
                     </td>
                     <td className="px-3 py-4 text-xs text-muted-foreground">
-                      {agentName ?? c.agent_id ?? "—"}
+                      {(() => {
+                        const aid = c.agent_id ?? defaultAgentId;
+                        const aLabel = aid
+                          ? (agentLabels[aid] ?? aid)
+                          : "—";
+                        const phone = c.from_phone_number ?? defaultFromPhone;
+                        const pLabel = phone
+                          ? (numberLabels[phone] ?? phone)
+                          : null;
+                        return (
+                          <span className="flex flex-col gap-0.5">
+                            <span className="text-foreground">{aLabel}</span>
+                            {pLabel ? (
+                              <span className="font-mono text-[10px]">
+                                {pLabel}
+                              </span>
+                            ) : null}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td
                       className="px-3 py-4 text-xs text-muted-foreground"
@@ -321,6 +384,14 @@ export function CampaignsTable({
           </table>
         </div>
       </Card>
+
+      <InfiniteScrollFooter
+        loading={loading}
+        hasMore={hasMore}
+        loadedCount={items.length}
+        total={liveTotal}
+        sentinelRef={sentinelRef}
+      />
 
       <CampaignCallLogSheet
         campaignId={logCampaignId}

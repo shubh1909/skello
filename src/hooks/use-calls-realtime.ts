@@ -16,8 +16,15 @@ const REFRESH_DEBOUNCE_MS = 350;
  * Realtime must be enabled on `public.calls` in the Supabase publication.
  * RLS still gates which events the client receives.
  */
-export function useCallsRealtime(organisationId: string | null | undefined) {
+export function useCallsRealtime(
+  organisationId: string | null | undefined,
+  paused: boolean = false,
+) {
   const router = useRouter();
+  // Read-through ref so the subscription callback always sees the latest
+  // pause state without rebuilding the channel.
+  const pausedRef = React.useRef(paused);
+  pausedRef.current = paused;
 
   React.useEffect(() => {
     if (!organisationId) return;
@@ -26,6 +33,7 @@ export function useCallsRealtime(organisationId: string | null | undefined) {
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     function queueRefresh() {
+      if (pausedRef.current) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         router.refresh();
