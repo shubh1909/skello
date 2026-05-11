@@ -76,10 +76,11 @@ function verifySecret(request: NextRequest): boolean {
 export async function POST(request: NextRequest) {
   const ipCheck = clientIpAllowed(request);
   if (!ipCheck.allowed) {
-    console.warn(
-      "[bolna/calls] rejecting webhook from non-allowlisted IP",
-      ipCheck.ip,
-    );
+    console.warn("[bolna/calls] rejecting webhook from non-allowlisted IP", {
+      resolved: ipCheck.ip,
+      headers: ipCheck.headers,
+      allowlist: process.env.BOLNA_WEBHOOK_ALLOWED_IPS ?? null,
+    });
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   if (!verifySecret(request)) {
