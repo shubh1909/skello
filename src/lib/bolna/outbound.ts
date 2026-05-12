@@ -144,6 +144,10 @@ export async function recordOutboundResult(
   if (call.lead_id && payload.extracted_data) {
     const extracted = extractLead(payload.extracted_data.lead_data);
     const leadPatch: Record<string, unknown> = {};
+    // Direct Bolna dials create a phone-only lead during bootstrap — flow
+    // the agent's extracted name through so the operator sees who it was.
+    if (extracted.name !== null) leadPatch.name = extracted.name;
+    if (extracted.interest !== null) leadPatch.interest = extracted.interest;
     if (extracted.actionable !== null) leadPatch.actionable = extracted.actionable;
     if (extracted.summary !== null) leadPatch.summary = extracted.summary;
     if (recordingUrl) leadPatch.recording_url = recordingUrl;
@@ -220,8 +224,32 @@ async function bootstrapDirectOutboundCall(
   }
   if (!integration) return null;
 
-  const toPhone = payload.telephony_data?.to_number?.trim() ?? null;
-  const fromPhone = payload.telephony_data?.from_number?.trim() ?? null;
+  // For outbound, the customer's number is `to_number` on telephony_data.
+  // Bolna also exposes it as `user_number` at the payload root, which is a
+  // safe fallback if telephony_data is partially populated.
+  const toPhone =
+    payload.telephony_data?.to_number?.trim() ||
+    payload.user_number?.trim() ||
+    null;
+  const fromPhone =
+    payload.telephony_data?.from_number?.trim() ||
+    payload.agent_number?.trim() ||
+    null;
+
+  // Prefer Bolna's `initiated_at` — that's when the dial actually started.
+  // Falling back to `created_at` (when Bolna recorded the call) before the
+  // DB default of `now()`, which would be the webhook-arrival time.
+  const startedAt = payload.initiated_at ?? payload.created_at ?? null;
+
+  // Resolve a lead for the dialled number before we insert the call so the
+  // FK gets populated on first write. If the customer doesn't exist yet,
+  // we create them — direct dials from Bolna's dashboard are still leads
+  // worth tracking, even if no Skelo UI flow ever touched them.
+  const leadId = await findOrCreateLeadForOutbound(
+    admin,
+    integration.organisation_id,
+    toPhone,
+  );
 
   const { data: inserted, error: insertErr } = await admin
     .from("calls")
@@ -233,6 +261,8 @@ async function bootstrapDirectOutboundCall(
       to_phone: toPhone,
       from_phone: fromPhone,
       status: "initiated",
+      lead_id: leadId,
+      ...(startedAt ? { started_at: startedAt } : {}),
     })
     .select("id, organisation_id, lead_id")
     .single<{
@@ -261,4 +291,92 @@ async function bootstrapDirectOutboundCall(
 
   console.error("[outbound] bootstrap insert failed", insertErr);
   return null;
+}
+
+/**
+ * Find or create the lead this outbound call should attach to.
+ *
+ * Lookup strategy (in order):
+ *   1. Exact match on digit-only phone — catches leads we created from a
+ *      prior outbound bootstrap (we store digits-only there).
+ *   2. Fuzzy match on the last 10 digits — catches leads created elsewhere
+ *      with country-code or formatted phones (e.g. "+91 98765 43210"). This
+ *      uses ilike, which sequentially scans the org's leads; fine at our
+ *      current scale (thousands per org).
+ *
+ * Create path:
+ *   No match → insert a fresh lead with `source = 'manual'` (closest enum
+ *   value; `lead_source` doesn't have an "outbound_call" entry) and
+ *   `status = 'contacted'` (we've reached out, even if not yet connected).
+ *   The phone is stored digits-only so subsequent outbound calls re-match
+ *   without going through the fuzzy path.
+ *
+ * Returns null when:
+ *   - The phone is missing or too short to be a real number.
+ *   - The org slug can't be resolved (shouldn't happen if the integration
+ *     row pointed at a real org, but we defensive-null instead of throwing).
+ *   - The insert errored — we log and let the call row save without a
+ *     lead_id rather than failing the whole webhook.
+ */
+async function findOrCreateLeadForOutbound(
+  admin: ReturnType<typeof createAdminClient>,
+  organisationId: string,
+  toPhone: string | null,
+): Promise<string | null> {
+  if (!toPhone) return null;
+
+  const digits = toPhone.replace(/[^0-9]/g, "");
+  if (digits.length < 5) return null;
+
+  const { data: org } = await admin
+    .from("organisations")
+    .select("slug")
+    .eq("id", organisationId)
+    .maybeSingle<{ slug: string }>();
+  if (!org) return null;
+
+  // 1. Exact digit-only match.
+  const { data: exact } = await admin
+    .from("leads")
+    .select("id")
+    .eq("org_slug", org.slug)
+    .eq("phone", digits)
+    .limit(1);
+  if (exact && exact.length > 0) return exact[0].id;
+
+  // 2. Fuzzy last-10-digits match (only run if we have enough digits to be
+  //    discriminating — otherwise we'd match too much).
+  const last10 = digits.slice(-10);
+  if (last10.length >= 7) {
+    const { data: fuzzy } = await admin
+      .from("leads")
+      .select("id")
+      .eq("org_slug", org.slug)
+      .ilike("phone", `%${last10}%`)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (fuzzy && fuzzy.length > 0) return fuzzy[0].id;
+  }
+
+  // 3. Create.
+  const { data: created, error } = await admin
+    .from("leads")
+    .insert({
+      org_slug: org.slug,
+      phone: digits,
+      source: "manual",
+      status: "contacted",
+    })
+    .select("id")
+    .single<{ id: string }>();
+
+  if (error) {
+    console.error("[outbound] lead bootstrap failed", error);
+    return null;
+  }
+  console.log("[outbound] created lead from direct dial", {
+    leadId: created.id,
+    phone: digits,
+  });
+  return created.id;
 }
