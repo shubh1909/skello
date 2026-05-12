@@ -33,12 +33,15 @@ export const bolnaLeadPayloadSchema = z
       .optional(),
     status: z.string().nullish(),
     user_number: z.string().nullish(),
+    agent_number: z.string().nullish(),
     transcript: z.string().nullish(),
     summary: z.string().nullish(),
     agent_id: z.string().nullish(),
     conversation_duration: z.number().nullish(),
     created_at: z.string().nullish(),
     updated_at: z.string().nullish(),
+    initiated_at: z.string().nullish(),
+    total_cost: z.number().nullish(),
     error_message: z.string().nullish(),
     telephony_data: z
       .object({
