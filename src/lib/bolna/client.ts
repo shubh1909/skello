@@ -110,21 +110,54 @@ export async function pingBolna(input: {
   };
 }
 
+/**
+ * Bolna's /call API rejects numbers without the leading `+`. Our internal
+ * stores keep phones digit-only (campaign_contacts.phone enforces 5..15
+ * digits) so we have to coerce on the way out. Anything that already starts
+ * with `+` is passed through unchanged after we strip whitespace and other
+ * formatting (spaces, dashes, parens).
+ */
+function toE164(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const digits = raw.replace(/[^0-9]/g, "");
+  if (digits.length === 0) return null;
+  return `+${digits}`;
+}
+
 export async function initiateBolnaCall(
   input: InitiateCallInput,
 ): Promise<InitiateCallResult> {
+  const recipient = toE164(input.recipientPhone);
+  if (!recipient) {
+    throw new BolnaApiError(
+      400,
+      "Recipient phone is empty or contains no digits",
+    );
+  }
+  const fromPhone = toE164(input.fromPhone);
+
+  const requestBody = {
+    agent_id: input.agentId,
+    recipient_phone_number: recipient,
+    ...(fromPhone ? { from_phone_number: fromPhone } : {}),
+    ...(input.metadata ? { user_data: input.metadata } : {}),
+  };
+
+  // Lightweight trace — no raw phone numbers in prod logs. If you need to
+  // debug a specific dial, expand this temporarily and remove before commit.
+  console.log("[bolna] POST /call", {
+    agent: input.agentId,
+    recipientPrefixed: recipient.startsWith("+"),
+    hasFromPhone: !!fromPhone,
+  });
+
   const response = await fetch(`${bolnaBaseUrl()}/call`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${input.apiKey}`,
     },
-    body: JSON.stringify({
-      agent_id: input.agentId,
-      recipient_phone_number: input.recipientPhone,
-      ...(input.fromPhone ? { from_phone_number: input.fromPhone } : {}),
-      ...(input.metadata ? { user_data: input.metadata } : {}),
-    }),
+    body: JSON.stringify(requestBody),
     cache: "no-store",
   });
 
