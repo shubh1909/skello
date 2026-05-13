@@ -1,7 +1,9 @@
 "use server";
 
+import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 
+import { dispatchDueCampaignContacts } from "@/lib/campaigns/dispatch";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -155,6 +157,27 @@ export async function createCampaign(
     return fail(contactsErr.message);
   }
 
+  // Kick off dispatch immediately for "Run Now" campaigns. The cron will
+  // also tick this in production, but firing inline means:
+  //   - Local dev: no need for pg_cron / a public URL — the dispatch runs
+  //     in-process, so dials happen as soon as the campaign is created.
+  //   - Production: operator sees the first wave land within seconds
+  //     instead of waiting up to a minute for the next cron tick.
+  // `after()` runs the work after the response is sent to the client.
+  if (isRunNow) {
+    after(async () => {
+      try {
+        const result = await dispatchDueCampaignContacts();
+        console.log("[campaigns] inline dispatch", {
+          campaignId: campaignRow.id,
+          ...result,
+        });
+      } catch (err) {
+        console.error("[campaigns] inline dispatch failed", err);
+      }
+    });
+  }
+
   revalidatePath("/campaigns");
   return ok(campaignRow);
 }
@@ -203,6 +226,20 @@ export async function runCampaignNow(
     .single<Campaign>();
 
   if (error || !data) return fail(error?.message ?? "Could not start campaign");
+
+  // Same inline dispatch as createCampaign — flip-to-running should also
+  // dial immediately rather than waiting for the next cron tick.
+  after(async () => {
+    try {
+      const result = await dispatchDueCampaignContacts();
+      console.log("[campaigns] inline dispatch (run-now)", {
+        campaignId: data.id,
+        ...result,
+      });
+    } catch (err) {
+      console.error("[campaigns] inline dispatch failed", err);
+    }
+  });
 
   revalidatePath("/campaigns");
   return ok(data);

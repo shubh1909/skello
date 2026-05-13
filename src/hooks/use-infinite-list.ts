@@ -38,7 +38,13 @@ export interface UseInfiniteListResult<Row> {
  *
  * Filter changes: the parent should remount the table component (e.g. via a
  * `key` derived from the filter signature) so the hook re-initializes from
- * fresh props. The hook itself does not watch `initialItems` for changes.
+ * fresh props.
+ *
+ * SSR refreshes (router.refresh() after a server-action mutation, or a
+ * realtime CHANGE event): we re-sync `items`/`total` to the new
+ * `initialItems`/`initialTotal` *only* while `pagedBeyondInitial` is false.
+ * That covers the common "user creates a row → it should appear at top"
+ * flow without clobbering loaded pages when the user is mid-scroll.
  */
 export function useInfiniteList<Row>({
   initialItems,
@@ -52,6 +58,21 @@ export function useInfiniteList<Row>({
   const [pagedBeyondInitial, setPagedBeyondInitial] = React.useState(false);
 
   const sentinelRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Re-sync to the server-rendered batch whenever the parent passes a fresh
+  // `initialItems` reference (router.refresh() after a server-action
+  // mutation; or a realtime CHANGE event). Only applied while the user is
+  // still on the initial page — once they've paged beyond, an unsolicited
+  // reset would lose the loaded rows. Deferred via queueMicrotask so the
+  // setState calls don't run during the same tick as the effect's body
+  // (avoids the set-state-in-effect lint rule's cascading-render concern).
+  React.useEffect(() => {
+    if (pagedBeyondInitial) return;
+    queueMicrotask(() => {
+      setItems(initialItems);
+      setTotal(initialTotal);
+    });
+  }, [initialItems, initialTotal, pagedBeyondInitial]);
 
   // Refs so the IntersectionObserver callback always reads the current values
   // without re-creating the observer every time the row array grows.
