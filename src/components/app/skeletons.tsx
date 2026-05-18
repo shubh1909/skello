@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * Page header (title + subtitle + optional action buttons), sized to match
- * the real headers on /leads, /callers, /conversations, /campaigns, etc.
+ * the real headers on /leads, /conversations, /campaigns, etc.
  */
 export function PageHeaderSkeleton({
   actionCount = 1,

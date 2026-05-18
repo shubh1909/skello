@@ -3,8 +3,11 @@ import { notFound } from "next/navigation";
 import {
   ArrowLeftIcon,
   Building2Icon,
+  ChevronRightIcon,
   HeadphonesIcon,
+  SlidersHorizontalIcon,
   UserIcon,
+  UsersIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -109,6 +112,32 @@ export default async function AdminOrganisationDetailPage({
         </Card>
       </section>
 
+      <Card className="p-0">
+        <CardHeader className="px-6 pt-5">
+          <CardTitle>Workspace configuration</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Onboarding-time setup. The workspace owner sees these as read-only
+            — all management lives here.
+          </p>
+        </CardHeader>
+        <CardContent className="grid gap-0 p-0">
+          <Separator />
+          <ConfigLink
+            href={`/admin/organisations/${org.id}/voice-agents`}
+            title="Voice agents"
+            description="Link the agents that route inbound calls into this workspace."
+            icon={<UsersIcon className="size-4" />}
+          />
+          <Separator />
+          <ConfigLink
+            href={`/admin/organisations/${org.id}/lead-fields`}
+            title="Lead fields"
+            description="Choose which extracted fields appear on the leads table for this workspace."
+            icon={<SlidersHorizontalIcon className="size-4" />}
+          />
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -128,5 +157,35 @@ export default async function AdminOrganisationDetailPage({
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function ConfigLink({
+  href,
+  title,
+  description,
+  icon,
+}: {
+  href: string;
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex items-center gap-4 px-6 py-4 transition-colors hover:bg-muted/40"
+    >
+      <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium leading-tight">{title}</p>
+        <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
+          {description}
+        </p>
+      </div>
+      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+    </Link>
   );
 }

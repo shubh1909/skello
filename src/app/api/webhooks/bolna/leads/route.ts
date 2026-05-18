@@ -1,24 +1,21 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
-import {
-  bolnaLeadPayloadSchema,
-  extractLead,
-} from "@/lib/bolna/extract";
+
+import { bolnaLeadPayloadSchema, extractLead } from "@/lib/bolna/extract";
 import { recordInboundCall } from "@/lib/bolna/inbound";
 import { clientIpAllowed } from "@/lib/bolna/ip-allowlist";
 import { recordOutboundResult } from "@/lib/bolna/outbound";
-import type { LeadIntent } from "@/types/lead";
+import {
+  resolveOrgByAgentId,
+  resolveOrgByDialedNumber,
+} from "@/lib/bolna/routing";
+import {
+  applyCallStatusUpdate,
+  mapBolnaStatus,
+} from "@/lib/bolna/status-update";
+import { logSkeloError, warnSkelo } from "@/lib/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const VALID_INTENTS: readonly LeadIntent[] = ["hot", "warm", "cold"];
-
-function coerceIntent(raw: string | null): LeadIntent | null {
-  if (!raw) return null;
-  const match = VALID_INTENTS.find((v) => v === raw.trim().toLowerCase());
-  return match ?? null;
-}
 
 // Bound external-id length defensively — the provider's real ids are UUIDs,
 // but a malicious or buggy payload could otherwise push arbitrary-length
@@ -44,10 +41,6 @@ function timingSafeEqual(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
-// Bolna's dashboard only accepts a webhook URL (no custom headers), so the
-// shared secret can arrive either in the `x-bolna-signature` header (if the
-// caller supports headers — e.g. curl tests, future Bolna changes) or in a
-// `?secret=<value>` query string. Both are compared in constant time.
 function verifySecret(request: NextRequest): boolean {
   const expected = process.env.BOLNA_WEBHOOK_SECRET;
   if (!expected) return false;
@@ -76,12 +69,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Read as text first so we can log the raw payload on 400s. Bolna's payload
-  // shape has shifted before; logging the body when validation fails is what
-  // lets us diagnose mismatches without re-instrumenting the route every time.
   const rawBody = await request.text();
-  console.log("[inbound webhook] raw body length", rawBody.length);
-
   let body: unknown;
   try {
     body = JSON.parse(rawBody);
@@ -102,23 +90,51 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Bolna fires the webhook at every status transition (in-progress →
-  // call-disconnected → completed). The first two events carry no
-  // extracted_data, so we acknowledge them and wait for the final fire.
+  // Pre-extraction events (in-progress, call-disconnected before final fire)
+  // arrive with extracted_data=null. We can't merge a lead from these — the
+  // LLM hasn't run yet — but we CAN update the calls row's status, kick off
+  // transcript enrichment, and advance the campaign state machine. This is
+  // what the dedicated /api/webhooks/bolna/calls endpoint did; folding it in
+  // here means deployments that only register one webhook URL still get the
+  // full lifecycle (campaigns won't get stuck in `in_flight`).
   if (!parsed.data.extracted_data) {
-    console.log("[bolna webhook] skipping pre-extraction event", {
-      status: parsed.data.status,
+    const externalId = pickExternalId(body as Record<string, unknown>);
+    const mapped = mapBolnaStatus(parsed.data.status);
+    if (!externalId || !mapped) {
+      // No call id or an unknown/unmapped status — acknowledge so the
+      // provider doesn't retry forever, but nothing to write.
+      console.log("[bolna webhook] pre-extraction event with no actionable status", {
+        status: parsed.data.status,
+        hasExternalId: !!externalId,
+      });
+      return NextResponse.json(
+        { ok: true, ignored: "no actionable status" },
+        { status: 200 },
+      );
+    }
+
+    const result = await applyCallStatusUpdate({
+      bolnaCallId: externalId,
+      status: mapped,
+      endedAt: parsed.data.updated_at,
+      durationSeconds:
+        typeof parsed.data.conversation_duration === "number"
+          ? Math.round(parsed.data.conversation_duration)
+          : null,
+      recordingUrl: parsed.data.telephony_data?.recording_url ?? null,
+      summary: parsed.data.summary,
+      errorMessage: parsed.data.error_message,
     });
+
+    // `not_found` is expected for inbound — the calls row doesn't exist
+    // until the final (post-extraction) event lands. Don't 404 here; we'd
+    // just trigger pointless provider retries.
     return NextResponse.json(
-      { ok: true, ignored: "no extracted_data" },
-      { status: 200 },
+      { ok: true, statusUpdate: result.kind, mappedStatus: mapped },
+      { status: result.kind === "error" ? 500 : 200 },
     );
   }
 
-  // Bolna delivers the same agent webhook for both inbound and outbound
-  // calls. `telephony_data.call_type` tells them apart. Outbound calls were
-  // initiated from our CRM and already have a row in `calls` keyed by
-  // bolna_call_id, so we patch the existing row instead of creating a lead.
   const callType = parsed.data.telephony_data?.call_type;
   const externalId = pickExternalId(body as Record<string, unknown>);
 
@@ -139,102 +155,119 @@ export async function POST(request: NextRequest) {
         { status: 200 },
       );
     } catch (err) {
-      console.error("[bolna webhook] outbound dispatch failed", err);
-      return NextResponse.json(
-        { error: "Outbound update failed" },
-        { status: 500 },
+      const message = logSkeloError(
+        "WEBHOOK-INGEST",
+        "Outbound dispatch failed",
+        { externalId, agentId: parsed.data.agent_id ?? null, cause: err },
       );
+      return NextResponse.json({ error: message }, { status: 500 });
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // TENANCY ROUTING (the meat of the Phase 1 change).
+  //
+  // Order of precedence:
+  //   1. agent_id   — provider-sent metadata. Primary gate.
+  //   2. to_number  — DID fallback. Defensive only.
+  //   3. reject     — DO NOT fall through to business_slug. The LLM-emitted
+  //                   slug is captured in advisory_business_slug for
+  //                   observability, but never used to route.
+  // ---------------------------------------------------------------------------
+
+  const agentId = parsed.data.agent_id?.trim() ?? null;
+  const toNumber = parsed.data.telephony_data?.to_number?.trim() ?? null;
   const extracted = extractLead(parsed.data.extracted_data.lead_data);
-  if (!extracted.business_slug) {
-    console.error("[inbound webhook] missing business_slug", {
-      rawBody,
-      extracted,
-    });
+  const advisoryBusinessSlug = extracted.business_slug;
+
+  let organisationId: string | null = null;
+  let routingSource: "agent_id" | "dialed_number" = "agent_id";
+
+  if (agentId) {
+    const res = await resolveOrgByAgentId(agentId);
+    if (res) {
+      organisationId = res.organisationId;
+      if (!res.enabled) {
+        console.warn("[inbound webhook] agent disabled, refusing route", {
+          agentId,
+          organisationId,
+        });
+        return NextResponse.json(
+          { error: "Agent is disabled" },
+          { status: 409 },
+        );
+      }
+    }
+  }
+
+  if (!organisationId && toNumber) {
+    const res = await resolveOrgByDialedNumber(toNumber);
+    if (res) {
+      organisationId = res.organisationId;
+      routingSource = "dialed_number";
+      console.info("[inbound webhook] routed via DID fallback", {
+        agentId,
+        toNumber,
+        organisationId,
+      });
+    }
+  }
+
+  if (!organisationId) {
+    const message = logSkeloError(
+      "ROUTING-RESOLVE",
+      "Could not resolve workspace from agent_id or dialled number",
+      { agentId, toNumber, advisoryBusinessSlug },
+    );
     return NextResponse.json(
-      { error: "Missing business_slug" },
+      { error: message, advisory_business_slug: advisoryBusinessSlug },
       { status: 400 },
     );
   }
 
-  const supabase = createAdminClient();
-
-  // FK on leads.org_slug -> organisations.slug makes the insert fail loudly
-  // if the org doesn't exist, but a pre-check gives the provider a clearer 404.
-  const { data: org, error: orgError } = await supabase
-    .from("organisations")
-    .select("id, slug")
-    .eq("slug", extracted.business_slug)
-    .maybeSingle<{ id: string; slug: string }>();
-
-  if (orgError) {
-    console.error("[inbound webhook] org lookup failed", orgError);
-    return NextResponse.json({ error: "Lookup failed" }, { status: 500 });
-  }
-  if (!org) {
-    return NextResponse.json(
-      { error: `No organisation for slug ${extracted.business_slug}` },
-      { status: 404 },
-    );
-  }
-
-  // Bolna already supplies the caller's number on the webhook payload, so we
-  // capture it on the lead immediately rather than waiting for the post-
-  // response enrichment pass to backfill it.
-  const phone = parsed.data.user_number?.trim() || null;
-
-  const row = {
-    org_slug: extracted.business_slug,
-    external_id: externalId,
-    name: extracted.name,
-    interest: extracted.interest,
-    summary: extracted.summary,
-    customer_status: extracted.customer_status,
-    lead_intent: coerceIntent(extracted.lead_intent),
-    actionable: extracted.actionable,
-    wants_to_connect_on_watsapp: extracted.connect_on_whatsapp,
-    visit_date_time: extracted.visit_scheduled_at,
-    source: "inbound_call" as const,
-    phone,
-    recording_url: parsed.data.telephony_data?.recording_url ?? null,
-  };
-
-  // Idempotent when Bolna supplies an external id; plain insert otherwise.
-  const result = externalId
-    ? await supabase
-        .from("leads")
-        .upsert(row, { onConflict: "org_slug,external_id" })
-        .select("id")
-        .single<{ id: string }>()
-    : await supabase
-        .from("leads")
-        .insert(row)
-        .select("id")
-        .single<{ id: string }>();
-
-  if (result.error) {
-    console.error("[inbound webhook] insert failed", result.error);
-    return NextResponse.json({ error: "Insert failed" }, { status: 500 });
-  }
-
-  // Record the inbound call directly from the webhook payload — transcript,
-  // recording_url, duration, and phone numbers are all in the body, so we
-  // don't need to round-trip the executions API. Failures here log but don't
-  // fail the webhook: the lead is already saved.
-  if (externalId) {
-    try {
-      await recordInboundCall({
-        organisationId: org.id,
-        leadId: result.data.id,
-        externalId,
-        payload: parsed.data,
+  if (advisoryBusinessSlug) {
+    const { createAdminClient } = await import("@/lib/supabase/admin");
+    const { data: org } = await createAdminClient()
+      .from("organisations")
+      .select("slug")
+      .eq("id", organisationId)
+      .maybeSingle<{ slug: string }>();
+    if (org && org.slug !== advisoryBusinessSlug) {
+      warnSkelo("ROUTING-RESOLVE", "Routing mismatch: agent_id vs business_slug disagreed", {
+        agentId,
+        organisationId,
+        routedOrgSlug: org.slug,
+        advisoryBusinessSlug,
       });
-    } catch (err) {
-      console.error("[inbound webhook] call record failed", err);
     }
   }
 
-  return NextResponse.json({ id: result.data.id }, { status: 200 });
+  if (!externalId) {
+    return NextResponse.json({ error: "Missing call id" }, { status: 400 });
+  }
+
+  try {
+    const result = await recordInboundCall({
+      organisationId,
+      externalId,
+      payload: parsed.data,
+    });
+    return NextResponse.json(
+      {
+        ok: true,
+        callId: result.callId,
+        leadId: result.leadId,
+        leadCreated: result.leadCreated,
+        routingSource,
+      },
+      { status: 200 },
+    );
+  } catch (err) {
+    const message = logSkeloError(
+      "WEBHOOK-INGEST",
+      "Inbound call recording failed",
+      { organisationId, externalId, agentId, cause: err },
+    );
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }

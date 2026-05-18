@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
+import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -19,13 +20,21 @@ import type {
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
+// Post-remodel: agents live in `voice_agents` (PK agent_id, FK org).
+// `bolna_integrations` keeps the default agent + the dialling-number list.
+// The shape returned by getVoiceConfig() hasn't changed — we just source
+// agents from the registry.
 interface IntegrationRow {
   agent_id: string;
-  agent_ids: string[];
-  agent_labels: Record<string, unknown>;
   from_phone_number: string | null;
   from_phone_numbers: string[];
   from_phone_labels: Record<string, unknown>;
+  enabled: boolean;
+}
+
+interface VoiceAgentRow {
+  agent_id: string;
+  label: string | null;
   enabled: boolean;
 }
 
@@ -56,23 +65,33 @@ function labelFor(map: Record<string, unknown>, key: string, fallback: string) {
   return typeof raw === "string" && raw.trim().length > 0 ? raw : fallback;
 }
 
-function buildAgents(row: IntegrationRow): VoiceAgentEntry[] {
+function buildAgents(
+  integration: IntegrationRow,
+  registered: VoiceAgentRow[],
+): VoiceAgentEntry[] {
   const seen = new Set<string>();
   const out: VoiceAgentEntry[] = [];
-  if (row.agent_id) {
-    seen.add(row.agent_id);
+
+  // The integration's default agent always comes first and is flagged as
+  // such. If for any reason it's not also in voice_agents (registry-out-of-
+  // sync), we still surface it so the picker isn't empty.
+  const defaultRow = registered.find((r) => r.agent_id === integration.agent_id);
+  if (integration.agent_id) {
+    seen.add(integration.agent_id);
     out.push({
-      id: row.agent_id,
-      label: labelFor(row.agent_labels, row.agent_id, "Default agent"),
+      id: integration.agent_id,
+      label: defaultRow?.label ?? "Default agent",
       is_default: true,
     });
   }
-  for (const id of row.agent_ids ?? []) {
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
+
+  for (const row of registered) {
+    if (!row.enabled) continue;
+    if (seen.has(row.agent_id)) continue;
+    seen.add(row.agent_id);
     out.push({
-      id,
-      label: labelFor(row.agent_labels, id, id),
+      id: row.agent_id,
+      label: row.label ?? row.agent_id,
       is_default: false,
     });
   }
@@ -107,18 +126,42 @@ function buildDialNumbers(row: IntegrationRow): DialNumberEntry[] {
 }
 
 const INTEGRATION_COLUMNS =
-  "agent_id, agent_ids, agent_labels, from_phone_number, from_phone_numbers, from_phone_labels, enabled";
+  "agent_id, from_phone_number, from_phone_numbers, from_phone_labels, enabled";
 
 async function loadIntegration(
   organisationId: string,
 ): Promise<IntegrationRow | null> {
   const admin = createAdminClient();
-  const { data } = await admin
+  const { data, error } = await admin
     .from("bolna_integrations")
     .select(INTEGRATION_COLUMNS)
     .eq("organisation_id", organisationId)
     .maybeSingle<IntegrationRow>();
+  if (error) {
+    logSkeloError("VOICE-AGENT-READ", "Integration lookup failed", {
+      organisationId,
+      cause: error,
+    });
+    return null;
+  }
   return data;
+}
+
+async function loadVoiceAgents(organisationId: string): Promise<VoiceAgentRow[]> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("voice_agents")
+    .select("agent_id, label, enabled")
+    .eq("organisation_id", organisationId)
+    .order("created_at", { ascending: true });
+  if (error) {
+    logSkeloError("VOICE-AGENT-READ", "Voice agents registry lookup failed", {
+      organisationId,
+      cause: error,
+    });
+    return [];
+  }
+  return (data ?? []) as VoiceAgentRow[];
 }
 
 export async function getVoiceConfig(
@@ -133,14 +176,17 @@ export async function getVoiceConfig(
     return fail("Forbidden");
   }
 
-  const row = await loadIntegration(parsed.data.organisation_id);
-  if (!row) {
+  const [integration, registered] = await Promise.all([
+    loadIntegration(parsed.data.organisation_id),
+    loadVoiceAgents(parsed.data.organisation_id),
+  ]);
+  if (!integration) {
     return ok({ enabled: false, agents: [], dial_numbers: [] });
   }
   return ok({
-    enabled: row.enabled,
-    agents: buildAgents(row),
-    dial_numbers: buildDialNumbers(row),
+    enabled: integration.enabled,
+    agents: buildAgents(integration, registered),
+    dial_numbers: buildDialNumbers(integration),
   });
 }
 
@@ -158,28 +204,35 @@ export async function addDialNumber(
     return fail("Forbidden");
   }
 
-  const row = await loadIntegration(parsed.data.organisation_id);
-  if (!row) return fail("Voice agent not configured. Set it up in Settings.");
+  const integration = await loadIntegration(parsed.data.organisation_id);
+  if (!integration) return fail("Voice agent not configured. Set it up in Settings.");
 
-  if (row.from_phone_number === parsed.data.phone) {
+  if (integration.from_phone_number === parsed.data.phone) {
     if (parsed.data.label) {
       const labels = {
-        ...row.from_phone_labels,
-        [row.from_phone_number]: parsed.data.label,
+        ...integration.from_phone_labels,
+        [integration.from_phone_number]: parsed.data.label,
       };
       const admin = createAdminClient();
       const { error } = await admin
         .from("bolna_integrations")
         .update({ from_phone_labels: labels })
         .eq("organisation_id", parsed.data.organisation_id);
-      if (error) return fail(error.message);
+      if (error) {
+        return fail(
+          logSkeloError("VOICE-AGENT-WRITE", "Updating dial number label failed", {
+            organisationId: parsed.data.organisation_id,
+            cause: error,
+          }),
+        );
+      }
     }
     return getVoiceConfig({ organisation_id: parsed.data.organisation_id });
   }
 
-  const existing = new Set(row.from_phone_numbers ?? []);
+  const existing = new Set(integration.from_phone_numbers ?? []);
   existing.add(parsed.data.phone);
-  const labels = { ...row.from_phone_labels };
+  const labels = { ...integration.from_phone_labels };
   if (parsed.data.label) labels[parsed.data.phone] = parsed.data.label;
 
   const admin = createAdminClient();
@@ -190,7 +243,14 @@ export async function addDialNumber(
       from_phone_labels: labels,
     })
     .eq("organisation_id", parsed.data.organisation_id);
-  if (error) return fail(error.message);
+  if (error) {
+    return fail(
+      logSkeloError("VOICE-AGENT-WRITE", "Adding dial number failed", {
+        organisationId: parsed.data.organisation_id,
+        cause: error,
+      }),
+    );
+  }
 
   revalidatePath("/campaigns");
   return getVoiceConfig({ organisation_id: parsed.data.organisation_id });
@@ -208,15 +268,15 @@ export async function renameDialNumber(
     return fail("Forbidden");
   }
 
-  const row = await loadIntegration(parsed.data.organisation_id);
-  if (!row) return fail("Voice agent not configured");
+  const integration = await loadIntegration(parsed.data.organisation_id);
+  if (!integration) return fail("Voice agent not configured");
 
   const present =
-    parsed.data.phone === row.from_phone_number ||
-    (row.from_phone_numbers ?? []).includes(parsed.data.phone);
+    parsed.data.phone === integration.from_phone_number ||
+    (integration.from_phone_numbers ?? []).includes(parsed.data.phone);
   if (!present) return fail("Number not found");
 
-  const labels = { ...row.from_phone_labels };
+  const labels = { ...integration.from_phone_labels };
   if (parsed.data.label) labels[parsed.data.phone] = parsed.data.label;
   else delete labels[parsed.data.phone];
 
@@ -225,7 +285,14 @@ export async function renameDialNumber(
     .from("bolna_integrations")
     .update({ from_phone_labels: labels })
     .eq("organisation_id", parsed.data.organisation_id);
-  if (error) return fail(error.message);
+  if (error) {
+    return fail(
+      logSkeloError("VOICE-AGENT-WRITE", "Renaming dial number failed", {
+        organisationId: parsed.data.organisation_id,
+        cause: error,
+      }),
+    );
+  }
 
   revalidatePath("/campaigns");
   return getVoiceConfig({ organisation_id: parsed.data.organisation_id });
@@ -243,16 +310,16 @@ export async function removeDialNumber(
     return fail("Forbidden");
   }
 
-  const row = await loadIntegration(parsed.data.organisation_id);
-  if (!row) return fail("Voice agent not configured");
-  if (parsed.data.phone === row.from_phone_number) {
+  const integration = await loadIntegration(parsed.data.organisation_id);
+  if (!integration) return fail("Voice agent not configured");
+  if (parsed.data.phone === integration.from_phone_number) {
     return fail("Can't remove the default number. Update it in Settings.");
   }
 
-  const next = (row.from_phone_numbers ?? []).filter(
+  const next = (integration.from_phone_numbers ?? []).filter(
     (n) => n !== parsed.data.phone,
   );
-  const labels = { ...row.from_phone_labels };
+  const labels = { ...integration.from_phone_labels };
   delete labels[parsed.data.phone];
 
   const admin = createAdminClient();
@@ -260,7 +327,14 @@ export async function removeDialNumber(
     .from("bolna_integrations")
     .update({ from_phone_numbers: next, from_phone_labels: labels })
     .eq("organisation_id", parsed.data.organisation_id);
-  if (error) return fail(error.message);
+  if (error) {
+    return fail(
+      logSkeloError("VOICE-AGENT-WRITE", "Removing dial number failed", {
+        organisationId: parsed.data.organisation_id,
+        cause: error,
+      }),
+    );
+  }
 
   revalidatePath("/campaigns");
   return getVoiceConfig({ organisation_id: parsed.data.organisation_id });

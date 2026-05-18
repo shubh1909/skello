@@ -4,6 +4,7 @@ import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 
 import { dispatchDueCampaignContacts } from "@/lib/campaigns/dispatch";
+import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -62,36 +63,55 @@ export async function createCampaign(
 
   const admin = createAdminClient();
 
-  // Confirm the org actually has an outbound voice agent configured before
-  // we accept the upload — saves us from creating a campaign that can never
-  // dial anyone. We also pull the saved agent/number lists so we can verify
-  // the user's selections belong to this tenant (no free-form values from
-  // the client without a Manage-dialog round-trip first).
-  const { data: integration } = await admin
+  // Confirm the org has an outbound voice agent configured. After the
+  // remodel, agents live in the `voice_agents` registry (one row per agent,
+  // PK = agent_id, FK to org); `bolna_integrations` keeps just the API key,
+  // default agent, and dialling-number list.
+  const { data: integration, error: integrationErr } = await admin
     .from("bolna_integrations")
-    .select(
-      "agent_id, agent_ids, from_phone_number, from_phone_numbers, enabled",
-    )
+    .select("agent_id, from_phone_number, from_phone_numbers, enabled")
     .eq("organisation_id", parsed.data.organisation_id)
     .maybeSingle<{
       agent_id: string;
-      agent_ids: string[];
       from_phone_number: string | null;
       from_phone_numbers: string[];
       enabled: boolean;
     }>();
+  if (integrationErr) {
+    return fail(
+      logSkeloError("CAMPAIGN", "Could not read voice provider config", {
+        organisationId: parsed.data.organisation_id,
+        cause: integrationErr,
+      }),
+    );
+  }
   if (!integration) return fail("Voice agent not configured. Set it up in Settings.");
   if (!integration.enabled) return fail("Voice agent is disabled for this workspace.");
 
-  // Resolve picks. null = inherit org default at dispatch time. Anything
-  // explicit must match a saved option to prevent injecting an unowned
-  // agent/number via crafted requests.
+  // Agent validation: pull every claimed agent for this workspace from the
+  // voice_agents registry. The default agent_id from bolna_integrations is
+  // also always allowed (it should be registered too, but we belt-and-
+  // suspenders the case where backfill missed something).
+  const { data: agentRows, error: agentErr } = await admin
+    .from("voice_agents")
+    .select("agent_id, enabled")
+    .eq("organisation_id", parsed.data.organisation_id);
+  if (agentErr) {
+    return fail(
+      logSkeloError("CAMPAIGN", "Could not list workspace voice agents", {
+        organisationId: parsed.data.organisation_id,
+        cause: agentErr,
+      }),
+    );
+  }
   const allowedAgents = new Set<string>([
     integration.agent_id,
-    ...(integration.agent_ids ?? []),
+    ...((agentRows ?? [])
+      .filter((a) => a.enabled !== false)
+      .map((a) => a.agent_id)),
   ]);
   if (parsed.data.agent_id && !allowedAgents.has(parsed.data.agent_id)) {
-    return fail("Selected agent is not in this workspace's saved agents");
+    return fail("Selected agent is not linked to this workspace");
   }
   const allowedNumbers = new Set<string>([
     ...(integration.from_phone_number ? [integration.from_phone_number] : []),

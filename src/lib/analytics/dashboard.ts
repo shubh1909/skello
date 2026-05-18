@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
+import { warnSkelo } from "@/lib/errors";
 import type { CallDirection, CallStatus } from "@/types/call";
 import type { LeadIntent } from "@/types/lead";
 
@@ -46,10 +47,14 @@ export interface DashboardAnalytics {
   totalInterestMentions: number;
 }
 
+// Post-remodel: `lead_intent` and `interest` columns are gone. The lead's
+// current intent now lives on `current_intent`; the interest the LLM
+// captured lives inside `lead_data` (rolled-up to the lead row) or on
+// individual call snapshots. We read both sources here.
 interface LeadRow {
   created_at: string;
-  lead_intent: LeadIntent | null;
-  interest: string | null;
+  current_intent: LeadIntent | null;
+  lead_data: Record<string, unknown> | null;
   phone: string | null;
 }
 
@@ -60,21 +65,27 @@ interface CallRow {
   direction: CallDirection;
   to_phone: string | null;
   from_phone: string | null;
+  interest: string | null;
 }
 
-// The phone we treat as "the other party". On inbound rows `to_phone` is our
-// agent DID and `from_phone` is the caller; on outbound rows it's reversed.
-// Dedup on this so inbound traffic doesn't collapse to a single "user".
 function counterpartyPhone(c: CallRow): string | null {
   return c.direction === "inbound" ? c.from_phone : c.to_phone;
 }
 
-/** UTC day bucket key, e.g. "2026-04-24". */
+function pickInterest(lead: LeadRow): string | null {
+  const ld = lead.lead_data;
+  if (!ld) return null;
+  const direct = ld.interest;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const product = ld.product;
+  if (typeof product === "string" && product.trim()) return product.trim();
+  return null;
+}
+
 function dayKey(iso: string): string {
   return new Date(iso).toISOString().slice(0, 10);
 }
 
-/** Emit ascending date keys for the last `days` days, inclusive of today. */
 function dayBuckets(now: number, days: number): string[] {
   const day = 24 * 60 * 60 * 1000;
   const startOfToday = Math.floor(now / day) * day;
@@ -90,7 +101,7 @@ export async function getDashboardAnalytics(input: {
   orgId: string;
   range: AnalyticsRange;
 }): Promise<DashboardAnalytics> {
-  const { orgSlug, orgId, range } = input;
+  const { orgId, range } = input;
   const days = RANGE_DAYS[range];
   const supabase = await createClient();
 
@@ -99,32 +110,41 @@ export async function getDashboardAnalytics(input: {
   const windowStart = new Date(now - days * day).toISOString();
   const prevWindowStart = new Date(now - 2 * days * day).toISOString();
 
-  // Pull leads for 2× the window so we can compute "vs. previous period"
-  // deltas in a single round trip. Capped at 10k for safety.
-  const { data: leadsRaw } = await supabase
+  const leadsResult = await supabase
     .from("leads")
-    .select("created_at, lead_intent, interest, phone")
-    .eq("org_slug", orgSlug)
+    .select("created_at, current_intent, lead_data, phone")
+    .eq("organisation_id", orgId)
     .gte("created_at", prevWindowStart)
     .order("created_at", { ascending: false })
     .limit(10_000);
-  const leads = (leadsRaw ?? []) as LeadRow[];
+  if (leadsResult.error) {
+    warnSkelo("ANALYTICS", "Leads query failed; falling back to empty set", {
+      organisationId: orgId,
+      cause: leadsResult.error,
+    });
+  }
+  const leads = (leadsResult.data ?? []) as LeadRow[];
 
-  const { data: callsRaw } = await supabase
+  const callsResult = await supabase
     .from("calls")
-    .select("started_at, status, duration_seconds, direction, to_phone, from_phone")
+    .select(
+      "started_at, status, duration_seconds, direction, to_phone, from_phone, interest",
+    )
     .eq("organisation_id", orgId)
     .gte("started_at", prevWindowStart)
     .order("started_at", { ascending: false })
     .limit(10_000);
-  const calls = (callsRaw ?? []) as CallRow[];
+  if (callsResult.error) {
+    warnSkelo("ANALYTICS", "Calls query failed; falling back to empty set", {
+      organisationId: orgId,
+      cause: callsResult.error,
+    });
+  }
+  const calls = (callsResult.data ?? []) as CallRow[];
 
   const inCurrent = (iso: string) => iso >= windowStart;
   const inPrevious = (iso: string) => iso >= prevWindowStart && iso < windowStart;
 
-  // ---------------------------------------------------------------------
-  // Stat cards
-  // ---------------------------------------------------------------------
   const callsCurrent = calls.filter((c) => inCurrent(c.started_at));
   const callsPrevious = calls.filter((c) => inPrevious(c.started_at));
 
@@ -162,7 +182,7 @@ export async function getDashboardAnalytics(input: {
   const qualifiedPct = (rows: LeadRow[]) => {
     if (rows.length === 0) return 0;
     const q = rows.filter(
-      (l) => l.lead_intent === "hot" || l.lead_intent === "warm",
+      (l) => l.current_intent === "hot" || l.current_intent === "warm",
     ).length;
     return (q / rows.length) * 100;
   };
@@ -173,9 +193,6 @@ export async function getDashboardAnalytics(input: {
     previous: qualifiedPct(leadsPrevious),
   };
 
-  // ---------------------------------------------------------------------
-  // Daily charts
-  // ---------------------------------------------------------------------
   const buckets = dayBuckets(now, days);
 
   const newLeadsMap = new Map<string, number>(buckets.map((b) => [b, 0]));
@@ -198,9 +215,9 @@ export async function getDashboardAnalytics(input: {
     const key = dayKey(l.created_at);
     const bucket = tempMap.get(key);
     if (!bucket) continue;
-    if (l.lead_intent === "hot") bucket.hot += 1;
-    else if (l.lead_intent === "warm") bucket.warm += 1;
-    else if (l.lead_intent === "cold") bucket.cold += 1;
+    if (l.current_intent === "hot") bucket.hot += 1;
+    else if (l.current_intent === "warm") bucket.warm += 1;
+    else if (l.current_intent === "cold") bucket.cold += 1;
   }
   const leadTemperatureDaily = buckets.map((date) => ({
     date,
@@ -215,14 +232,27 @@ export async function getDashboardAnalytics(input: {
     { hot: 0, warm: 0, cold: 0 },
   );
 
-  // ---------------------------------------------------------------------
-  // Interest mentions — top interests by lead count in window
-  // ---------------------------------------------------------------------
+  // Interest counts: prefer the lead's rolled-up lead_data.interest, fall
+  // back to the most recent call's interest (caught via callsCurrent below
+  // for any lead whose lead_data didn't have one).
   const interestCounts = new Map<string, number>();
   for (const l of leadsCurrent) {
-    const p = l.interest?.trim();
-    if (!p) continue;
-    interestCounts.set(p, (interestCounts.get(p) ?? 0) + 1);
+    const interest = pickInterest(l);
+    if (!interest) continue;
+    interestCounts.set(interest, (interestCounts.get(interest) ?? 0) + 1);
+  }
+  // Second pass: pick up calls whose lead's lead_data didn't surface an
+  // interest. Dedupes by counterparty phone so the same lead isn't double
+  // counted across multiple calls.
+  const seenPhones = new Set<string>();
+  for (const c of callsCurrent) {
+    const interest = c.interest?.trim();
+    if (!interest) continue;
+    const phone = counterpartyPhone(c);
+    if (!phone || seenPhones.has(phone)) continue;
+    seenPhones.add(phone);
+    if (interestCounts.has(interest)) continue;
+    interestCounts.set(interest, (interestCounts.get(interest) ?? 0) + 1);
   }
   const interestMentions = [...interestCounts.entries()]
     .map(([interest, count]) => ({ interest, count }))
@@ -233,9 +263,6 @@ export async function getDashboardAnalytics(input: {
     0,
   );
 
-  // ---------------------------------------------------------------------
-  // Call outcomes — distribution of statuses in current window
-  // ---------------------------------------------------------------------
   const outcomeCounts = new Map<CallStatus, number>();
   for (const c of callsCurrent) {
     outcomeCounts.set(c.status, (outcomeCounts.get(c.status) ?? 0) + 1);

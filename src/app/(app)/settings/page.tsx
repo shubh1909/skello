@@ -47,6 +47,11 @@ export default async function SettingsPage() {
 
       <VoiceAgentStatusCard integration={integration} />
 
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Voice agents and lead fields are configured by your Skelo onboarding
+        team. Reach out to support if you need a change.
+      </p>
+
       <Separator />
 
       <Card>

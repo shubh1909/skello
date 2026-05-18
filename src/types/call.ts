@@ -1,3 +1,5 @@
+import type { LeadIntent } from "./lead";
+
 export type CallStatus =
   | "initiated"
   | "ringing"
@@ -41,6 +43,16 @@ export interface Call {
   transcript_fetched_at: string | null;
   language: string | null;
   summary: string | null;
+  // Per-conversation snapshots of extracted fields (immutable per call).
+  name_extracted: string | null;
+  interest: string | null;
+  lead_intent_extracted: LeadIntent | null;
+  actionable: string | null;
+  customer_status: string | null;
+  visit_scheduled_at: string | null;
+  connect_on_whatsapp: boolean | null;
+  lead_data: Record<string, unknown>;
+  custom_data: Record<string, Record<string, unknown>>;
   created_at: string;
   updated_at: string;
 }
