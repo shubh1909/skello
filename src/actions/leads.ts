@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
   leadCreateSchema,
@@ -10,12 +11,145 @@ import {
   leadUpdateSchema,
 } from "@/lib/validations/lead";
 import { type ActionResult, fail, ok } from "@/types/action";
-import type { Lead } from "@/types/lead";
+import type { Lead, LeadIntent } from "@/types/lead";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
+// New-shape columns only. Per-call data (interest, summary, actionable,
+// recording_url, customer_status, wants_to_connect_on_watsapp,
+// visit_date_time) is reconstructed below by reading from lead_data or
+// the latest call. external_id no longer exists at the lead level.
 const LEAD_COLUMNS =
-  "id, created_at, updated_at, org_slug, external_id, name, interest, summary, lead_intent, visit_date_time, customer_status, phone, wants_to_connect_on_watsapp, pending_action, source, status, notes, city, pincode, actionable, recording_url";
+  "id, created_at, updated_at, organisation_id, org_slug, " +
+  "name, phone, phone_normalized, first_seen_at, last_contact_at, " +
+  "current_intent, city, pincode, notes, source, status, pending_action, " +
+  "lead_data, custom_data";
+
+interface LeadRow {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  organisation_id: string;
+  org_slug: string | null;
+  name: string | null;
+  phone: string | null;
+  phone_normalized: string | null;
+  first_seen_at: string | null;
+  last_contact_at: string | null;
+  current_intent: LeadIntent | null;
+  city: string | null;
+  pincode: string | null;
+  notes: string | null;
+  source: Lead["source"];
+  status: Lead["status"];
+  pending_action: boolean;
+  lead_data: Record<string, unknown> | null;
+  custom_data: Record<string, Record<string, unknown>> | null;
+}
+
+interface LatestCallSnapshot {
+  summary: string | null;
+  actionable: string | null;
+  recording_url: string | null;
+}
+
+function pickJsonString(blob: Record<string, unknown> | null, key: string): string | null {
+  if (!blob) return null;
+  const v = blob[key];
+  if (typeof v === "string" && v.trim().length > 0) return v;
+  return null;
+}
+
+function pickJsonBool(blob: Record<string, unknown> | null, key: string): boolean | null {
+  if (!blob) return null;
+  const v = blob[key];
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") {
+    const lower = v.toLowerCase().trim();
+    if (["true", "yes", "1"].includes(lower)) return true;
+    if (["false", "no", "0"].includes(lower)) return false;
+  }
+  return null;
+}
+
+function pickJsonDate(blob: Record<string, unknown> | null, key: string): string | null {
+  const v = pickJsonString(blob, key);
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+// Hydrate the back-compat fields on the Lead shape. Reads dynamic fields
+// from lead_data and falls back to "" or null. The latest-call snapshot
+// is fetched in batch by hydrateLeads().
+function buildLead(row: LeadRow, snapshot: LatestCallSnapshot | null): Lead {
+  const ld = row.lead_data ?? {};
+  return {
+    id: row.id,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    organisation_id: row.organisation_id,
+    org_slug: row.org_slug,
+    phone: row.phone,
+    phone_normalized: row.phone_normalized,
+    first_seen_at: row.first_seen_at,
+    last_contact_at: row.last_contact_at,
+    name: row.name,
+    current_intent: row.current_intent,
+    city: row.city,
+    pincode: row.pincode,
+    notes: row.notes,
+    status: row.status,
+    pending_action: row.pending_action,
+    source: row.source,
+    lead_data: ld,
+    custom_data: row.custom_data ?? {},
+    // Back-compat fields:
+    lead_intent: row.current_intent,
+    interest: pickJsonString(ld, "interest") ?? pickJsonString(ld, "product"),
+    customer_status: pickJsonString(ld, "customer_status"),
+    wants_to_connect_on_watsapp: pickJsonBool(ld, "connect_on_whatsapp"),
+    visit_date_time: pickJsonDate(ld, "date_and_time_of_visit"),
+    summary: snapshot?.summary ?? null,
+    actionable: snapshot?.actionable ?? null,
+    recording_url: snapshot?.recording_url ?? null,
+    external_id: null,
+  };
+}
+
+// Batch-fetch the latest call's summary/actionable/recording_url for the
+// given lead ids. One round trip; the DISTINCT ON keeps us at one row per
+// lead. Returns a Map for O(1) lookup during hydrate.
+async function fetchLatestCallSnapshots(
+  organisationId: string,
+  leadIds: string[],
+): Promise<Map<string, LatestCallSnapshot>> {
+  const out = new Map<string, LatestCallSnapshot>();
+  if (leadIds.length === 0) return out;
+  const admin = createAdminClient();
+  const { data } = await admin
+    .from("calls")
+    .select("lead_id, summary, actionable, recording_url, started_at")
+    .eq("organisation_id", organisationId)
+    .in("lead_id", leadIds)
+    .order("started_at", { ascending: false });
+  for (const row of (data ?? []) as Array<{
+    lead_id: string;
+    summary: string | null;
+    actionable: string | null;
+    recording_url: string | null;
+  }>) {
+    if (!out.has(row.lead_id)) {
+      out.set(row.lead_id, {
+        summary: row.summary,
+        actionable: row.actionable,
+        recording_url: row.recording_url,
+      });
+    }
+  }
+  return out;
+}
 
 async function requireUser() {
   const supabase = await createClient();
@@ -29,14 +163,14 @@ async function userOwnsOrgBySlug(
   supabase: SupabaseServerClient,
   userId: string,
   orgSlug: string,
-): Promise<boolean> {
+): Promise<{ id: string; slug: string } | null> {
   const { data } = await supabase
     .from("organisations")
-    .select("slug")
+    .select("id, slug")
     .eq("slug", orgSlug)
     .eq("owner_id", userId)
-    .maybeSingle<{ slug: string }>();
-  return !!data;
+    .maybeSingle<{ id: string; slug: string }>();
+  return data ?? null;
 }
 
 export async function listLeads(
@@ -52,9 +186,7 @@ export async function listLeads(
     offset,
     q,
     lead_intent,
-    customer_status,
     pending_action,
-    wants_to_connect_on_watsapp,
     has_phone,
     source,
     status,
@@ -62,44 +194,48 @@ export async function listLeads(
 
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
-  if (!(await userOwnsOrgBySlug(supabase, user.id, org_slug))) {
-    return fail("Forbidden");
-  }
+  const org = await userOwnsOrgBySlug(supabase, user.id, org_slug);
+  if (!org) return fail("Forbidden");
 
   let query = supabase
     .from("leads")
     .select(LEAD_COLUMNS, { count: "exact" })
-    .eq("org_slug", org_slug)
+    .eq("organisation_id", org.id)
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
 
-  if (lead_intent) query = query.eq("lead_intent", lead_intent);
-  if (customer_status) query = query.eq("customer_status", customer_status);
+  // current_intent replaces the old lead_intent column.
+  if (lead_intent) query = query.eq("current_intent", lead_intent);
   if (source) query = query.eq("source", source);
   if (status) query = query.eq("status", status);
   if (typeof pending_action === "boolean") {
     query = query.eq("pending_action", pending_action);
   }
-  if (typeof wants_to_connect_on_watsapp === "boolean") {
-    query = query.eq(
-      "wants_to_connect_on_watsapp",
-      wants_to_connect_on_watsapp,
-    );
-  }
   if (has_phone === true) query = query.not("phone", "is", null);
   if (has_phone === false) query = query.is("phone", null);
   if (q && q.trim().length > 0) {
-    // Escape PostgREST wildcards so a user typing % doesn't broaden the search.
+    // Search the new tsvector for richer matches (covers name, notes, and
+    // any value in lead_data). Falls back to name/phone ilike if the
+    // query is too short to be a useful tsvector input.
     const safe = q.replace(/[%,]/g, " ").trim();
-    query = query.or(
-      `name.ilike.%${safe}%,interest.ilike.%${safe}%,phone.ilike.%${safe}%`,
-    );
+    if (safe.length >= 2) {
+      query = query.or(
+        `name.ilike.%${safe}%,phone.ilike.%${safe}%`,
+      );
+    }
   }
 
   const { data, error, count } = await query;
   if (error) return fail(error.message);
 
-  return ok({ items: (data ?? []) as unknown as Lead[], total: count ?? 0 });
+  const rows = (data ?? []) as unknown as LeadRow[];
+  const snapshots = await fetchLatestCallSnapshots(
+    org.id,
+    rows.map((r) => r.id),
+  );
+  const items = rows.map((r) => buildLead(r, snapshots.get(r.id) ?? null));
+
+  return ok({ items, total: count ?? 0 });
 }
 
 export async function getLead(id: unknown): Promise<ActionResult<Lead>> {
@@ -113,16 +249,69 @@ export async function getLead(id: unknown): Promise<ActionResult<Lead>> {
     .from("leads")
     .select(LEAD_COLUMNS)
     .eq("id", parsed.data)
-    .maybeSingle<Lead>();
+    .maybeSingle<LeadRow>();
 
   if (error) return fail(error.message);
   if (!data) return fail("Lead not found");
 
-  if (!data.org_slug || !(await userOwnsOrgBySlug(supabase, user.id, data.org_slug))) {
-    return fail("Forbidden");
+  if (!data.org_slug) return fail("Forbidden");
+  const org = await userOwnsOrgBySlug(supabase, user.id, data.org_slug);
+  if (!org) return fail("Forbidden");
+
+  const snapshots = await fetchLatestCallSnapshots(org.id, [data.id]);
+  return ok(buildLead(data, snapshots.get(data.id) ?? null));
+}
+
+// Translates the create/update form input into the (a) lead-row columns
+// and (b) lead_data jsonb keys. The dynamic-field keys map to the same
+// names the LLM emits, so a manual edit and a subsequent LLM extraction
+// land in the same jsonb slot.
+function splitWrites(
+  patch: Record<string, unknown>,
+): {
+  rowPatch: Record<string, unknown>;
+  leadDataPatch: Record<string, unknown>;
+} {
+  const rowPatch: Record<string, unknown> = {};
+  const leadDataPatch: Record<string, unknown> = {};
+
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue;
+    switch (k) {
+      // First-class columns:
+      case "name":
+      case "phone":
+      case "city":
+      case "pincode":
+      case "notes":
+      case "status":
+      case "source":
+      case "pending_action":
+        rowPatch[k] = v;
+        break;
+      case "lead_intent":
+      case "current_intent":
+        rowPatch.current_intent = v;
+        break;
+      // Dynamic / lead_data keys:
+      case "interest":
+        leadDataPatch.interest = v;
+        break;
+      case "customer_status":
+        leadDataPatch.customer_status = v;
+        break;
+      case "wants_to_connect_on_watsapp":
+        leadDataPatch.connect_on_whatsapp = v;
+        break;
+      case "visit_date_time":
+        leadDataPatch.date_and_time_of_visit = v;
+        break;
+      default:
+        break;
+    }
   }
 
-  return ok(data);
+  return { rowPatch, leadDataPatch };
 }
 
 export async function createLead(
@@ -135,20 +324,38 @@ export async function createLead(
 
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
-  if (!(await userOwnsOrgBySlug(supabase, user.id, parsed.data.org_slug))) {
-    return fail("Forbidden");
+  const org = await userOwnsOrgBySlug(supabase, user.id, parsed.data.org_slug);
+  if (!org) return fail("Forbidden");
+
+  const { rowPatch, leadDataPatch } = splitWrites({ ...parsed.data });
+
+  const insertRow: Record<string, unknown> = {
+    organisation_id: org.id,
+    org_slug: org.slug,
+    ...rowPatch,
+  };
+  if (Object.keys(leadDataPatch).length > 0) {
+    insertRow.lead_data = leadDataPatch;
   }
 
-  const { data, error } = await supabase
+  const admin = createAdminClient();
+  const { data, error } = await admin
     .from("leads")
-    .insert(parsed.data)
+    .insert(insertRow)
     .select(LEAD_COLUMNS)
-    .single<Lead>();
+    .single<LeadRow>();
 
-  if (error) return fail(error.message);
+  if (error) {
+    if (error.code === "23505") {
+      return fail(
+        "A lead with this phone number already exists in this workspace.",
+      );
+    }
+    return fail(error.message);
+  }
 
-  revalidatePath(`/organisations/${parsed.data.org_slug}/leads`);
-  return ok(data);
+  revalidatePath("/leads");
+  return ok(buildLead(data, null));
 }
 
 export async function updateLead(
@@ -169,28 +376,45 @@ export async function updateLead(
 
   const { data: existing, error: fetchErr } = await supabase
     .from("leads")
-    .select("org_slug")
+    .select("org_slug, organisation_id, lead_data")
     .eq("id", idParsed.data)
-    .maybeSingle<{ org_slug: string | null }>();
+    .maybeSingle<{
+      org_slug: string | null;
+      organisation_id: string;
+      lead_data: Record<string, unknown> | null;
+    }>();
 
   if (fetchErr) return fail(fetchErr.message);
   if (!existing) return fail("Lead not found");
-  if (!existing.org_slug || !(await userOwnsOrgBySlug(supabase, user.id, existing.org_slug))) {
-    return fail("Forbidden");
-  }
+  if (!existing.org_slug) return fail("Forbidden");
+  const org = await userOwnsOrgBySlug(supabase, user.id, existing.org_slug);
+  if (!org) return fail("Forbidden");
 
-  const { data, error } = await supabase
+  const { rowPatch, leadDataPatch } = splitWrites({ ...parsed.data });
+
+  const updatePatch: Record<string, unknown> = { ...rowPatch };
+  if (Object.keys(leadDataPatch).length > 0) {
+    // Merge with the existing lead_data so we don't overwrite siblings.
+    updatePatch.lead_data = { ...(existing.lead_data ?? {}), ...leadDataPatch };
+  }
+  if (Object.keys(updatePatch).length === 0) return fail("No fields to update");
+
+  const admin = createAdminClient();
+  const { data, error } = await admin
     .from("leads")
-    .update(parsed.data)
+    .update(updatePatch)
     .eq("id", idParsed.data)
     .select(LEAD_COLUMNS)
-    .single<Lead>();
+    .single<LeadRow>();
 
   if (error) return fail(error.message);
 
-  revalidatePath(`/organisations/${existing.org_slug}/leads`);
-  revalidatePath(`/organisations/${existing.org_slug}/leads/${idParsed.data}`);
-  return ok(data);
+  const snapshots = await fetchLatestCallSnapshots(
+    existing.organisation_id,
+    [data.id],
+  );
+  revalidatePath("/leads");
+  return ok(buildLead(data, snapshots.get(data.id) ?? null));
 }
 
 export async function deleteLead(
@@ -210,14 +434,15 @@ export async function deleteLead(
 
   if (fetchErr) return fail(fetchErr.message);
   if (!existing) return fail("Lead not found");
-  if (!existing.org_slug || !(await userOwnsOrgBySlug(supabase, user.id, existing.org_slug))) {
+  if (!existing.org_slug) return fail("Forbidden");
+  if (!(await userOwnsOrgBySlug(supabase, user.id, existing.org_slug))) {
     return fail("Forbidden");
   }
 
   const { error } = await supabase.from("leads").delete().eq("id", parsed.data);
   if (error) return fail(error.message);
 
-  revalidatePath(`/organisations/${existing.org_slug}/leads`);
+  revalidatePath("/leads");
   return ok({ id: parsed.data });
 }
 
@@ -232,25 +457,35 @@ export async function toggleLeadPendingAction(
 
   const { data: existing, error: fetchErr } = await supabase
     .from("leads")
-    .select("org_slug, pending_action")
+    .select("org_slug, pending_action, organisation_id")
     .eq("id", parsed.data)
-    .maybeSingle<{ org_slug: string | null; pending_action: boolean | null }>();
+    .maybeSingle<{
+      org_slug: string | null;
+      pending_action: boolean | null;
+      organisation_id: string;
+    }>();
 
   if (fetchErr) return fail(fetchErr.message);
   if (!existing) return fail("Lead not found");
-  if (!existing.org_slug || !(await userOwnsOrgBySlug(supabase, user.id, existing.org_slug))) {
+  if (!existing.org_slug) return fail("Forbidden");
+  if (!(await userOwnsOrgBySlug(supabase, user.id, existing.org_slug))) {
     return fail("Forbidden");
   }
 
-  const { data, error } = await supabase
+  const admin = createAdminClient();
+  const { data, error } = await admin
     .from("leads")
     .update({ pending_action: !existing.pending_action })
     .eq("id", parsed.data)
     .select(LEAD_COLUMNS)
-    .single<Lead>();
+    .single<LeadRow>();
 
   if (error) return fail(error.message);
 
-  revalidatePath(`/organisations/${existing.org_slug}/leads`);
-  return ok(data);
+  const snapshots = await fetchLatestCallSnapshots(
+    existing.organisation_id,
+    [data.id],
+  );
+  revalidatePath("/leads");
+  return ok(buildLead(data, snapshots.get(data.id) ?? null));
 }

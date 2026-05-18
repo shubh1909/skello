@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  HeadphonesIcon,
   PhoneIncomingIcon,
   PhoneOutgoingIcon,
   UsersIcon,
@@ -12,6 +11,7 @@ import { LeadExportDialog } from "@/components/app/lead-export-dialog";
 import { LeadsActivityTable } from "@/components/app/leads-activity-table";
 import { StatCard } from "@/components/app/stat-card";
 import { listLeadsWithCallActivity } from "@/actions/lead-activity";
+import { listLeadFieldDefinitions } from "@/actions/lead-field-definitions";
 import { requireSession } from "@/lib/auth/session";
 
 export const metadata = { title: "Leads · Skelo" };
@@ -19,37 +19,44 @@ export const metadata = { title: "Leads · Skelo" };
 const INITIAL_PAGE_SIZE = 50;
 
 interface PageProps {
-  searchParams?: Promise<{ include?: string }>;
+  searchParams?: Promise<{ include?: string; q?: string }>;
 }
 
 export default async function LeadsPage({ searchParams }: PageProps) {
   const session = await requireSession();
   const sp = (await searchParams) ?? {};
   const includeZero = sp.include === "all";
+  const search = typeof sp.q === "string" ? sp.q.trim() : "";
 
-  const result = await listLeadsWithCallActivity({
-    org_slug: session.organisation.slug,
-    include_zero_calls: includeZero,
-    limit: INITIAL_PAGE_SIZE,
-    offset: 0,
-  });
+  const [activityRes, defsRes] = await Promise.all([
+    listLeadsWithCallActivity({
+      org_slug: session.organisation.slug,
+      include_zero_calls: includeZero,
+      limit: INITIAL_PAGE_SIZE,
+      offset: 0,
+      search: search || undefined,
+    }),
+    listLeadFieldDefinitions({
+      organisation_id: session.organisation.id,
+      visible_only: true,
+    }),
+  ]);
 
-  if (!result.success) {
+  if (!activityRes.success) {
     return (
       <Card className="border-destructive/40 p-6 text-sm text-destructive">
-        {result.error}
+        {activityRes.error}
       </Card>
     );
   }
 
-  const rows = result.data.items;
-  const total = result.data.total;
+  const rows = activityRes.data.items;
+  const total = activityRes.data.total;
+  const visibleDefinitions = defsRes.success ? defsRes.data : [];
+
   const contactedCount = rows.filter((r) => r.total_calls > 0).length;
   const totalInbound = rows.reduce((sum, r) => sum + r.inbound_calls, 0);
   const totalOutbound = rows.reduce((sum, r) => sum + r.outbound_calls, 0);
-  const totalCalls = totalInbound + totalOutbound;
-  const avgPerLead =
-    contactedCount === 0 ? 0 : totalCalls / contactedCount;
 
   return (
     <div className="flex flex-col gap-6">
@@ -69,7 +76,7 @@ export default async function LeadsPage({ searchParams }: PageProps) {
         </div>
       </header>
 
-      <section className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
+      <section className="grid grid-cols-1 gap-5 md:grid-cols-3">
         <StatCard
           label="Leads contacted"
           value={contactedCount.toLocaleString()}
@@ -88,12 +95,6 @@ export default async function LeadsPage({ searchParams }: PageProps) {
           icon={<PhoneOutgoingIcon />}
           hint="Placed from Skelo"
         />
-        <StatCard
-          label="Avg calls per lead"
-          value={avgPerLead.toFixed(1)}
-          icon={<HeadphonesIcon />}
-          hint={`${totalCalls.toLocaleString()} total touchpoints`}
-        />
       </section>
 
       <nav className="flex items-center gap-1 text-sm">
@@ -106,8 +107,6 @@ export default async function LeadsPage({ searchParams }: PageProps) {
       </nav>
 
       <LeadsActivityTable
-        // Remount when the filter flips so useInfiniteList re-initializes
-        // from the fresh first page rather than appending across filters.
         key={includeZero ? "all" : "with-calls"}
         rows={rows}
         total={total}
@@ -115,6 +114,8 @@ export default async function LeadsPage({ searchParams }: PageProps) {
         organisationId={session.organisation.id}
         orgSlug={session.organisation.slug}
         includeZeroCalls={includeZero}
+        dynamicColumns={visibleDefinitions}
+        initialSearch={search}
       />
     </div>
   );

@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import {
   CodeIcon,
   CreditCardIcon,
-  HeadphonesIcon,
   LayoutGridIcon,
   LogOutIcon,
   MessageCircleIcon,
@@ -27,7 +26,7 @@ type NavItem = {
   href: string;
   label: string;
   icon: LucideIcon;
-  badgeKey?: "leads" | "unique_leads";
+  badgeKey?: "unique_leads";
 };
 
 type NavSection = {
@@ -54,12 +53,6 @@ const SECTIONS: readonly NavSection[] = [
         badgeKey: "unique_leads",
       },
       {
-        href: "/callers",
-        label: "Callers",
-        icon: HeadphonesIcon,
-        badgeKey: "leads",
-      },
-      {
         href: "/conversations",
         label: "Conversations",
         icon: MessageCircleIcon,
@@ -83,12 +76,10 @@ const SECTIONS: readonly NavSection[] = [
 export function SidebarNav({
   organisationName,
   organisationSlug,
-  leadCount,
   uniqueLeadCount,
 }: {
   organisationName: string;
   organisationSlug: string;
-  leadCount: number;
   uniqueLeadCount: number;
 }) {
   const pathname = usePathname();
@@ -104,10 +95,8 @@ export function SidebarNav({
 
   function getBadge(item: NavItem): string | null {
     if (!item.badgeKey) return null;
-    const count =
-      item.badgeKey === "unique_leads" ? uniqueLeadCount : leadCount;
-    if (count <= 0) return null;
-    return count > 999 ? "999+" : String(count);
+    if (uniqueLeadCount <= 0) return null;
+    return uniqueLeadCount > 999 ? "999+" : String(uniqueLeadCount);
   }
 
   return (
@@ -168,11 +157,7 @@ export function SidebarNav({
                               ? "bg-background/60 text-sidebar-accent-foreground"
                               : "bg-muted text-muted-foreground group-hover:bg-background group-hover:text-foreground",
                           )}
-                          aria-label={
-                            item.badgeKey === "unique_leads"
-                              ? `${uniqueLeadCount} unique leads`
-                              : `${leadCount} total leads`
-                          }
+                          aria-label={`${uniqueLeadCount} unique leads`}
                         >
                           {badge}
                         </span>

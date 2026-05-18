@@ -1,20 +1,22 @@
 import "server-only";
 
 import type { BolnaLeadPayload } from "@/lib/bolna/extract";
+import { mergePayloadIntoLead } from "@/lib/bolna/lead-merge";
 import { parseTranscript } from "@/lib/bolna/transcript";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { CallStatus, CallTranscriptStatus } from "@/types/call";
 
 interface RecordInboundCallArgs {
   organisationId: string;
-  leadId: string;
   externalId: string;
   payload: BolnaLeadPayload;
 }
 
 interface RecordInboundCallResult {
   callId: string | null;
+  leadId: string | null;
   transcriptStatus: CallTranscriptStatus;
+  leadCreated: boolean;
 }
 
 const STATUS_MAP: Record<string, CallStatus> = {
@@ -39,20 +41,31 @@ export function mapStatus(raw: string | null | undefined): CallStatus {
 }
 
 /**
- * Persist an inbound call directly from the post-call webhook payload.
+ * Persist an inbound call from the post-call webhook payload.
  *
- * The webhook contains everything we need (transcript, recording, phones,
- * duration, agent id), so we don't have to round-trip Bolna's executions
- * API for this. The upsert is keyed on (organisation_id, bolna_call_id) so
- * webhook retries are idempotent.
+ * Post-remodel contract:
+ *   1. Find-or-create the lead by (organisation_id, phone_normalized).
+ *      The phone comes from `payload.user_number` (provider-sent metadata,
+ *      not LLM-extracted).
+ *   2. Build the per-call snapshot from extracted_data.lead_data.
+ *   3. Merge the snapshot onto the lead's "current view" columns +
+ *      lead_data/custom_data jsonb, respecting lead_field_overrides.
+ *   4. Insert the calls row with the immutable per-call snapshot fields.
+ *   5. Parse the transcript into call_transcripts rows.
+ *
+ * Idempotency: (organisation_id, bolna_call_id) is unique on calls. Replays
+ * upsert into the same row.
  */
 export async function recordInboundCall(
   args: RecordInboundCallArgs,
 ): Promise<RecordInboundCallResult> {
   const admin = createAdminClient();
-  const { payload, organisationId, leadId, externalId } = args;
+  const { payload, organisationId, externalId } = args;
 
-  const fromPhone = payload.telephony_data?.from_number?.trim() || null;
+  const fromPhone =
+    payload.telephony_data?.from_number?.trim() ||
+    payload.user_number?.trim() ||
+    null;
   const toPhone = payload.telephony_data?.to_number?.trim() || null;
   const recordingUrl = payload.telephony_data?.recording_url ?? null;
   const transcript = payload.transcript ?? null;
@@ -64,13 +77,20 @@ export async function recordInboundCall(
   const startedAt = payload.created_at ?? new Date().toISOString();
   const endedAt = payload.updated_at ?? null;
   const errorMessage = payload.error_message ?? null;
-  const transcriptStatus: CallTranscriptStatus = transcript
-    ? "ready"
-    : "skipped";
+  const transcriptStatus: CallTranscriptStatus = transcript ? "ready" : "skipped";
+
+  // Lead merge first — find-or-create + override-aware update + auto-discover.
+  const merge = await mergePayloadIntoLead({
+    organisationId,
+    phoneRaw: fromPhone,
+    payload,
+    source: "inbound_call",
+  });
 
   console.log("[inbound] recording call", {
     organisationId,
-    leadId,
+    leadId: merge.leadId,
+    leadCreated: merge.created,
     externalId,
     fromPhone,
     toPhone,
@@ -84,7 +104,7 @@ export async function recordInboundCall(
     .upsert(
       {
         organisation_id: organisationId,
-        lead_id: leadId,
+        lead_id: merge.leadId,
         bolna_call_id: externalId,
         direction: "inbound" as const,
         to_phone: toPhone,
@@ -99,6 +119,17 @@ export async function recordInboundCall(
         started_at: startedAt,
         ended_at: endedAt,
         error_message: errorMessage,
+        summary: payload.summary ?? null,
+        // Per-call snapshot columns — immutable record of this conversation.
+        name_extracted: merge.callSnapshot.name_extracted,
+        interest: merge.callSnapshot.interest,
+        lead_intent_extracted: merge.callSnapshot.lead_intent_extracted,
+        actionable: merge.callSnapshot.actionable,
+        customer_status: merge.callSnapshot.customer_status,
+        visit_scheduled_at: merge.callSnapshot.visit_scheduled_at,
+        connect_on_whatsapp: merge.callSnapshot.connect_on_whatsapp,
+        lead_data: merge.callSnapshot.lead_data,
+        custom_data: merge.callSnapshot.custom_data,
       },
       { onConflict: "organisation_id,bolna_call_id" },
     )
@@ -107,7 +138,12 @@ export async function recordInboundCall(
 
   if (callErr) {
     console.error("[inbound] call upsert failed", callErr);
-    return { callId: null, transcriptStatus: "failed" };
+    return {
+      callId: null,
+      leadId: merge.leadId,
+      transcriptStatus: "failed",
+      leadCreated: merge.created,
+    };
   }
 
   console.log("[inbound] call recorded", { callId: callRow.id });
@@ -117,7 +153,12 @@ export async function recordInboundCall(
     organisationId,
     transcript,
   );
-  return { callId: callRow.id, transcriptStatus: finalStatus };
+  return {
+    callId: callRow.id,
+    leadId: merge.leadId,
+    transcriptStatus: finalStatus,
+    leadCreated: merge.created,
+  };
 }
 
 export async function writeTranscriptTurns(
@@ -137,7 +178,6 @@ export async function writeTranscriptTurns(
     return "skipped";
   }
 
-  // Replace any prior turns so retries produce a clean set.
   await admin.from("call_transcripts").delete().eq("call_id", callId);
 
   const rows = turns.map((t) => ({

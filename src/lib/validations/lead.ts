@@ -30,28 +30,47 @@ export const orgSlugSchema = z
   .max(63)
   .regex(slugRegex, "Slug must be lowercase, numbers and hyphens only");
 
+// Create: only fields that live on the leads row post-remodel, plus the
+// dynamic fields the form chooses to seed. Per-call fields (summary,
+// actionable, recording_url) are no longer settable at the lead level —
+// they belong to individual calls.
 export const leadCreateSchema = z.object({
   org_slug: orgSlugSchema,
   name: z.string().trim().min(1).max(200).nullish(),
-  interest: z.string().trim().max(500).nullish(),
-  summary: z.string().trim().max(5000).nullish(),
-  customer_status: z.string().trim().max(50).nullish(),
-  lead_intent: leadIntentSchema.nullish(),
   phone: z.string().trim().max(32).nullish(),
-  wants_to_connect_on_watsapp: z.boolean().nullish(),
-  visit_date_time: z.string().datetime({ offset: true }).nullish(),
+  current_intent: leadIntentSchema.nullish(),
+  // Back-compat: callers passing `lead_intent` continue to work.
+  lead_intent: leadIntentSchema.nullish(),
   source: leadSourceSchema.nullish(),
   status: leadStatusSchema.optional(),
   notes: z.string().trim().max(5000).nullish(),
   city: z.string().trim().max(100).nullish(),
   pincode: z.string().trim().max(20).nullish(),
-  actionable: z.string().trim().max(1000).nullish(),
-  recording_url: z.string().trim().url().max(2000).nullish(),
+  // Dynamic-field seeds — get written into lead_data on create.
+  interest: z.string().trim().max(500).nullish(),
+  customer_status: z.string().trim().max(50).nullish(),
+  wants_to_connect_on_watsapp: z.boolean().nullish(),
+  visit_date_time: z.string().datetime({ offset: true }).nullish(),
 });
 
-export const leadUpdateSchema = leadCreateSchema
-  .omit({ org_slug: true })
-  .extend({ pending_action: z.boolean().optional() })
+export const leadUpdateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200).nullish(),
+    phone: z.string().trim().max(32).nullish(),
+    current_intent: leadIntentSchema.nullish(),
+    lead_intent: leadIntentSchema.nullish(), // back-compat alias
+    status: leadStatusSchema.optional(),
+    source: leadSourceSchema.nullish(),
+    notes: z.string().trim().max(5000).nullish(),
+    city: z.string().trim().max(100).nullish(),
+    pincode: z.string().trim().max(20).nullish(),
+    pending_action: z.boolean().optional(),
+    // Dynamic-field updates — written into lead_data on the row.
+    interest: z.string().trim().max(500).nullish(),
+    customer_status: z.string().trim().max(50).nullish(),
+    wants_to_connect_on_watsapp: z.boolean().nullish(),
+    visit_date_time: z.string().datetime({ offset: true }).nullish(),
+  })
   .partial();
 
 export const leadListSchema = z.object({

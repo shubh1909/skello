@@ -1,4 +1,3 @@
-import { listLeads } from "@/actions/leads";
 import { countLeadCallActivity } from "@/actions/lead-activity";
 import { requireSession } from "@/lib/auth/session";
 import { Topbar } from "@/components/app/topbar";
@@ -16,18 +15,10 @@ export default async function AppLayout({
 }) {
   const session = await requireSession();
 
-  const [leadsResult, uniqueResult] = await Promise.all([
-    listLeads({
-      org_slug: session.organisation.slug,
-      limit: 1,
-      offset: 0,
-    }),
-    countLeadCallActivity({
-      org_slug: session.organisation.slug,
-      include_zero_calls: false,
-    }),
-  ]);
-  const leadCount = leadsResult.success ? leadsResult.data.total : 0;
+  const uniqueResult = await countLeadCallActivity({
+    org_slug: session.organisation.slug,
+    include_zero_calls: true,
+  });
   const uniqueLeadCount = uniqueResult.success ? uniqueResult.data : 0;
 
   return (
@@ -36,7 +27,6 @@ export default async function AppLayout({
         <SidebarNav
           organisationName={session.organisation.name}
           organisationSlug={session.organisation.slug}
-          leadCount={leadCount}
           uniqueLeadCount={uniqueLeadCount}
         />
         <div className="flex min-w-0 flex-col">
