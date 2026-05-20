@@ -19,13 +19,15 @@ const rangeSchema = z.enum([
 
 type Range = z.infer<typeof rangeSchema>;
 
-// recording_url / transcript_url are intentionally omitted from the export —
-// per product call, downloadable CSVs must not leak signed audio links.
+// recording_url / transcript_url / transcript are intentionally omitted —
+// per product call, downloadable CSVs must not leak signed audio links, and
+// the full transcript bloats the file enough to choke Excel on large pulls.
 const CALL_COLUMNS =
   "id, bolna_call_id, direction, status, agent_id, to_phone, from_phone, " +
   "started_at, answered_at, ended_at, duration_seconds, language, summary, " +
-  "interest, customer_status, actionable, visit_scheduled_at, " +
-  "connect_on_whatsapp, error_code, error_message, " +
+  "name_extracted, interest, lead_intent_extracted, customer_status, " +
+  "actionable, visit_scheduled_at, connect_on_whatsapp, transcript_status, " +
+  "lead_data, custom_data, error_code, error_message, " +
   "lead:leads(name, phone)";
 
 interface CallRow {
@@ -42,11 +44,16 @@ interface CallRow {
   duration_seconds: number | null;
   language: string | null;
   summary: string | null;
+  name_extracted: string | null;
   interest: string | null;
+  lead_intent_extracted: "hot" | "warm" | "cold" | null;
   customer_status: string | null;
   actionable: string | null;
   visit_scheduled_at: string | null;
   connect_on_whatsapp: boolean | null;
+  transcript_status: string | null;
+  lead_data: Record<string, unknown> | null;
+  custom_data: Record<string, Record<string, unknown>> | null;
   error_code: string | null;
   error_message: string | null;
   lead: { name: string | null; phone: string | null } | null;
@@ -55,6 +62,97 @@ interface CallRow {
 interface ExportRow extends CallRow {
   agent_label: string | null;
   counterparty_phone: string | null;
+  captured_fields: string | null;
+}
+
+// Keys already surfaced as their own CSV columns — skip when flattening
+// lead_data into "Captured Fields" so the same value doesn't appear twice.
+// Mirrors CALL_LEAD_DATA_SURFACED in the side-sheet UI.
+const CALL_LEAD_DATA_SURFACED = new Set([
+  "name",
+  "interest",
+  "lead_intent",
+  "actionable",
+  "customer_status",
+  "connect_on_whatsapp",
+  "date_and_time_of_visit",
+  "business_slug",
+]);
+
+const UNGROUPED_CATEGORIES = new Set(["", "__general__", "general"]);
+
+function humaniseFieldKey(key: string): string {
+  return key
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
+    .join(" ");
+}
+
+function stringifyValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(value) : null;
+  }
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (!t) return null;
+    const lower = t.toLowerCase();
+    if (lower === "yes" || lower === "true") return "Yes";
+    if (lower === "no" || lower === "false") return "No";
+    return t;
+  }
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((v) => stringifyValue(v))
+      .filter((v): v is string => v !== null);
+    return parts.length > 0 ? parts.join(", ") : null;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
+// Flatten lead_data extras + custom_data into a single human-readable
+// pipe-separated string for the "Captured Fields" CSV column. Stable schema:
+// every row gets the same column regardless of which fields the org captures.
+function buildCapturedFields(
+  leadData: Record<string, unknown> | null,
+  customData: Record<string, Record<string, unknown>> | null,
+): string | null {
+  const parts: string[] = [];
+
+  if (leadData) {
+    for (const [k, v] of Object.entries(leadData)) {
+      if (CALL_LEAD_DATA_SURFACED.has(k)) continue;
+      const rendered = stringifyValue(v);
+      if (rendered === null) continue;
+      parts.push(`${humaniseFieldKey(k)}: ${rendered}`);
+    }
+  }
+
+  if (customData) {
+    for (const [cat, bag] of Object.entries(customData)) {
+      if (!bag || typeof bag !== "object") continue;
+      const isUngrouped = UNGROUPED_CATEGORIES.has(cat);
+      const catLabel = isUngrouped ? null : humaniseFieldKey(cat);
+      for (const [k, v] of Object.entries(bag)) {
+        const rendered = stringifyValue(v);
+        if (rendered === null) continue;
+        const keyLabel = humaniseFieldKey(k);
+        parts.push(
+          catLabel ? `${catLabel} > ${keyLabel}: ${rendered}` : `${keyLabel}: ${rendered}`,
+        );
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join(" | ") : null;
 }
 
 function rangeBounds(
@@ -90,16 +188,20 @@ const CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Outcome", value: (c) => c.status },
   { header: "Agent", value: (c) => c.agent_label ?? c.agent_id },
   { header: "Lead Name", value: (c) => c.lead?.name ?? null },
+  { header: "Name (Captured)", value: (c) => c.name_extracted },
   { header: "Lead Phone", value: (c) => c.lead?.phone ?? c.counterparty_phone },
   { header: "From Phone", value: (c) => c.from_phone },
   { header: "To Phone", value: (c) => c.to_phone },
   { header: "Language", value: (c) => c.language },
+  { header: "Transcript Status", value: (c) => c.transcript_status },
   { header: "Summary", value: (c) => c.summary },
+  { header: "Intent", value: (c) => c.lead_intent_extracted },
   { header: "Interest", value: (c) => c.interest },
   { header: "Customer Type", value: (c) => c.customer_status },
   { header: "Actionable", value: (c) => c.actionable },
   { header: "Visit Scheduled", value: (c) => c.visit_scheduled_at },
   { header: "Wants WA", value: (c) => c.connect_on_whatsapp },
+  { header: "Captured Fields", value: (c) => c.captured_fields },
   { header: "Error Code", value: (c) => c.error_code },
   { header: "Error Message", value: (c) => c.error_message },
 ];
@@ -149,6 +251,7 @@ export async function GET(request: NextRequest) {
     ...c,
     agent_label: labelById.get(c.agent_id) ?? null,
     counterparty_phone: c.direction === "inbound" ? c.from_phone : c.to_phone,
+    captured_fields: buildCapturedFields(c.lead_data, c.custom_data),
   }));
 
   const body = withBom(toCsv(rows, CSV_COLUMNS));
