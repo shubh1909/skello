@@ -173,11 +173,17 @@ function FieldRow({
   }
 
   const sourceLabel =
-    def.source_column === "lead_data"
-      ? "Standard"
-      : def.category
-        ? `Custom · ${def.category}`
-        : "Custom";
+    def.source_column === "column"
+      ? "Built-in"
+      : def.source_column === "lead_data"
+        ? "Standard"
+        : def.category
+          ? `Custom · ${def.category}`
+          : "Custom";
+  // First-class columns ship with a fixed data type (e.g. inbound_calls is
+  // always a number). Locking the type field keeps admins from breaking
+  // the RPC's filter/sort allowlist by setting an incompatible type.
+  const isBuiltIn = def.source_column === "column";
 
   return (
     <tr className="align-middle">
@@ -201,21 +207,32 @@ function FieldRow({
         </div>
       </td>
       <td className="px-3 py-3">
-        <Select
-          value={state.dataType}
-          onValueChange={(v) => set("dataType", v as LeadFieldDataType)}
-        >
-          <SelectTrigger className="h-8 w-[130px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {DATA_TYPES.map((t) => (
-              <SelectItem key={t} value={t}>
-                {DATA_TYPE_LABEL[t]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {isBuiltIn ? (
+          <span
+            className="inline-flex h-8 items-center rounded-md border border-border bg-muted/30 px-2.5 text-xs text-muted-foreground"
+            title="Built-in columns have a fixed data type"
+          >
+            {DATA_TYPE_LABEL[state.dataType]}
+          </span>
+        ) : (
+          <Select
+            value={state.dataType}
+            onValueChange={(v) =>
+              v && set("dataType", v as LeadFieldDataType)
+            }
+          >
+            <SelectTrigger className="h-8 w-[130px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {DATA_TYPES.map((t) => (
+                <SelectItem key={t} value={t}>
+                  {DATA_TYPE_LABEL[t]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </td>
       <td className="px-3 py-3">
         <span

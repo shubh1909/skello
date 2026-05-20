@@ -9,7 +9,13 @@ import { type ActionResult, fail, ok } from "@/types/action";
 import type { Lead, LeadIntent } from "@/types/lead";
 
 const filterSchema = z.object({
-  source: z.enum(["lead_data", "custom_data"]).default("lead_data"),
+  // "column" was added so the catalog-toggled first-class columns
+  // (current_intent, pending_action, inbound_calls, etc.) can be filtered
+  // through the same RPC path as JSONB fields. See migration
+  // 20260520000001 for the allowlist of acceptable column keys.
+  source: z
+    .enum(["lead_data", "custom_data", "column"])
+    .default("lead_data"),
   category: z.string().max(100).optional(),
   key: z.string().min(1).max(200),
   op: z.enum(["eq", "neq", "contains", "lt", "lte", "gt", "gte"]).default("eq"),

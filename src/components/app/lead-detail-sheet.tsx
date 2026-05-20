@@ -6,8 +6,6 @@ import {
   ArrowLeftIcon,
   BellPlusIcon,
   CheckIcon,
-  ChevronDownIcon,
-  ChevronUpIcon,
   ClockIcon,
   ExternalLinkIcon,
   HistoryIcon,
@@ -337,6 +335,14 @@ export function LeadDetailSheet({
   const intent = lead.current_intent ?? lead.lead_intent ?? "cold";
   const isPending = Boolean(lead.pending_action);
   const hasPhone = Boolean(lead.phone);
+  // Extras = everything in lead_data + custom_data that isn't already
+  // surfaced in the Details dl. Drives whether the "Captured fields"
+  // section renders at all.
+  const leadDataExtras = pickLeadDataExtras(lead.lead_data, LEAD_DATA_SURFACED);
+  const leadFieldGroups = buildCustomFieldGroups(
+    lead.custom_data,
+    leadDataExtras,
+  );
 
   return (
     <Sheet open={open} onOpenChange={handleOpenChange}>
@@ -629,6 +635,19 @@ export function LeadDetailSheet({
               </dl>
             )}
           </section>
+
+          {leadFieldGroups.length > 0 ? (
+            <>
+              <Separator />
+              <section className="space-y-3">
+                <SectionTitle>Captured fields</SectionTitle>
+                <CustomFieldsDisplay
+                  customData={lead.custom_data}
+                  extraLeadData={leadDataExtras}
+                />
+              </section>
+            </>
+          ) : null}
 
           <Separator />
 
@@ -995,8 +1014,6 @@ function CallDetailPane({
 }) {
   const [turns, setTurns] = React.useState<CallTranscriptTurn[] | null>(null);
   const [loading, setLoading] = React.useState(false);
-  const [showLeadData, setShowLeadData] = React.useState(false);
-  const [showCustomData, setShowCustomData] = React.useState(false);
 
   // Fetch transcript turns whenever the selected call changes. Independent
   // of the sheet's own fetch so we don't refetch the calls list every time
@@ -1035,10 +1052,9 @@ function CallDetailPane({
       ? formatDuration(call.duration_seconds)
       : null;
   const intent = call.lead_intent_extracted;
-  const leadDataKeys = Object.keys(call.lead_data ?? {});
-  const customDataEntries = Object.entries(call.custom_data ?? {}).filter(
-    ([, bag]) => bag && Object.keys(bag).length > 0,
-  );
+  const extraLeadData = pickLeadDataExtras(call.lead_data, CALL_LEAD_DATA_SURFACED);
+  const customFieldGroups = buildCustomFieldGroups(call.custom_data, extraLeadData);
+  const hasExtras = customFieldGroups.length > 0;
   const snapshotFields: Array<[string, React.ReactNode]> = [];
   if (call.name_extracted) snapshotFields.push(["Name", call.name_extracted]);
   if (call.interest) snapshotFields.push(["Interest", call.interest]);
@@ -1159,28 +1175,16 @@ function CallDetailPane({
         </section>
       ) : null}
 
-      {leadDataKeys.length > 0 ? (
-        <Disclosure
-          label={`Raw lead_data (${leadDataKeys.length})`}
-          open={showLeadData}
-          onToggle={() => setShowLeadData((v) => !v)}
-        >
-          <pre className="whitespace-pre-wrap break-words rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs leading-relaxed">
-            {JSON.stringify(call.lead_data, null, 2)}
-          </pre>
-        </Disclosure>
-      ) : null}
-
-      {customDataEntries.length > 0 ? (
-        <Disclosure
-          label={`Raw custom_data (${customDataEntries.length})`}
-          open={showCustomData}
-          onToggle={() => setShowCustomData((v) => !v)}
-        >
-          <pre className="whitespace-pre-wrap break-words rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs leading-relaxed">
-            {JSON.stringify(call.custom_data, null, 2)}
-          </pre>
-        </Disclosure>
+      {hasExtras ? (
+        <section className="space-y-1.5">
+          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+            Additional fields
+          </div>
+          <CustomFieldsDisplay
+            customData={call.custom_data}
+            extraLeadData={extraLeadData}
+          />
+        </section>
       ) : null}
 
       <section className="space-y-2">
@@ -1208,33 +1212,187 @@ function CallDetailPane({
   );
 }
 
-function Disclosure({
-  label,
-  open,
-  onToggle,
-  children,
-}: {
-  label: string;
-  open: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}) {
+// Keys we already surface in the per-call "Captured this call" dl —
+// excluded from the extras section so they aren't shown twice.
+const CALL_LEAD_DATA_SURFACED = new Set([
+  "name",
+  "interest",
+  "lead_intent",
+  "actionable",
+  "customer_status",
+  "connect_on_whatsapp",
+  "date_and_time_of_visit",
+  // Internal routing key from the extractor — never user-facing.
+  "business_slug",
+]);
+
+// Same idea for the lead-level summary view.
+const LEAD_DATA_SURFACED = new Set([
+  "name",
+  "interest",
+  "lead_intent",
+  "actionable",
+  "customer_status",
+  "connect_on_whatsapp",
+  "date_and_time_of_visit",
+  "city",
+  "pincode",
+  "business_slug",
+]);
+
+// Category names that mean "ungrouped" — we hoist their entries to the top
+// level instead of rendering an empty "" header.
+const UNGROUPED_CATEGORIES = new Set(["", "__general__", "general"]);
+
+function pickLeadDataExtras(
+  data: Record<string, unknown> | null | undefined,
+  skip: ReadonlySet<string>,
+): Record<string, unknown> | null {
+  if (!data) return null;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (skip.has(k)) continue;
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function humaniseFieldKey(key: string): string {
+  return key
+    .replace(/[_-]+/g, " ")
+    // Insert spaces between camelCase / PascalCase boundaries.
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
+    .join(" ");
+}
+
+function looksLikeIsoDate(s: string): boolean {
+  const t = s.trim();
+  if (t.length < 8) return false;
+  return /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(t);
+}
+
+function renderFieldValue(value: unknown): React.ReactNode {
+  if (value === null || value === undefined) {
+    return <Muted>—</Muted>;
+  }
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value.toLocaleString() : String(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return <Muted>—</Muted>;
+    const lower = trimmed.toLowerCase();
+    if (lower === "yes" || lower === "true") return "Yes";
+    if (lower === "no" || lower === "false") return "No";
+    if (looksLikeIsoDate(trimmed)) {
+      const d = new Date(trimmed);
+      if (!Number.isNaN(d.getTime())) {
+        return (
+          <span suppressHydrationWarning>{formatDateTime(trimmed)}</span>
+        );
+      }
+    }
+    return trimmed;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <Muted>—</Muted>;
+    return value.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(", ");
+  }
+  // Plain object — render as a compact code block so the structure is
+  // still legible without dumping a multi-line JSON tree.
   return (
-    <section className="space-y-1.5">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-widest text-muted-foreground transition-colors hover:text-foreground"
-      >
-        {open ? (
-          <ChevronUpIcon className="size-3.5" />
-        ) : (
-          <ChevronDownIcon className="size-3.5" />
-        )}
-        {label}
-      </button>
-      {open ? children : null}
-    </section>
+    <code className="wrap-break-word text-xs text-muted-foreground">
+      {JSON.stringify(value)}
+    </code>
+  );
+}
+
+interface CustomFieldsGroup {
+  category: string; // empty string for ungrouped
+  entries: Array<[string, unknown]>;
+}
+
+function buildCustomFieldGroups(
+  customData: Record<string, unknown> | null | undefined,
+  extraLeadData: Record<string, unknown> | null | undefined,
+): CustomFieldsGroup[] {
+  const groups: CustomFieldsGroup[] = [];
+  const ungrouped: Array<[string, unknown]> = [];
+
+  if (extraLeadData) {
+    for (const [k, v] of Object.entries(extraLeadData)) {
+      if (v === null || v === undefined) continue;
+      ungrouped.push([k, v]);
+    }
+  }
+
+  if (customData && typeof customData === "object") {
+    for (const [cat, bag] of Object.entries(customData)) {
+      if (!bag || typeof bag !== "object") continue;
+      const entries = Object.entries(bag as Record<string, unknown>).filter(
+        ([, v]) => v !== null && v !== undefined && !(typeof v === "string" && v.trim() === ""),
+      );
+      if (entries.length === 0) continue;
+      if (UNGROUPED_CATEGORIES.has(cat)) {
+        ungrouped.push(...entries);
+      } else {
+        groups.push({ category: cat, entries });
+      }
+    }
+  }
+
+  if (ungrouped.length > 0) {
+    groups.unshift({ category: "", entries: ungrouped });
+  }
+  return groups;
+}
+
+function CustomFieldsDisplay({
+  customData,
+  extraLeadData,
+}: {
+  customData?: Record<string, unknown> | null;
+  extraLeadData?: Record<string, unknown> | null;
+}) {
+  const groups = React.useMemo(
+    () => buildCustomFieldGroups(customData, extraLeadData),
+    [customData, extraLeadData],
+  );
+
+  if (groups.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      {groups.map((g, i) => (
+        <div key={`${g.category || "ungrouped"}-${i}`} className="space-y-1.5">
+          {g.category ? (
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              {humaniseFieldKey(g.category)}
+            </div>
+          ) : null}
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-md border border-border/70 bg-card px-3 py-2.5 text-sm">
+            {g.entries.map(([k, v]) => (
+              <React.Fragment key={k}>
+                <dt className="text-xs leading-relaxed text-muted-foreground">
+                  {humaniseFieldKey(k)}
+                </dt>
+                <dd className="wrap-break-word leading-relaxed">
+                  {renderFieldValue(v)}
+                </dd>
+              </React.Fragment>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </div>
   );
 }
 

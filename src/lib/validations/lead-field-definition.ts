@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const sourceColumn = z.enum(["lead_data", "custom_data"]);
+const sourceColumn = z.enum(["lead_data", "custom_data", "column"]);
 const dataType = z.enum([
   "string",
   "number",

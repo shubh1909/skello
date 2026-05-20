@@ -3,8 +3,11 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
+  ArrowDownIcon,
+  ArrowUpIcon,
   BellPlusIcon,
   CheckIcon,
+  ChevronsUpDownIcon,
   PhoneIcon,
   PhoneIncomingIcon,
   PhoneOutgoingIcon,
@@ -59,14 +62,27 @@ const INTENT_LABEL: Record<LeadIntent, string> = {
 
 // Read a dynamic field's value from the lead row based on the catalog's
 // (source_column, category, key_path). Returns the raw value or null.
+//
+// Storage convention (matches `apply_lead_field_jsonb` in migration 0002
+// and the path-building in `lead_call_activity`):
+//   - lead_data:                   lead.lead_data[key_path]
+//   - custom_data, category "":    lead.custom_data[key_path]            (flat)
+//   - custom_data, named category: lead.custom_data[category][key_path]  (nested)
+// The ungrouped case is flattened so admins don't see `custom_data.""`
+// when they JSON-inspect a lead — keys land at the top level.
 function readDynamicValue(lead: Lead, def: LeadFieldDefinition): unknown {
-  const blob =
-    def.source_column === "lead_data"
-      ? lead.lead_data
-      : lead.custom_data?.[def.category ?? ""];
-  if (!blob) return null;
-  const value = (blob as Record<string, unknown>)[def.key_path];
-  return value ?? null;
+  if (def.source_column === "lead_data") {
+    const blob = lead.lead_data as Record<string, unknown> | null | undefined;
+    return blob?.[def.key_path] ?? null;
+  }
+  const cd = lead.custom_data as Record<string, unknown> | null | undefined;
+  if (!cd) return null;
+  const category = def.category ?? "";
+  if (category === "") {
+    return cd[def.key_path] ?? null;
+  }
+  const bag = cd[category] as Record<string, unknown> | undefined;
+  return bag?.[def.key_path] ?? null;
 }
 
 function renderDynamicValue(value: unknown, type: LeadFieldDefinition["data_type"]): React.ReactNode {
@@ -130,8 +146,27 @@ interface LeadsActivityTableProps {
   organisationId: string;
   orgSlug: string;
   includeZeroCalls: boolean;
-  dynamicColumns: LeadFieldDefinition[];
+  // Full catalog (visible + hidden). The table component decides per-flag
+  // what each row contributes: visible_in_table → column rendering,
+  // filterable → filter picker entry, sortable → sort dropdown entry.
+  catalog: LeadFieldDefinition[];
   initialSearch?: string;
+}
+
+interface SortState {
+  source: "column" | "lead_data" | "custom_data";
+  category: string;
+  key: string;
+  dir: "asc" | "desc";
+  type: "text" | "number" | "date" | "boolean";
+}
+
+// Map a catalog data_type to the RPC's sort_by `type` field.
+function dataTypeToSortType(t: LeadFieldDefinition["data_type"]): SortState["type"] {
+  if (t === "number") return "number";
+  if (t === "date") return "date";
+  if (t === "boolean") return "boolean";
+  return "text";
 }
 
 export function LeadsActivityTable({
@@ -141,7 +176,7 @@ export function LeadsActivityTable({
   organisationId,
   orgSlug,
   includeZeroCalls,
-  dynamicColumns,
+  catalog,
   initialSearch = "",
 }: LeadsActivityTableProps) {
   const router = useRouter();
@@ -150,10 +185,32 @@ export function LeadsActivityTable({
   const [search, setSearch] = React.useState(initialSearch);
   const [appliedSearch, setAppliedSearch] = React.useState(initialSearch);
   const [filters, setFilters] = React.useState<DynamicFilterValue[]>([]);
+  const [sort, setSort] = React.useState<SortState | null>(null);
 
+  // Visible columns (in display_order) — drive both the <th> and <td> render.
+  const visibleColumns = React.useMemo(
+    () =>
+      catalog
+        .filter((d) => d.visible_in_table)
+        .slice()
+        .sort((a, b) => a.display_order - b.display_order),
+    [catalog],
+  );
+  // Filter picker draws from everything flagged filterable, independent of
+  // whether that field is a visible column. This is the bug fix the user
+  // hit: previously the page only fetched visible rows so filter-only
+  // fields never appeared.
   const filterableDefs = React.useMemo(
-    () => dynamicColumns.filter((d) => d.filterable),
-    [dynamicColumns],
+    () => catalog.filter((d) => d.filterable),
+    [catalog],
+  );
+  const sortableDefs = React.useMemo(
+    () =>
+      catalog
+        .filter((d) => d.sortable)
+        .slice()
+        .sort((a, b) => a.display_order - b.display_order),
+    [catalog],
   );
 
   const wireFilters = React.useMemo(
@@ -172,6 +229,7 @@ export function LeadsActivityTable({
         limit,
         offset,
         filters: wireFilters,
+        sort_by: sort ?? undefined,
         search: appliedSearch || undefined,
       });
       if (!res.success) {
@@ -180,8 +238,42 @@ export function LeadsActivityTable({
       }
       return res.data;
     },
-    [orgSlug, includeZeroCalls, wireFilters, appliedSearch],
+    [orgSlug, includeZeroCalls, wireFilters, sort, appliedSearch],
   );
+
+  // Click a sortable header → cycle none → desc → asc → none.
+  // Switching to a different column always starts at desc (most-recent-first
+  // is the more useful default for dates and counts).
+  function toggleSort(def: LeadFieldDefinition) {
+    if (!def.sortable) return;
+    const sourceFor: SortState["source"] =
+      def.source_column === "column"
+        ? "column"
+        : def.source_column === "lead_data"
+          ? "lead_data"
+          : "custom_data";
+    const isCurrent =
+      sort &&
+      sort.source === sourceFor &&
+      sort.key === def.key_path &&
+      sort.category === (def.category ?? "");
+    if (!isCurrent) {
+      setSort({
+        source: sourceFor,
+        category: def.category ?? "",
+        key: def.key_path,
+        dir: "desc",
+        type: dataTypeToSortType(def.data_type),
+      });
+      return;
+    }
+    if (sort.dir === "desc") {
+      setSort({ ...sort, dir: "asc" });
+      return;
+    }
+    // Was asc — clear sort.
+    setSort(null);
+  }
 
   const {
     items,
@@ -195,6 +287,16 @@ export function LeadsActivityTable({
     initialTotal: total,
     pageSize,
     fetchPage,
+    // Re-fetch from offset 0 whenever client-side query state changes —
+    // sort toggle on a header, filter chip added/edited, search submitted.
+    // Without this, the table keeps showing the server-rendered initial
+    // page (no sort/filter) while later-scrolled pages reflect the new
+    // params, producing an inconsistent list.
+    resetKey: JSON.stringify({
+      sort,
+      wireFilters,
+      appliedSearch,
+    }),
   });
 
   useLeadsRealtime(orgSlug, pagedBeyondInitial);
@@ -291,7 +393,11 @@ export function LeadsActivityTable({
         op: def.data_type === "string" ? "contains" : "eq",
         value: "",
         type: def.data_type,
-        label: def.label ?? def.key_path,
+        // Match the filter picker's display rule — admin-set label first,
+        // then a humanised version of the raw key_path. The previous fallback
+        // was the raw key (e.g. `interest_Objective`) which read worse than
+        // "Interest Objective" once it landed on the chip.
+        label: def.label ?? humanise(def.key_path),
       },
     ]);
   }
@@ -376,45 +482,27 @@ export function LeadsActivityTable({
             <table
               className={cn(
                 "w-full text-left text-sm",
-                dynamicColumns.length > 0 ? "min-w-[1400px]" : "min-w-[1200px]",
+                visibleColumns.length > 3 ? "min-w-[1400px]" : "min-w-[1100px]",
               )}
             >
               <thead className="border-b border-border/60 bg-muted/30">
                 <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  <th scope="col" className="px-5 py-4 font-medium">Lead</th>
-                  <th scope="col" className="px-3 py-4 text-right font-medium">
-                    <span className="inline-flex items-center gap-1.5">
-                      <PhoneIncomingIcon className="size-3.5" /> In
-                    </span>
-                  </th>
-                  <th scope="col" className="px-3 py-4 text-right font-medium">
-                    <span className="inline-flex items-center gap-1.5">
-                      <PhoneOutgoingIcon className="size-3.5" /> Out
-                    </span>
-                  </th>
-                  <th scope="col" className="px-4 py-4 font-medium">Last contact</th>
-                  <th scope="col" className="px-4 py-4 font-medium">First contact</th>
-                  <th scope="col" className="px-4 py-4 font-medium">Intent</th>
-                  {dynamicColumns.map((def) => (
-                    <th
+                  <th scope="col" className="w-55 px-4 py-4 font-medium">Lead</th>
+                  {visibleColumns.map((def) => (
+                    <ColumnHeader
                       key={def.id}
-                      scope="col"
-                      className="px-4 py-4 font-medium"
-                      title={def.key_path}
-                    >
-                      {def.label ?? humanise(def.key_path)}
-                    </th>
+                      def={def}
+                      sort={sort}
+                      onToggleSort={toggleSort}
+                    />
                   ))}
-                  <th scope="col" className="px-4 py-4 font-medium">Pending</th>
                   <th scope="col" className="px-5 py-4 text-right font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
                 {items.map((row) => {
-                  const intent = row.lead_intent ?? "cold";
                   const isPending = pending && pendingLeadId === row.id;
                   const hasPhone = Boolean(row.phone);
-                  const actionPending = Boolean(row.pending_action);
 
                   return (
                     <tr
@@ -431,13 +519,13 @@ export function LeadsActivityTable({
                       }}
                       className="group cursor-pointer align-top transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
                     >
-                      <td className="px-5 py-4">
-                        <div className="flex items-start gap-3">
-                          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+                      <td className="px-4 py-4">
+                        <div className="flex items-start gap-2.5">
+                          <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
                             {initialsOf(row.name)}
                           </span>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium leading-tight">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium leading-tight">
                               {row.name ?? "Unnamed lead"}
                             </p>
                             {hasPhone ? (
@@ -463,48 +551,16 @@ export function LeadsActivityTable({
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-4 text-right tabular-nums">{row.inbound_calls}</td>
-                      <td className="px-3 py-4 text-right tabular-nums">{row.outbound_calls}</td>
-                      <td className="px-4 py-4 text-xs text-muted-foreground" suppressHydrationWarning>
-                        {now === null || !row.last_call_at ? "—" : formatRelative(row.last_call_at, now)}
-                      </td>
-                      <td className="px-4 py-4 text-xs text-muted-foreground" suppressHydrationWarning>
-                        {now === null || !row.first_call_at ? "—" : formatRelative(row.first_call_at, now)}
-                      </td>
-                      <td className="px-4 py-4">
-                        <Badge className={INTENT_CLASSES[intent]}>{INTENT_LABEL[intent]}</Badge>
-                      </td>
-                      {dynamicColumns.map((def) => (
-                        <td
+                      {visibleColumns.map((def) => (
+                        <ColumnCell
                           key={def.id}
-                          className="px-4 py-4 text-sm text-muted-foreground"
-                        >
-                          {renderDynamicValue(readDynamicValue(row, def), def.data_type)}
-                        </td>
+                          def={def}
+                          row={row}
+                          now={now}
+                          pendingBusy={isPending}
+                          onTogglePending={() => onTogglePendingAction(row)}
+                        />
                       ))}
-                      <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
-                        <Badge
-                          render={
-                            <button
-                              type="button"
-                              onClick={() => onTogglePendingAction(row)}
-                              disabled={isPending}
-                              aria-pressed={!actionPending}
-                              className="disabled:cursor-not-allowed disabled:opacity-60"
-                            />
-                          }
-                          variant="outline"
-                          className={cn(
-                            actionPending
-                              ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
-                              : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300",
-                          )}
-                          title={actionPending ? "Click to mark as done" : "Click to reopen action"}
-                        >
-                          <CheckIcon />
-                          {actionPending ? "Pending" : "Done"}
-                        </Badge>
-                      </td>
                       <td className="px-5 py-4" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1.5">
                           <Button
@@ -629,6 +685,11 @@ function FilterChip({
   onRemove: () => void;
 }) {
   const opOptions = OP_OPTIONS_BY_TYPE[filter.type] ?? OP_OPTIONS_BY_TYPE.string;
+  // Base UI's <SelectValue/> renders the raw `value` string by default — so
+  // without an explicit render function the trigger shows "eq", "neq", etc.
+  // We pass a children fn that maps the value back to the option label.
+  const currentOpLabel =
+    opOptions.find((o) => o.value === filter.op)?.label ?? filter.op;
   return (
     <div className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs">
       <span className="font-medium">{filter.label}</span>
@@ -637,7 +698,7 @@ function FilterChip({
         onValueChange={(v) => onChange({ op: v as LeadActivityFilter["op"] })}
       >
         <SelectTrigger className="h-7 w-[110px]">
-          <SelectValue />
+          <SelectValue>{currentOpLabel}</SelectValue>
         </SelectTrigger>
         <SelectContent>
           {opOptions.map((o) => (
@@ -727,4 +788,243 @@ function humanise(key: string): string {
     .split("_")
     .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
     .join(" ");
+}
+
+// ---------------------------------------------------------------------------
+// Catalog-driven column rendering. The leads table has three structural
+// columns (Lead identifier on the left, Actions on the right) and N
+// catalog-driven middle columns. This block centralises:
+//   - per-column header content + alignment
+//   - per-column cell content (first-class columns get their old custom
+//     renderers; dynamic JSONB columns share one generic renderer)
+//   - sortable header buttons with arrow indicators
+// ---------------------------------------------------------------------------
+
+// Visual treatment differs by column. Returns the `<th>`/`<td>` className
+// pair plus whether the cell content should be wrapped in a stop-propagation
+// container (Pending's interactive badge).
+function columnLayout(def: LeadFieldDefinition): {
+  thClass: string;
+  tdClass: string;
+  align: "left" | "right" | "center";
+  stopRowClick: boolean;
+} {
+  if (def.source_column === "column") {
+    switch (def.key_path) {
+      case "inbound_calls":
+      case "outbound_calls":
+      case "total_calls":
+        return {
+          thClass: "px-3 py-4 text-right font-medium",
+          tdClass: "px-3 py-4 text-right tabular-nums",
+          align: "right",
+          stopRowClick: false,
+        };
+      case "last_call_at":
+      case "first_call_at":
+        return {
+          thClass: "px-4 py-4 font-medium",
+          tdClass: "px-4 py-4 text-xs text-muted-foreground",
+          align: "left",
+          stopRowClick: false,
+        };
+      case "pending_action":
+        return {
+          thClass: "px-4 py-4 font-medium",
+          tdClass: "px-4 py-4",
+          align: "left",
+          stopRowClick: true,
+        };
+      default:
+        return {
+          thClass: "px-4 py-4 font-medium",
+          tdClass: "px-4 py-4",
+          align: "left",
+          stopRowClick: false,
+        };
+    }
+  }
+  return {
+    thClass: "px-4 py-4 font-medium",
+    tdClass: "px-4 py-4 text-sm text-muted-foreground",
+    align: "left",
+    stopRowClick: false,
+  };
+}
+
+function columnLabel(def: LeadFieldDefinition): React.ReactNode {
+  if (def.source_column === "column" && def.key_path === "inbound_calls") {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <PhoneIncomingIcon className="size-3.5" /> {def.label ?? "In"}
+      </span>
+    );
+  }
+  if (def.source_column === "column" && def.key_path === "outbound_calls") {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <PhoneOutgoingIcon className="size-3.5" /> {def.label ?? "Out"}
+      </span>
+    );
+  }
+  return def.label ?? humanise(def.key_path);
+}
+
+function ColumnHeader({
+  def,
+  sort,
+  onToggleSort,
+}: {
+  def: LeadFieldDefinition;
+  sort: SortState | null;
+  onToggleSort: (def: LeadFieldDefinition) => void;
+}) {
+  const layout = columnLayout(def);
+  const label = columnLabel(def);
+  const sourceFor: SortState["source"] =
+    def.source_column === "column"
+      ? "column"
+      : def.source_column === "lead_data"
+        ? "lead_data"
+        : "custom_data";
+  const isCurrent =
+    sort &&
+    sort.source === sourceFor &&
+    sort.key === def.key_path &&
+    sort.category === (def.category ?? "");
+  const dir = isCurrent ? sort.dir : null;
+
+  if (!def.sortable) {
+    return (
+      <th scope="col" className={layout.thClass} title={def.key_path}>
+        {label}
+      </th>
+    );
+  }
+  return (
+    <th scope="col" className={layout.thClass} title={def.key_path}>
+      <button
+        type="button"
+        onClick={() => onToggleSort(def)}
+        className={cn(
+          "inline-flex items-center gap-1 rounded-sm text-inherit transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          layout.align === "right" && "flex-row-reverse",
+          isCurrent && "text-foreground",
+        )}
+        aria-label={`Sort by ${def.label ?? humanise(def.key_path)}`}
+      >
+        {label}
+        {dir === "asc" ? (
+          <ArrowUpIcon className="size-3" />
+        ) : dir === "desc" ? (
+          <ArrowDownIcon className="size-3" />
+        ) : (
+          <ChevronsUpDownIcon className="size-3 opacity-40" />
+        )}
+      </button>
+    </th>
+  );
+}
+
+function ColumnCell({
+  def,
+  row,
+  now,
+  pendingBusy,
+  onTogglePending,
+}: {
+  def: LeadFieldDefinition;
+  row: LeadWithCallActivity;
+  now: number | null;
+  pendingBusy: boolean;
+  onTogglePending: () => void;
+}) {
+  const layout = columnLayout(def);
+
+  // First-class columns — each is hand-rendered for the right typography.
+  if (def.source_column === "column") {
+    switch (def.key_path) {
+      case "inbound_calls":
+        return <td className={layout.tdClass}>{row.inbound_calls}</td>;
+      case "outbound_calls":
+        return <td className={layout.tdClass}>{row.outbound_calls}</td>;
+      case "total_calls":
+        // Bold so the sum stands out from its inbound/outbound components
+        // when all three columns are visible side-by-side.
+        return (
+          <td className={cn(layout.tdClass, "text-sm font-semibold")}>
+            {row.total_calls}
+          </td>
+        );
+      case "last_call_at":
+        return (
+          <td className={layout.tdClass} suppressHydrationWarning>
+            {now === null || !row.last_call_at
+              ? "—"
+              : formatRelative(row.last_call_at, now)}
+          </td>
+        );
+      case "first_call_at":
+        return (
+          <td className={layout.tdClass} suppressHydrationWarning>
+            {now === null || !row.first_call_at
+              ? "—"
+              : formatRelative(row.first_call_at, now)}
+          </td>
+        );
+      case "current_intent": {
+        const intent = row.lead_intent ?? "cold";
+        return (
+          <td className={layout.tdClass}>
+            <Badge className={INTENT_CLASSES[intent]}>
+              {INTENT_LABEL[intent]}
+            </Badge>
+          </td>
+        );
+      }
+      case "pending_action": {
+        const actionPending = Boolean(row.pending_action);
+        return (
+          <td className={layout.tdClass} onClick={(e) => e.stopPropagation()}>
+            <Badge
+              render={
+                <button
+                  type="button"
+                  onClick={onTogglePending}
+                  disabled={pendingBusy}
+                  aria-pressed={!actionPending}
+                  className="disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              }
+              variant="outline"
+              className={cn(
+                actionPending
+                  ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
+                  : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300",
+              )}
+              title={
+                actionPending
+                  ? "Click to mark as done"
+                  : "Click to reopen action"
+              }
+            >
+              <CheckIcon />
+              {actionPending ? "Pending" : "Done"}
+            </Badge>
+          </td>
+        );
+      }
+      default:
+        // Unknown first-class key — render the raw value (admin added it
+        // via SQL? It's reachable but unsupported).
+        return <td className={layout.tdClass}>—</td>;
+    }
+  }
+
+  // JSONB-backed dynamic column.
+  return (
+    <td className={layout.tdClass}>
+      {renderDynamicValue(readDynamicValue(row, def), def.data_type)}
+    </td>
+  );
 }

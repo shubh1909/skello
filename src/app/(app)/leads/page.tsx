@@ -36,9 +36,13 @@ export default async function LeadsPage({ searchParams }: PageProps) {
       offset: 0,
       search: search || undefined,
     }),
+    // Fetch *all* catalog rows, not just visible. The table client needs
+    // visibility for column rendering, filterability for the filter picker,
+    // and sortability for the sort dropdown — three independent flags that
+    // shouldn't gate each other.
     listLeadFieldDefinitions({
       organisation_id: session.organisation.id,
-      visible_only: true,
+      visible_only: false,
     }),
   ]);
 
@@ -52,7 +56,7 @@ export default async function LeadsPage({ searchParams }: PageProps) {
 
   const rows = activityRes.data.items;
   const total = activityRes.data.total;
-  const visibleDefinitions = defsRes.success ? defsRes.data : [];
+  const catalog = defsRes.success ? defsRes.data : [];
 
   const contactedCount = rows.filter((r) => r.total_calls > 0).length;
   const totalInbound = rows.reduce((sum, r) => sum + r.inbound_calls, 0);
@@ -114,7 +118,7 @@ export default async function LeadsPage({ searchParams }: PageProps) {
         organisationId={session.organisation.id}
         orgSlug={session.organisation.slug}
         includeZeroCalls={includeZero}
-        dynamicColumns={visibleDefinitions}
+        catalog={catalog}
         initialSearch={search}
       />
     </div>

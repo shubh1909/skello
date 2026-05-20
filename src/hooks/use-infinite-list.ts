@@ -18,6 +18,16 @@ export interface UseInfiniteListOptions<Row> {
     offset: number,
     limit: number,
   ) => Promise<{ items: Row[]; total: number } | null>;
+  /**
+   * Optional reset trigger. When this string changes between renders, the
+   * hook discards the current items, refetches from offset 0 using the
+   * current `fetchPage`, and resets `pagedBeyondInitial` to false. Use it
+   * when client-side state (sort, filter chips, search text) affects the
+   * result set but the server component isn't re-rendering. The string is
+   * a content key — `JSON.stringify({ ... })` of the relevant inputs is
+   * the usual recipe.
+   */
+  resetKey?: string;
 }
 
 export interface UseInfiniteListResult<Row> {
@@ -51,6 +61,7 @@ export function useInfiniteList<Row>({
   initialTotal,
   pageSize,
   fetchPage,
+  resetKey,
 }: UseInfiniteListOptions<Row>): UseInfiniteListResult<Row> {
   const [items, setItems] = React.useState<Row[]>(initialItems);
   const [total, setTotal] = React.useState(initialTotal);
@@ -84,6 +95,36 @@ export function useInfiniteList<Row>({
   loadingRef.current = loading;
   const fetchPageRef = React.useRef(fetchPage);
   fetchPageRef.current = fetchPage;
+
+  // Client-driven reset. When `resetKey` changes (filter chip added,
+  // sort toggled, search submitted) we throw away the current page,
+  // refetch offset 0 with the current fetchPage closure, and put the
+  // user back on the initial-page footing. Skipped on first render so
+  // we don't double-fetch the data the server already rendered.
+  const prevResetKey = React.useRef(resetKey);
+  React.useEffect(() => {
+    if (resetKey === undefined) return;
+    if (resetKey === prevResetKey.current) return;
+    prevResetKey.current = resetKey;
+    let cancelled = false;
+    setLoading(true);
+    void (async () => {
+      try {
+        const result = await fetchPageRef.current(0, pageSize);
+        if (cancelled) return;
+        if (result) {
+          setItems(result.items);
+          setTotal(result.total);
+          setPagedBeyondInitial(false);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [resetKey, pageSize]);
 
   React.useEffect(() => {
     const node = sentinelRef.current;

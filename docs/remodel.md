@@ -170,6 +170,56 @@ inbound call appears on the leads list / conversations page without
 a refresh. RLS still gates which rows each client sees, so the
 publication doesn't relax tenancy.
 
+### 14. Every leads-table column is admin-toggleable (and sort/filter actually works)
+
+**Before:** Only dynamic JSONB fields (`lead_data.*`, `custom_data.*`)
+were configurable from the admin catalog. The first-class columns —
+In, Out, Last contact, First contact, Intent, Pending — were
+hard-coded into the leads table. Also, the leads page fetched
+catalog rows with `visible_only: true`, which silently dropped any
+field flagged Filterable-but-not-Visible from the filter picker.
+Sorting wasn't wired into the UI at all even though the RPC
+supported it. Phone-number search didn't work because `search_tsv`
+didn't include phone.
+
+**Now:**
+
+- The catalog enum (`public.lead_field_source`) gained a third
+  value, `'column'`. Migration `20260520000001` seeds one row per
+  org per first-class column (`inbound_calls`, `outbound_calls`,
+  `last_call_at`, `first_call_at`, `current_intent`,
+  `pending_action`) with sensible defaults (Visible on, Sortable
+  on, Filterable on for the categorical ones). A trigger on
+  `organisations` does the same seed for any newly created
+  workspace.
+- The same admin **Lead fields** page now lists these built-ins
+  alongside the discovered JSONB fields, tagged "Built-in".
+  Visibility, sortability, and filterability toggles work on them.
+  The data type is locked for built-ins (the RPC's allowlist needs
+  to match), but you can still rename the column label.
+- The leads page now fetches `visible_only: false` and lets the
+  table client split the catalog three ways: visible rows render
+  as columns, filterable rows populate the "+ Add filter" picker
+  (independent of visibility), sortable rows get clickable column
+  headers with up/down arrows. Click cycles `none → desc → asc →
+  none` on the active column; clicking a different column resets
+  to `desc`.
+- The `lead_call_activity` RPC's filter and sort handlers learned
+  about `source: 'column'` and gained allowlists for both lead-row
+  columns (`current_intent`, `pending_action`, `status`, `city`,
+  `pincode`, `name`) and call-aggregate columns (`inbound_calls`,
+  `outbound_calls`, `total_calls`, `last_call_at`, `first_call_at`,
+  `total_duration_seconds`). No injection surface — every column
+  name is a string-match.
+- `search_tsv` was rebuilt to include `phone`, `phone_normalized`,
+  and every value in `custom_data` (not just `lead_data`). The
+  leads search box now finds people by phone number and by
+  anything the LLM extracts into the ungrouped custom bucket.
+
+The **Lead** identifier column (avatar + name + phone + interest)
+and the **Actions** column are intentionally NOT in the catalog —
+they're structural to the table and aren't toggleable.
+
 ### 13. Single-webhook deployments now get the full call lifecycle
 
 **Before:** Skelo exposed two webhook endpoints —
@@ -434,6 +484,46 @@ to be applied.
 If nothing updates after ~30 seconds, jump to **S9** in the SQL
 section to confirm the publication actually has the tables.
 
+### Test J — Toggleable columns, working filter / sort / phone search
+
+Prerequisite: migrations through `20260520000001_lead_catalog_columns_and_search.sql` are applied.
+
+1. **Admin side — confirm the seed.** Open
+   `/admin/organisations/<workspace>/lead-fields`. You should see six
+   new rows tagged **Built-in** with `key_path` =
+   `inbound_calls`, `outbound_calls`, `last_call_at`,
+   `first_call_at`, `current_intent`, `pending_action`. The "Type"
+   column shows as a locked pill (not a dropdown) — that's
+   intentional. Visible / Filterable / Sortable defaults are pre-set.
+2. **Hide a column.** Untick **Visible** on `last_call_at`, save.
+   Open `/leads` in another tab and hard-refresh. The "Last contact"
+   column should be gone. Re-tick + save → it returns.
+3. **Filter on a non-visible field.** Hide a discovered JSONB
+   field (e.g. `Intetest_Subjective`) but keep **Filterable** on.
+   Save. On `/leads`, open the "+ Add filter" picker — the field
+   should appear in the dropdown even though it isn't a column.
+   Apply a value; the result count narrows.
+4. **Sort by clicking a header.** Tick **Sortable** on
+   `inbound_calls`. On `/leads`, the **In** header now has a small
+   up/down chevron. Click once → desc with a down arrow. Click again
+   → asc with an up arrow. Click a third time → unsorted. The table
+   refetches each time.
+5. **Sort by a different column.** Click **Last contact** header
+   while In is sorted. The In arrow disappears, Last contact starts
+   at desc.
+6. **Phone search.** In the search box, type the last 4 or 5 digits
+   of a known lead's phone. Submit. The matching lead should appear.
+   Confirm that the same digits *as a substring* also work — e.g.
+   `8240` matches `+91-8240-501-061`. (Index uses the `phone_normalized`
+   generated column which strips formatting.)
+7. **Search inside custom_data.** A lead whose only LLM extraction
+   landed in `custom_data` (e.g. `interest_Objective: "YES"`) —
+   typing the value `YES` should now bring it up. Before this
+   migration, only `lead_data` keys were searchable.
+
+If a Built-in row is missing from the catalog for a workspace, see
+the matrix entry "Built-in column rows missing from catalog".
+
 ### Test I — Campaign state machine advances with only /leads configured
 
 The Bolna dashboard accepts only one webhook URL per agent. This test
@@ -671,6 +761,97 @@ push it with `npx supabase db push` and re-run Test H.
   on-the-fly jsonb extraction today, but if any org passes ~50k leads
   you'll want a few expression indexes. Not urgent.
 
+## What goes in `lead_data` vs `custom_data`
+
+This is the question that surfaces most often when an admin is looking
+at the catalog and wondering "where will my new field land?" Short
+version: the LLM doesn't decide — Skelo's webhook merge does, based on
+a small allowlist.
+
+### The split, in one paragraph
+
+Each call's webhook arrives with an `extracted_data.lead_data` blob —
+a dict of `{ field_name → { subjective, objective, … } }`. Skelo
+walks every key. **Nine canonical keys go into the lead row's
+`lead_data` jsonb** and are promoted to first-class call snapshot
+columns. **Everything else lands in `custom_data`** under category
+`""` (the ungrouped bucket), so admins can promote it to a column
+later via the Lead-fields catalog.
+
+The split lives in [`src/lib/bolna/lead-merge.ts`](../src/lib/bolna/lead-merge.ts#L27-L37)
+as `FIRST_CLASS_LEAD_DATA_KEYS`.
+
+### `lead_data` — fixed schema (nine canonical keys)
+
+| Key | First-class column it feeds | Type | Notes |
+|---|---|---|---|
+| `name` | `leads.name` + `calls.name_extracted` | string | The caller's name. |
+| `interest` | `leads.interest` (via "current view") + `calls.interest` | string | What they were calling about, free-form. Aliased with `product` (one or the other). |
+| `product` | same as `interest` | string | Sales-vocabulary alias. Falls back to `interest` for the lead row. |
+| `lead_intent` | `leads.current_intent` + `calls.lead_intent_extracted` | enum (`hot`/`warm`/`cold`) | The LLM's read on temperature. Other values are silently dropped. |
+| `actionable` | `calls.actionable` | string | "What I'd do next" — captured per-call, not rolled up onto the lead row. |
+| `customer_status` | `leads.customer_status` + `calls.customer_status` | string | Buyer-type tag — broker / end-user / investor / etc. Free-form. |
+| `connect_on_whatsapp` | `leads.wants_to_connect_on_watsapp` + `calls.connect_on_whatsapp` | boolean | Coerced from yes/no/true/false/1/0 strings. |
+| `date_and_time_of_visit` | `leads.visit_date_time` + `calls.visit_scheduled_at` | ISO date | Scheduled site / showroom visit. |
+| `business_slug` | `calls.lead_data.business_slug` (advisory only) | string | Captured but never used to route. The webhook routes by `agent_id`. |
+
+These nine are the contract between Skelo and the voice-agent
+prompt. If you want a field treated as first-class on the lead row,
+its prompt-side key has to be one of these. **Renaming them in the
+prompt (e.g. `interest_Objective` instead of `interest`) will
+demote the value to `custom_data` even though it's semantically
+identical.** This is the bug we hit on 2026-05-20.
+
+### `custom_data` — everything else (admin-curated catalog)
+
+Anything the LLM emits that isn't in the canonical list above lands
+in `custom_data` under category `""`. Examples we've seen in
+production:
+
+- `budget_range`, `loan_required`, `family_size`
+- `preferred_call_time`, `language_preference`
+- `competitor_mentioned`, `previous_visit_date`
+- The provider's `interest_Objective` / `interest_Subjective` —
+  these don't match the canonical `interest`, so they become custom.
+
+On the **lead row**, custom_data is stored *flat* under category `""`:
+`{"budget_range": "10-15L"}`. On the **call row** (the per-call
+snapshot), it's nested: `{"": {"budget_range": "10-15L"}}`. The
+nesting is intentional — call snapshots preserve category structure
+in case future prompts emit grouped fields.
+
+Custom fields auto-register in `lead_field_definitions` (one row per
+unique key per org) the first time they show up. They default to
+all-off (not visible, not filterable, not sortable, not searchable).
+An admin curates them on
+**Admin → Organisations → <workspace> → Lead fields**.
+
+### When to use a category (not just the empty bucket)
+
+The catalog supports `category != ""` for namespaced fields — e.g.
+`custom_data.preferences.budget`. We don't currently emit grouped
+fields from the voice prompt; everything lands under `""`. Categories
+exist for future expansion (CSV import where the importer knows the
+namespace, integrations with structured providers, etc.). Keep
+`category = ""` unless you have a specific reason.
+
+### How to "move" a value from custom to lead_data
+
+You don't, directly. The right play is:
+1. Update the voice-agent prompt to emit the **canonical** key
+   (e.g. rename `interest_Objective` → `interest`).
+2. Trigger one call to validate — the lead's first-class
+   `interest` column now populates.
+3. Leave the old custom key in the catalog (no UI to delete today),
+   or run a manual `delete from lead_field_definitions where
+   key_path = 'interest_Objective'` to clean up.
+
+Existing rows that already wrote the value into custom_data stay
+there. The merge pipeline doesn't backfill. If you need the old
+calls to repopulate the lead row, re-run the merge by issuing the
+provider re-fire from the call detail (or, in dev, replay the
+webhook payload manually).
+
 ## Error codes — what each tag means and where to look
 
 Every server-side failure logs with a `[SKELO:DOMAIN-CODE]` tag and
@@ -722,6 +903,10 @@ surfaces the same tag in the toast you see in the UI. To investigate:
 | Looking for the Callers page | It's gone — merged into Leads. Sidebar entry was removed. Existing `/callers` bookmarks 404. Use `/leads` instead. |
 | Campaign contact stuck in `in_flight` | The status-update path didn't fire. (a) Confirm the dialled call actually reached a terminal status (`completed` / `no_answer` / `busy` / `failed` / `canceled`). (b) Confirm Bolna's webhook URL is reachable — `/api/webhooks/bolna/leads` should be returning 200s in dev server logs. (c) Confirm the `calls` row exists and has `campaign_contact_id` set (`select campaign_contact_id from calls where bolna_call_id = '<id>'`). (d) If all three are good, look for `[status-update] campaign outcome failed` or `[SKELO:WEBHOOK-INGEST]` in server logs. |
 | Live "Ringing" / "In progress" badges never appear | Make sure Bolna is actually firing mid-call status events to the webhook URL (some providers only send the final post-call event by default). Server log should show several `POST /api/webhooks/bolna/leads` lines per call — one per status transition. |
+| Filterable JSONB field doesn't appear in the "+ Add filter" picker | Pre-2026-05-20 behaviour: leads page was fetching `visible_only: true` so filter-only fields got dropped. After migration `20260520000001` and the matching frontend change, **Filterable** works independently of **Visible**. Hard-refresh `/leads`. If still missing, confirm the field has `filterable = true` in `lead_field_definitions`. |
+| Built-in column rows missing from catalog for an org | Migration `20260520000001` runs once. If the org was created AFTER you pulled the migration but BEFORE the trigger was installed (i.e. mid-flight), re-run `select public.seed_org_first_class_columns()` manually — or insert `insert into lead_field_definitions (organisation_id, source_column, category, key_path, label, data_type, visible_in_table, filterable, sortable, searchable, display_order) values ('<org-id>', 'column', '', 'inbound_calls', 'In', 'number', true, false, true, false, 100) on conflict do nothing;` for each of the six keys. |
+| Sort by `inbound_calls` returns "function does not exist" or stale order | The RPC was updated in `20260520000001` to allowlist aggregate columns. If you applied only the older `20260517000005`, the new sort keys fall through and the default sort kicks in. Push the new migration. |
+| Phone-number search returns nothing | `search_tsv` was rebuilt by `20260520000001` to cover phone. Confirm the column expression in `psql`: `\d+ leads` should show `search_tsv` referencing both `phone` and `phone_normalized`. If not, the migration didn't apply or didn't drop+recreate the column cleanly. |
 
 ---
 

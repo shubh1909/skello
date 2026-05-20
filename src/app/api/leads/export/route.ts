@@ -42,12 +42,14 @@ interface LeadRow {
   lead_data: Record<string, unknown> | null;
 }
 
+// Per-call snapshot fields surfaced into the CSV. recording_url was
+// intentionally dropped — exporters don't need playback URLs, and surfacing
+// them invites leaking signed audio links to anyone who downloads the CSV.
 interface CallSnapshot {
   interest: string | null;
   summary: string | null;
   actionable: string | null;
   customer_status: string | null;
-  recording_url: string | null;
   visit_scheduled_at: string | null;
 }
 
@@ -56,7 +58,6 @@ interface ExportRow extends LeadRow {
   summary: string | null;
   actionable: string | null;
   customer_status: string | null;
-  recording_url: string | null;
   visit_scheduled_at: string | null;
   wants_to_connect_on_watsapp: boolean | null;
 }
@@ -127,7 +128,6 @@ const CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Pending Action", value: (l) => l.pending_action },
   { header: "Wants WA", value: (l) => l.wants_to_connect_on_watsapp },
   { header: "Notes", value: (l) => l.notes },
-  { header: "Latest Call Recording", value: (l) => l.recording_url },
 ];
 
 export async function GET(request: NextRequest) {
@@ -183,7 +183,6 @@ export async function GET(request: NextRequest) {
       actionable: snap?.actionable ?? null,
       customer_status:
         snap?.customer_status ?? pickJsonString(l.lead_data, "customer_status"),
-      recording_url: snap?.recording_url ?? null,
       visit_scheduled_at:
         snap?.visit_scheduled_at ??
         pickJsonDate(l.lead_data, "date_and_time_of_visit"),
@@ -215,7 +214,7 @@ async function fetchLatestCallSnapshots(
   const { data, error } = await supabase
     .from("calls")
     .select(
-      "lead_id, interest, summary, actionable, customer_status, recording_url, visit_scheduled_at, started_at",
+      "lead_id, interest, summary, actionable, customer_status, visit_scheduled_at, started_at",
     )
     .eq("organisation_id", organisationId)
     .in("lead_id", leadIds)
@@ -233,7 +232,6 @@ async function fetchLatestCallSnapshots(
     summary: string | null;
     actionable: string | null;
     customer_status: string | null;
-    recording_url: string | null;
     visit_scheduled_at: string | null;
   }>) {
     if (!out.has(row.lead_id)) {
@@ -242,7 +240,6 @@ async function fetchLatestCallSnapshots(
         summary: row.summary,
         actionable: row.actionable,
         customer_status: row.customer_status,
-        recording_url: row.recording_url,
         visit_scheduled_at: row.visit_scheduled_at,
       });
     }

@@ -1,4 +1,9 @@
-export type LeadFieldSource = "lead_data" | "custom_data";
+// "column" — first-class table column (e.g. `inbound_calls`, `current_intent`)
+//            whose visibility / filterability / sortability is also admin-
+//            toggleable. Seeded per-org via the trigger in migration
+//            20260520000001; the value lives in the lead row or the
+//            call-aggregate CTE rather than a JSONB blob.
+export type LeadFieldSource = "lead_data" | "custom_data" | "column";
 
 export type LeadFieldDataType =
   | "string"
