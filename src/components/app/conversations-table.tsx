@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ChevronsUpDownIcon,
   PhoneIcon,
   PlayIcon,
 } from "lucide-react";
@@ -13,9 +14,15 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { CallTranscriptDialog } from "@/components/app/call-transcript-dialog";
 import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { listConversations } from "@/actions/calls";
+import { cn } from "@/lib/utils";
 import { useCallsRealtime } from "@/hooks/use-calls-realtime";
 import { useInfiniteList } from "@/hooks/use-infinite-list";
 import type {
@@ -73,6 +80,26 @@ function formatDateTime(iso: string): string {
   }).format(d);
 }
 
+type SortField =
+  | "started_at"
+  | "duration_seconds"
+  | "status"
+  | "direction";
+
+interface SortState {
+  field: SortField;
+  dir: "asc" | "desc";
+}
+
+// Labels shown in the column header — the SortField key matches the wire
+// param consumed by listConversations.
+const SORTABLE_HEADERS: { field: SortField; label: string }[] = [
+  { field: "started_at", label: "Date & Time" },
+  { field: "duration_seconds", label: "Duration" },
+  { field: "direction", label: "Direction" },
+  { field: "status", label: "Outcome" },
+];
+
 export interface ConversationsTableFilters {
   direction?: CallDirection;
   status?: CallStatus;
@@ -96,6 +123,10 @@ export function ConversationsTable({
   organisationId,
   filters,
 }: ConversationsTableProps) {
+  // Local sort state — null means use the server default (started_at desc),
+  // which is also what the server-rendered initial page used.
+  const [sort, setSort] = React.useState<SortState | null>(null);
+
   const fetchPage = React.useCallback(
     async (offset: number, limit: number) => {
       const res = await listConversations({
@@ -107,6 +138,8 @@ export function ConversationsTable({
         agent_id: filters.agent,
         from: filters.from,
         q: filters.q,
+        sort: sort?.field,
+        dir: sort?.dir,
       });
       if (!res.success) {
         toast.error(res.error);
@@ -121,6 +154,7 @@ export function ConversationsTable({
       filters.agent,
       filters.from,
       filters.q,
+      sort,
     ],
   );
 
@@ -136,7 +170,22 @@ export function ConversationsTable({
     initialTotal: total,
     pageSize,
     fetchPage,
+    // Sort lives in client state — when it changes, refetch from offset 0
+    // so the whole list reflects the new order instead of stitching pages
+    // sorted by different keys.
+    resetKey: JSON.stringify(sort),
   });
+
+  // Click a sortable header → cycle none → desc → asc → none. New columns
+  // start at desc because that's the more useful default for both dates and
+  // numeric durations.
+  function toggleSort(field: SortField) {
+    setSort((prev) => {
+      if (!prev || prev.field !== field) return { field, dir: "desc" };
+      if (prev.dir === "desc") return { field, dir: "asc" };
+      return null;
+    });
+  }
 
   useCallsRealtime(organisationId, pagedBeyondInitial);
 
@@ -176,21 +225,15 @@ export function ConversationsTable({
                 <th scope="col" className="px-4 py-3 font-medium">
                   Lead / Number
                 </th>
-                <th scope="col" className="px-4 py-3 font-medium">
-                  <span className="inline-flex items-center gap-1">
-                    Date &amp; Time
-                    <ArrowDownIcon className="size-3" />
-                  </span>
-                </th>
-                <th scope="col" className="px-4 py-3 font-medium">
-                  Duration
-                </th>
-                <th scope="col" className="px-4 py-3 font-medium">
-                  Direction
-                </th>
-                <th scope="col" className="px-4 py-3 font-medium">
-                  Outcome
-                </th>
+                {SORTABLE_HEADERS.map((h) => (
+                  <SortableHeader
+                    key={h.field}
+                    field={h.field}
+                    label={h.label}
+                    sort={sort}
+                    onToggle={toggleSort}
+                  />
+                ))}
                 <th scope="col" className="px-4 py-3 font-medium">
                   Audio
                 </th>
@@ -265,22 +308,39 @@ export function ConversationsTable({
                       className="px-4 py-3"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      {hasRecording ? (
-                        <Button
-                          render={
-                            <a
-                              href={call.recording_url ?? "#"}
-                              target="_blank"
-                              rel="noreferrer"
-                            />
-                          }
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          aria-label="Play recording"
-                        >
-                          <PlayIcon className="size-3" /> Play
-                        </Button>
+                      {hasRecording && call.recording_url ? (
+                        <Popover>
+                          <PopoverTrigger
+                            render={
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                aria-label="Play recording"
+                              />
+                            }
+                          >
+                            <PlayIcon className="size-3" /> Play
+                          </PopoverTrigger>
+                          <PopoverContent
+                            align="end"
+                            sideOffset={6}
+                            className="w-80 p-3"
+                          >
+                            <div className="flex flex-col gap-2">
+                              <div className="text-xs font-medium text-muted-foreground">
+                                Recording · {shortCallId(call.id)}
+                              </div>
+                              {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                              <audio
+                                src={call.recording_url}
+                                controls
+                                preload="metadata"
+                                className="w-full"
+                              />
+                            </div>
+                          </PopoverContent>
+                        </Popover>
                       ) : hasTranscript ? (
                         <Button
                           variant="ghost"
@@ -316,5 +376,42 @@ export function ConversationsTable({
         onOpenChange={setTranscriptOpen}
       />
     </>
+  );
+}
+
+function SortableHeader({
+  field,
+  label,
+  sort,
+  onToggle,
+}: {
+  field: SortField;
+  label: string;
+  sort: SortState | null;
+  onToggle: (f: SortField) => void;
+}) {
+  const isCurrent = sort?.field === field;
+  const dir = isCurrent ? sort.dir : null;
+  return (
+    <th scope="col" className="px-4 py-3 font-medium">
+      <button
+        type="button"
+        onClick={() => onToggle(field)}
+        className={cn(
+          "inline-flex items-center gap-1 rounded-sm text-inherit transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          isCurrent && "text-foreground",
+        )}
+        aria-label={`Sort by ${label}`}
+      >
+        {label}
+        {dir === "asc" ? (
+          <ArrowUpIcon className="size-3" />
+        ) : dir === "desc" ? (
+          <ArrowDownIcon className="size-3" />
+        ) : (
+          <ChevronsUpDownIcon className="size-3 opacity-40" />
+        )}
+      </button>
+    </th>
   );
 }

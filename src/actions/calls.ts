@@ -190,10 +190,15 @@ export async function listCalls(
     return fail("Forbidden");
   }
 
+  const ascending = parsed.data.dir === "asc";
   let query = supabase
     .from("calls")
     .select(CALL_COLUMNS, { count: "exact" })
     .eq("organisation_id", parsed.data.organisation_id)
+    // Primary sort comes from the caller; started_at is the tiebreaker so
+    // identical durations / agents / statuses stay in a stable order across
+    // infinite-scroll pages.
+    .order(parsed.data.sort, { ascending, nullsFirst: false })
     .order("started_at", { ascending: false })
     .range(parsed.data.offset, parsed.data.offset + parsed.data.limit - 1);
 
@@ -224,10 +229,12 @@ export async function listConversations(
     return fail("Forbidden");
   }
 
+  const ascending = parsed.data.dir === "asc";
   let query = supabase
     .from("calls")
     .select(`${CALL_COLUMNS}, lead:leads(name, phone)`, { count: "exact" })
     .eq("organisation_id", parsed.data.organisation_id)
+    .order(parsed.data.sort, { ascending, nullsFirst: false })
     .order("started_at", { ascending: false })
     .range(parsed.data.offset, parsed.data.offset + parsed.data.limit - 1);
 
@@ -252,9 +259,14 @@ export async function listConversations(
   return ok({ items: data ?? [], total: count ?? 0 });
 }
 
+export interface ConversationAgentOption {
+  id: string;
+  label: string;
+}
+
 export async function listConversationAgents(
   organisationId: string,
-): Promise<ActionResult<string[]>> {
+): Promise<ActionResult<ConversationAgentOption[]>> {
   if (!organisationId) return fail("Missing organisation id");
 
   const { supabase, user } = await requireUser();
@@ -263,7 +275,10 @@ export async function listConversationAgents(
     return fail("Forbidden");
   }
 
-  const { data, error } = await supabase
+  // Recently active agents from the calls table — drives which agents appear
+  // in the filter. We pull the latest 500 rows and dedupe; an org with more
+  // than ~500 active agents in the recent window is not realistic.
+  const { data: callRows, error: callsErr } = await supabase
     .from("calls")
     .select("agent_id")
     .eq("organisation_id", organisationId)
@@ -271,9 +286,31 @@ export async function listConversationAgents(
     .limit(500)
     .returns<{ agent_id: string }[]>();
 
-  if (error) return fail(error.message);
-  const unique = Array.from(new Set((data ?? []).map((r) => r.agent_id))).filter(
-    Boolean,
+  if (callsErr) return fail(callsErr.message);
+  const agentIds = Array.from(
+    new Set((callRows ?? []).map((r) => r.agent_id).filter(Boolean)),
   );
-  return ok(unique);
+  if (agentIds.length === 0) return ok([]);
+
+  // Resolve human-readable labels from voice_agents. Org-scoped read so we
+  // never leak another tenant's label even if an agent_id collided.
+  const { data: agentRows, error: agentsErr } = await supabase
+    .from("voice_agents")
+    .select("agent_id, label")
+    .eq("organisation_id", organisationId)
+    .in("agent_id", agentIds)
+    .returns<{ agent_id: string; label: string | null }[]>();
+
+  if (agentsErr) return fail(agentsErr.message);
+  const labelById = new Map(
+    (agentRows ?? []).map((r) => [r.agent_id, r.label?.trim() || null]),
+  );
+
+  const options: ConversationAgentOption[] = agentIds.map((id) => ({
+    id,
+    label: labelById.get(id) ?? id,
+  }));
+  // Stable display order — by label so the dropdown reads alphabetically.
+  options.sort((a, b) => a.label.localeCompare(b.label));
+  return ok(options);
 }

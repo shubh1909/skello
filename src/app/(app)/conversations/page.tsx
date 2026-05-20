@@ -1,4 +1,5 @@
 import { Card } from "@/components/ui/card";
+import { CallExportDialog } from "@/components/app/call-export-dialog";
 import {
   ConversationsFilterBar,
   type ConversationsFilters,
@@ -78,11 +79,6 @@ function rangeToFrom(range: ConversationsFilters["range"]): string | undefined {
   }
 }
 
-function shortAgentLabel(agentId: string): string {
-  if (agentId.length <= 10) return `Agent ${agentId}`;
-  return `Agent ${agentId.slice(0, 6).toUpperCase()}`;
-}
-
 export default async function ConversationsPage({ searchParams }: PageProps) {
   const session = await requireSession();
   const orgId = session.organisation.id;
@@ -106,9 +102,7 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
 
   const calls = callsResult.success ? callsResult.data.items : [];
   const total = callsResult.success ? callsResult.data.total : 0;
-  const agents = agentsResult.success
-    ? agentsResult.data.map((id) => ({ id, label: shortAgentLabel(id) }))
-    : [];
+  const agents = agentsResult.success ? agentsResult.data : [];
 
   // Remount the table when filters change so the infinite-scroll buffer
   // resets to the fresh first page rather than appending across filter sets.
@@ -125,6 +119,9 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
             {total} call{total === 1 ? "" : "s"} · scoped to{" "}
             {session.organisation.name}
           </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <CallExportDialog />
         </div>
       </header>
 

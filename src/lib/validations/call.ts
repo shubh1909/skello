@@ -17,6 +17,16 @@ export const callInitiateSchema = z.object({
   lead_id: z.string().uuid(),
 });
 
+export const callSortFieldSchema = z.enum([
+  "started_at",
+  "duration_seconds",
+  "agent_id",
+  "status",
+  "direction",
+]);
+
+export const callSortDirSchema = z.enum(["asc", "desc"]);
+
 export const callListSchema = z.object({
   organisation_id: z.string().uuid(),
   limit: z.number().int().min(1).max(500).default(50),
@@ -28,6 +38,8 @@ export const callListSchema = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   q: z.string().max(200).optional(),
+  sort: callSortFieldSchema.default("started_at"),
+  dir: callSortDirSchema.default("desc"),
 });
 
 export type CallInitiateInput = z.infer<typeof callInitiateSchema>;
