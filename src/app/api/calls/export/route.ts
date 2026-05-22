@@ -19,15 +19,17 @@ const rangeSchema = z.enum([
 
 type Range = z.infer<typeof rangeSchema>;
 
-// recording_url / transcript_url / transcript are intentionally omitted —
-// per product call, downloadable CSVs must not leak signed audio links, and
-// the full transcript bloats the file enough to choke Excel on large pulls.
+// recording_url / transcript_url are intentionally omitted — downloadable
+// CSVs must not leak signed audio links. The `transcript` text body IS
+// included now (admins asked for it); it can bloat the file on long calls,
+// but that's a conscious tradeoff vs. the previous "ready/pending" string
+// being the only transcript-related column.
 const CALL_COLUMNS =
   "id, bolna_call_id, direction, status, agent_id, to_phone, from_phone, " +
   "started_at, answered_at, ended_at, duration_seconds, language, summary, " +
   "name_extracted, interest, lead_intent_extracted, customer_status, " +
   "actionable, visit_scheduled_at, connect_on_whatsapp, transcript_status, " +
-  "lead_data, custom_data, error_code, error_message, " +
+  "transcript, lead_data, custom_data, error_code, error_message, " +
   "lead:leads(name, phone)";
 
 interface CallRow {
@@ -52,6 +54,7 @@ interface CallRow {
   visit_scheduled_at: string | null;
   connect_on_whatsapp: boolean | null;
   transcript_status: string | null;
+  transcript: string | null;
   lead_data: Record<string, unknown> | null;
   custom_data: Record<string, Record<string, unknown>> | null;
   error_code: string | null;
@@ -62,7 +65,16 @@ interface CallRow {
 interface ExportRow extends CallRow {
   agent_label: string | null;
   counterparty_phone: string | null;
-  captured_fields: string | null;
+}
+
+// One discovered custom field becomes one CSV column. We collect every
+// (source, category, key) tuple seen across the exported rows so the
+// header row stays stable for the whole batch.
+interface DiscoveredField {
+  header: string;
+  source: "lead_data" | "custom_data";
+  category: string;
+  key: string;
 }
 
 // Keys already surfaced as their own CSV columns — skip when flattening
@@ -118,41 +130,59 @@ function stringifyValue(value: unknown): string | null {
   }
 }
 
-// Flatten lead_data extras + custom_data into a single human-readable
-// pipe-separated string for the "Captured Fields" CSV column. Stable schema:
-// every row gets the same column regardless of which fields the org captures.
-function buildCapturedFields(
-  leadData: Record<string, unknown> | null,
-  customData: Record<string, Record<string, unknown>> | null,
-): string | null {
-  const parts: string[] = [];
+// Walk every exported row and collect each (source, category, key) tuple
+// that carries data, so each one can become its own CSV column. The set
+// is deduplicated and sorted by header for stable column ordering.
+function discoverCustomFields(rows: CallRow[]): DiscoveredField[] {
+  const seen = new Map<string, DiscoveredField>();
 
-  if (leadData) {
-    for (const [k, v] of Object.entries(leadData)) {
-      if (CALL_LEAD_DATA_SURFACED.has(k)) continue;
-      const rendered = stringifyValue(v);
-      if (rendered === null) continue;
-      parts.push(`${humaniseFieldKey(k)}: ${rendered}`);
+  for (const c of rows) {
+    if (c.lead_data) {
+      for (const k of Object.keys(c.lead_data)) {
+        if (CALL_LEAD_DATA_SURFACED.has(k)) continue;
+        const mapKey = `lead_data::${k}`;
+        if (seen.has(mapKey)) continue;
+        seen.set(mapKey, {
+          header: humaniseFieldKey(k),
+          source: "lead_data",
+          category: "",
+          key: k,
+        });
+      }
     }
-  }
-
-  if (customData) {
-    for (const [cat, bag] of Object.entries(customData)) {
-      if (!bag || typeof bag !== "object") continue;
-      const isUngrouped = UNGROUPED_CATEGORIES.has(cat);
-      const catLabel = isUngrouped ? null : humaniseFieldKey(cat);
-      for (const [k, v] of Object.entries(bag)) {
-        const rendered = stringifyValue(v);
-        if (rendered === null) continue;
-        const keyLabel = humaniseFieldKey(k);
-        parts.push(
-          catLabel ? `${catLabel} > ${keyLabel}: ${rendered}` : `${keyLabel}: ${rendered}`,
-        );
+    if (c.custom_data) {
+      for (const [cat, bag] of Object.entries(c.custom_data)) {
+        if (!bag || typeof bag !== "object") continue;
+        const isUngrouped = UNGROUPED_CATEGORIES.has(cat);
+        const catLabel = isUngrouped ? null : humaniseFieldKey(cat);
+        for (const k of Object.keys(bag)) {
+          const mapKey = `custom_data::${cat}::${k}`;
+          if (seen.has(mapKey)) continue;
+          seen.set(mapKey, {
+            header: catLabel
+              ? `${catLabel} > ${humaniseFieldKey(k)}`
+              : humaniseFieldKey(k),
+            source: "custom_data",
+            category: cat,
+            key: k,
+          });
+        }
       }
     }
   }
 
-  return parts.length > 0 ? parts.join(" | ") : null;
+  return Array.from(seen.values()).sort((a, b) =>
+    a.header.localeCompare(b.header),
+  );
+}
+
+function pickFieldValue(row: CallRow, f: DiscoveredField): unknown {
+  if (f.source === "lead_data") {
+    return row.lead_data?.[f.key] ?? null;
+  }
+  const bag = row.custom_data?.[f.category];
+  if (!bag || typeof bag !== "object") return null;
+  return bag[f.key] ?? null;
 }
 
 function rangeBounds(
@@ -177,7 +207,7 @@ function rangeBounds(
   }
 }
 
-const CSV_COLUMNS: CsvColumn<ExportRow>[] = [
+const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Call ID", value: (c) => c.id },
   { header: "Provider Call ID", value: (c) => c.bolna_call_id },
   { header: "Started At", value: (c) => c.started_at },
@@ -194,6 +224,7 @@ const CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "To Phone", value: (c) => c.to_phone },
   { header: "Language", value: (c) => c.language },
   { header: "Transcript Status", value: (c) => c.transcript_status },
+  { header: "Transcript", value: (c) => c.transcript },
   { header: "Summary", value: (c) => c.summary },
   { header: "Intent", value: (c) => c.lead_intent_extracted },
   { header: "Interest", value: (c) => c.interest },
@@ -201,10 +232,32 @@ const CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Actionable", value: (c) => c.actionable },
   { header: "Visit Scheduled", value: (c) => c.visit_scheduled_at },
   { header: "Wants WA", value: (c) => c.connect_on_whatsapp },
-  { header: "Captured Fields", value: (c) => c.captured_fields },
   { header: "Error Code", value: (c) => c.error_code },
   { header: "Error Message", value: (c) => c.error_message },
 ];
+
+// Per-field columns are inserted after "Wants WA" (where the old
+// single "Captured Fields" column used to live), so the error pair
+// stays at the right edge of the sheet.
+function buildCsvColumns(
+  fields: DiscoveredField[],
+): CsvColumn<ExportRow>[] {
+  const dynamicColumns: CsvColumn<ExportRow>[] = fields.map((f) => ({
+    header: f.header,
+    value: (row) => stringifyValue(pickFieldValue(row, f)),
+  }));
+  const errorIdx = STATIC_CSV_COLUMNS.findIndex(
+    (col) => col.header === "Error Code",
+  );
+  if (errorIdx === -1) {
+    return [...STATIC_CSV_COLUMNS, ...dynamicColumns];
+  }
+  return [
+    ...STATIC_CSV_COLUMNS.slice(0, errorIdx),
+    ...dynamicColumns,
+    ...STATIC_CSV_COLUMNS.slice(errorIdx),
+  ];
+}
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
@@ -251,10 +304,11 @@ export async function GET(request: NextRequest) {
     ...c,
     agent_label: labelById.get(c.agent_id) ?? null,
     counterparty_phone: c.direction === "inbound" ? c.from_phone : c.to_phone,
-    captured_fields: buildCapturedFields(c.lead_data, c.custom_data),
   }));
 
-  const body = withBom(toCsv(rows, CSV_COLUMNS));
+  const discoveredFields = discoverCustomFields(calls);
+  const csvColumns = buildCsvColumns(discoveredFields);
+  const body = withBom(toCsv(rows, csvColumns));
   const stamp = new Date().toISOString().slice(0, 10);
   const filename = `skelo-calls-${range}-${stamp}.csv`;
 

@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
+  deleteLeadFieldDefinitionSchema,
   listLeadFieldDefinitionsSchema,
   updateLeadFieldDefinitionSchema,
 } from "@/lib/validations/lead-field-definition";
@@ -115,4 +116,49 @@ export async function updateLeadFieldDefinition(
   );
   revalidatePath("/leads");
   return ok(data);
+}
+
+export async function deleteLeadFieldDefinition(
+  input: unknown,
+): Promise<ActionResult<{ id: string }>> {
+  const parsed = deleteLeadFieldDefinitionSchema.safeParse(input);
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+  if (!(await userCanManageOrg(supabase, user.id, parsed.data.organisation_id))) {
+    return fail("Forbidden");
+  }
+
+  const admin = createAdminClient();
+
+  // Built-in first-class columns (source_column = 'column') are structural —
+  // the seed trigger only fires on org INSERT, so a delete would be
+  // permanent. Admins should hide those via visible_in_table = false instead.
+  const { data: existing, error: readErr } = await admin
+    .from("lead_field_definitions")
+    .select("id, source_column")
+    .eq("id", parsed.data.id)
+    .eq("organisation_id", parsed.data.organisation_id)
+    .maybeSingle<{ id: string; source_column: string }>();
+  if (readErr) return fail(readErr.message);
+  if (!existing) return fail("Field not found");
+  if (existing.source_column === "column") {
+    return fail("Built-in columns can't be deleted. Hide them instead.");
+  }
+
+  const { error } = await admin
+    .from("lead_field_definitions")
+    .delete()
+    .eq("id", parsed.data.id)
+    .eq("organisation_id", parsed.data.organisation_id);
+
+  if (error) return fail(error.message);
+  revalidatePath(
+    `/admin/organisations/${parsed.data.organisation_id}/lead-fields`,
+  );
+  revalidatePath("/leads");
+  return ok({ id: parsed.data.id });
 }

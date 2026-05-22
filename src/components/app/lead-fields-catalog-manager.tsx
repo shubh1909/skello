@@ -2,7 +2,13 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { EyeIcon, EyeOffIcon, Loader2Icon, SaveIcon } from "lucide-react";
+import {
+  EyeIcon,
+  EyeOffIcon,
+  Loader2Icon,
+  SaveIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -16,8 +22,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { updateLeadFieldDefinition } from "@/actions/lead-field-definitions";
+import {
+  deleteLeadFieldDefinition,
+  updateLeadFieldDefinition,
+} from "@/actions/lead-field-definitions";
 import { formatDateTime } from "@/lib/format";
+
+// A non-column field that hasn't been seen on a webhook for this long is
+// considered an orphan candidate — likely a renamed key on the voice-agent
+// side. We badge it so admins can clean it up via the per-row delete.
+const STALE_FIELD_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000;
 import type {
   LeadFieldDataType,
   LeadFieldDefinition,
@@ -140,6 +154,7 @@ function FieldRow({
   const router = useRouter();
   const [state, setState] = React.useState<RowState>(() => toRowState(def));
   const [pending, startTransition] = React.useTransition();
+  const [deleting, startDeleteTransition] = React.useTransition();
 
   const dirty = React.useMemo(
     () => Object.keys(diffState(state, def)).length > 0,
@@ -172,6 +187,27 @@ function FieldRow({
     setState(toRowState(def));
   }
 
+  function onDelete() {
+    const label = def.label?.trim() || def.key_path;
+    const message =
+      `Remove "${label}" from this catalog?\n\n` +
+      `Historical values stored on existing leads stay intact. ` +
+      `If the voice agent emits this field again, it will reappear here as an unconfigured field.`;
+    if (!confirm(message)) return;
+    startDeleteTransition(async () => {
+      const res = await deleteLeadFieldDefinition({
+        id: def.id,
+        organisation_id: organisationId,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success("Field removed");
+      router.refresh();
+    });
+  }
+
   const sourceLabel =
     def.source_column === "column"
       ? "Built-in"
@@ -184,6 +220,15 @@ function FieldRow({
   // always a number). Locking the type field keeps admins from breaking
   // the RPC's filter/sort allowlist by setting an incompatible type.
   const isBuiltIn = def.source_column === "column";
+
+  // Stale = non-builtin field whose last webhook sighting predates the
+  // threshold. Built-ins are always considered live (no webhook involved).
+  const isStale = React.useMemo(() => {
+    if (isBuiltIn) return false;
+    const t = Date.parse(def.last_seen_at);
+    if (Number.isNaN(t)) return false;
+    return Date.now() - t > STALE_FIELD_THRESHOLD_MS;
+  }, [def.last_seen_at, isBuiltIn]);
 
   return (
     <tr className="align-middle">
@@ -273,18 +318,38 @@ function FieldRow({
         />
       </CenterCell>
       <td className="px-3 py-3 text-xs text-muted-foreground">
-        <span suppressHydrationWarning>
-          {formatDateTime(def.last_seen_at)}
-        </span>
+        <div className="flex flex-col gap-1">
+          <span suppressHydrationWarning>
+            {formatDateTime(def.last_seen_at)}
+          </span>
+          {isStale ? (
+            <Badge
+              variant="outline"
+              className="w-fit border-amber-500/40 bg-amber-500/10 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+              title="No webhook has emitted this field in over 90 days. It may be an orphan from a renamed extraction key."
+            >
+              Stale
+            </Badge>
+          ) : null}
+        </div>
       </td>
       <td className="px-5 py-3">
         <div className="flex items-center justify-end gap-1.5">
           {dirty ? (
             <>
-              <Button size="xs" variant="ghost" onClick={onRevert}>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={onRevert}
+                disabled={pending || deleting}
+              >
                 Revert
               </Button>
-              <Button size="xs" onClick={onSave} disabled={pending}>
+              <Button
+                size="xs"
+                onClick={onSave}
+                disabled={pending || deleting}
+              >
                 {pending ? (
                   <Loader2Icon className="animate-spin" />
                 ) : (
@@ -293,8 +358,27 @@ function FieldRow({
                 Save
               </Button>
             </>
+          ) : null}
+          {isBuiltIn ? (
+            dirty ? null : (
+              <span className="text-xs text-muted-foreground">—</span>
+            )
           ) : (
-            <span className="text-xs text-muted-foreground">—</span>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={onDelete}
+              disabled={pending || deleting}
+              aria-label="Delete field"
+              title="Remove from catalog"
+              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            >
+              {deleting ? (
+                <Loader2Icon className="animate-spin" />
+              ) : (
+                <Trash2Icon />
+              )}
+            </Button>
           )}
         </div>
       </td>
