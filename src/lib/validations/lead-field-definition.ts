@@ -15,6 +15,11 @@ export const listLeadFieldDefinitionsSchema = z.object({
   visible_only: z.boolean().default(false),
 });
 
+export const deleteLeadFieldDefinitionSchema = z.object({
+  id: z.string().uuid(),
+  organisation_id: z.string().uuid(),
+});
+
 export const updateLeadFieldDefinitionSchema = z.object({
   id: z.string().uuid(),
   organisation_id: z.string().uuid(),
@@ -40,5 +45,8 @@ export type ListLeadFieldDefinitionsInput = z.infer<
 >;
 export type UpdateLeadFieldDefinitionInput = z.infer<
   typeof updateLeadFieldDefinitionSchema
+>;
+export type DeleteLeadFieldDefinitionInput = z.infer<
+  typeof deleteLeadFieldDefinitionSchema
 >;
 export { sourceColumn as leadFieldSourceSchema, dataType as leadFieldDataTypeSchema };
