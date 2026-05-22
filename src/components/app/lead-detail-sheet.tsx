@@ -15,7 +15,6 @@ import {
   PhoneIcon,
   PhoneIncomingIcon,
   PhoneOutgoingIcon,
-  PlayIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -587,21 +586,18 @@ export function LeadDetailSheet({
                       : formatRelative(lead.last_contact_at, now)}
                   </span>
                 </Field>
-                <Field label="Latest recording">
-                  {lead.recording_url ? (
-                    <a
-                      href={lead.recording_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-foreground transition-colors hover:text-muted-foreground"
+                {lead.recording_url ? (
+                  <Field label="Latest recording">
+                    <audio
+                      controls
+                      preload="none"
+                      src={lead.recording_url}
+                      className="h-8 w-full"
                     >
-                      <PlayIcon className="size-3" /> Listen
-                      <ExternalLinkIcon className="size-3" />
-                    </a>
-                  ) : (
-                    <Muted>—</Muted>
-                  )}
-                </Field>
+                      <track kind="captions" />
+                    </audio>
+                  </Field>
+                ) : null}
                 {lead.actionable ? (
                   <>
                     <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
