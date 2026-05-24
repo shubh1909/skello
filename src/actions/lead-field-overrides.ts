@@ -34,9 +34,12 @@ async function resolveLeadOrg(
   userId: string,
   leadId: string,
 ): Promise<{ organisationId: string } | null> {
+  // Disambiguated embed: `leads` has two FKs to `organisations`
+  // (legacy `org_slug` + canonical `organisation_id`), so PostgREST needs
+  // the FK name to resolve the relationship.
   const { data } = await supabase
     .from("leads")
-    .select("organisation_id, organisations!inner(owner_id)")
+    .select("organisation_id, organisations!leads_organisation_id_fkey!inner(owner_id)")
     .eq("id", leadId)
     .maybeSingle<{
       organisation_id: string;
