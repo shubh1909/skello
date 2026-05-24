@@ -16,11 +16,11 @@ import {
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { CallStatus, CallTranscriptStatus } from "@/types/call";
 
-export type ImportRowOutcome = "imported" | "deduped" | "error";
+export type ImportRowOutcome = "imported" | "updated" | "error";
 
 export type ImportRowResult =
   | { id: string; outcome: "imported"; callId: string; leadLinked: boolean }
-  | { id: string; outcome: "deduped"; callId: string }
+  | { id: string; outcome: "updated"; callId: string; leadLinked: boolean }
   | { id: string; outcome: "error"; error: string };
 
 export interface ImportChunkResponse {
@@ -109,18 +109,16 @@ async function processRow(
 
   const admin = createAdminClient();
 
-  // Idempotency check, explicitly scoped to the session org. The unique
-  // constraint on (organisation_id, bolna_call_id) backstops this — see the
-  // 23505 branch on the insert below.
+  // Pre-check: does a call with this (org, bolna_call_id) already exist? We
+  // do NOT early-return on a match — pre-existing calls (e.g. created by the
+  // Bolna webhook with empty extracted_data) need the CSV's snapshot patched
+  // in. The pre-check is purely for reporting "imported" vs "updated".
   const { data: existing } = await admin
     .from("calls")
-    .select("id")
+    .select("id, lead_id")
     .eq("organisation_id", sessionOrgId)
     .eq("bolna_call_id", row.id)
-    .maybeSingle<{ id: string }>();
-  if (existing) {
-    return { id: row.id, outcome: "deduped", callId: existing.id };
-  }
+    .maybeSingle<{ id: string; lead_id: string | null }>();
 
   const payload = csvRowToPayload(row);
   const hasExtracted = !!payload.extracted_data;
@@ -128,10 +126,9 @@ async function processRow(
   // Two paths diverge on whether the row has extracted_data.
   //   - With extracted_data: full merge via mergePayloadIntoLead — find-or-
   //     create the lead by phone, merge override-aware, auto-register fields.
-  //   - Without extracted_data (e.g. status=Unknown rows in the Bolna export):
-  //     only link to an existing lead by phone, don't create one. We still
-  //     bootstrap the call row so the user's full call history is preserved.
-  let leadId: string | null = null;
+  //   - Without extracted_data: only link to an existing lead by phone, don't
+  //     create one. We still write the call row so the call history is intact.
+  let leadId: string | null = existing?.lead_id ?? null;
   let snapshot: Awaited<
     ReturnType<typeof mergePayloadIntoLead>
   >["callSnapshot"] | null = null;
@@ -143,9 +140,11 @@ async function processRow(
       payload,
       source: "manual",
     });
-    leadId = merged.leadId;
+    // Prefer the existing lead_id if the call row was already linked, so a
+    // manual relink via the UI isn't clobbered by the phone-based lookup.
+    leadId = existing?.lead_id ?? merged.leadId;
     snapshot = merged.callSnapshot;
-  } else {
+  } else if (!leadId) {
     const phoneNorm = normalizePhone(row.user_number ?? null);
     if (phoneNorm) {
       const { data: lead } = await admin
@@ -164,12 +163,12 @@ async function processRow(
       ? buildSummary(payload.extracted_data.lead_data)
       : null;
 
-  const baseInsert = {
-    organisation_id: sessionOrgId,
+  // Fields written on BOTH insert and update — i.e., the per-call data
+  // sourced from the CSV. We deliberately omit `bolna_call_id`, `direction`,
+  // `agent_id`, and `created_at` from the update path: those are immutable
+  // identifiers / set on insert.
+  const writableFields = {
     lead_id: leadId,
-    bolna_call_id: row.id,
-    agent_id: row.agent_id,
-    direction: "outbound" as const,
     to_phone: row.user_number ?? null,
     from_phone: row.agent_number ?? null,
     status: mapStatus(row.status),
@@ -182,65 +181,118 @@ async function processRow(
       : "skipped") satisfies CallTranscriptStatus,
     transcript_fetched_at: transcript ? new Date().toISOString() : null,
     started_at: row.created_at ?? null,
-    ended_at: null,
-    error_message: null,
     summary: summaryFromLeadData,
+    ...(snapshot
+      ? {
+          name_extracted: snapshot.name_extracted,
+          interest: snapshot.interest,
+          lead_intent_extracted: snapshot.lead_intent_extracted,
+          actionable: snapshot.actionable,
+          customer_status: snapshot.customer_status,
+          visit_scheduled_at: snapshot.visit_scheduled_at,
+          connect_on_whatsapp: snapshot.connect_on_whatsapp,
+          lead_data: snapshot.lead_data,
+          custom_data: snapshot.custom_data,
+        }
+      : {}),
   };
 
-  const snapshotFields = snapshot
-    ? {
-        name_extracted: snapshot.name_extracted,
-        interest: snapshot.interest,
-        lead_intent_extracted: snapshot.lead_intent_extracted,
-        actionable: snapshot.actionable,
-        customer_status: snapshot.customer_status,
-        visit_scheduled_at: snapshot.visit_scheduled_at,
-        connect_on_whatsapp: snapshot.connect_on_whatsapp,
-        lead_data: snapshot.lead_data,
-        custom_data: snapshot.custom_data,
-      }
-    : {};
-
-  const { data: inserted, error: insertErr } = await admin
-    .from("calls")
-    .insert({ ...baseInsert, ...snapshotFields })
-    .select("id")
-    .single<{ id: string }>();
-
-  if (insertErr) {
-    // Lost the race against another caller importing the same row (or the
-    // dedupe SELECT was stale). Refetch by the unique key and treat as
-    // deduped — safer than failing the whole row.
-    if (insertErr.code === "23505") {
-      const { data: raced } = await admin
-        .from("calls")
-        .select("id")
-        .eq("organisation_id", sessionOrgId)
-        .eq("bolna_call_id", row.id)
-        .maybeSingle<{ id: string }>();
-      if (raced) {
-        return { id: row.id, outcome: "deduped", callId: raced.id };
-      }
+  let callId: string;
+  if (existing) {
+    const { error: updateErr } = await admin
+      .from("calls")
+      .update(writableFields)
+      .eq("id", existing.id);
+    if (updateErr) {
+      return {
+        id: row.id,
+        outcome: "error",
+        error: logSkeloError("WEBHOOK-INGEST", "CSV-import call update failed", {
+          organisationId: sessionOrgId,
+          bolnaCallId: row.id,
+          callId: existing.id,
+          cause: updateErr,
+        }),
+      };
     }
-    return {
-      id: row.id,
-      outcome: "error",
-      error: logSkeloError("WEBHOOK-INGEST", "CSV-import call insert failed", {
-        organisationId: sessionOrgId,
-        bolnaCallId: row.id,
-        cause: insertErr,
-      }),
-    };
+    callId = existing.id;
+  } else {
+    const { data: inserted, error: insertErr } = await admin
+      .from("calls")
+      .insert({
+        organisation_id: sessionOrgId,
+        bolna_call_id: row.id,
+        agent_id: row.agent_id,
+        direction: "outbound" as const,
+        ended_at: null,
+        error_message: null,
+        ...writableFields,
+      })
+      .select("id")
+      .single<{ id: string }>();
+
+    if (insertErr) {
+      // Lost the race against a concurrent import — the unique constraint
+      // fires. Refetch and fall through to the update branch logic.
+      if (insertErr.code === "23505") {
+        const { data: raced } = await admin
+          .from("calls")
+          .select("id")
+          .eq("organisation_id", sessionOrgId)
+          .eq("bolna_call_id", row.id)
+          .maybeSingle<{ id: string }>();
+        if (raced) {
+          const { error: updateErr } = await admin
+            .from("calls")
+            .update(writableFields)
+            .eq("id", raced.id);
+          if (updateErr) {
+            return {
+              id: row.id,
+              outcome: "error",
+              error: logSkeloError(
+                "WEBHOOK-INGEST",
+                "CSV-import race-recovery update failed",
+                {
+                  organisationId: sessionOrgId,
+                  bolnaCallId: row.id,
+                  cause: updateErr,
+                },
+              ),
+            };
+          }
+          if (transcript) {
+            await writeTranscriptTurns(raced.id, sessionOrgId, transcript);
+          }
+          return {
+            id: row.id,
+            outcome: "updated",
+            callId: raced.id,
+            leadLinked: leadId !== null,
+          };
+        }
+      }
+      return {
+        id: row.id,
+        outcome: "error",
+        error: logSkeloError("WEBHOOK-INGEST", "CSV-import call insert failed", {
+          organisationId: sessionOrgId,
+          bolnaCallId: row.id,
+          cause: insertErr,
+        }),
+      };
+    }
+    callId = inserted.id;
   }
 
   if (transcript) {
-    await writeTranscriptTurns(inserted.id, sessionOrgId, transcript);
+    await writeTranscriptTurns(callId, sessionOrgId, transcript);
   }
 
   return {
     id: row.id,
-    outcome: "imported",
-    callId: inserted.id,
+    outcome: existing ? "updated" : "imported",
+    callId,
     leadLinked: leadId !== null,
   };
 }

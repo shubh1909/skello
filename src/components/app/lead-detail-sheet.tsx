@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeftIcon,
   BellPlusIcon,
@@ -138,7 +138,6 @@ export function LeadDetailSheet({
   onDelete,
 }: LeadDetailSheetProps) {
   const router = useRouter();
-  const pathname = usePathname();
   const searchParams = useSearchParams();
   const [reminders, setReminders] = React.useState<Reminder[] | null>(null);
   const [calls, setCalls] = React.useState<Call[] | null>(null);
@@ -163,16 +162,23 @@ export function LeadDetailSheet({
   //  - on entering history mode via row click, push the selection
   //  - on landing with ?call=<id> already present, switch to history mode and
   //    select the call when its row arrives in the loaded page
-  const setCallInUrl = React.useCallback(
-    (id: string | null) => {
-      const next = new URLSearchParams(searchParams.toString());
-      if (id) next.set("call", id);
-      else next.delete("call");
-      const qs = next.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-    },
-    [pathname, router, searchParams],
-  );
+  //
+  // Use the history API directly instead of router.replace: this is a pure
+  // URL serialization of local sheet state, not a navigation. A Next.js soft
+  // nav would re-run the leads server component, ship a fresh initialItems
+  // reference, and useInfiniteList would clobber the client-filtered rows —
+  // making the detail lead disappear and unmounting this sheet mid-click.
+  const setCallInUrl = React.useCallback((id: string | null) => {
+    if (typeof window === "undefined") return;
+    const next = new URLSearchParams(window.location.search);
+    if (id) next.set("call", id);
+    else next.delete("call");
+    const qs = next.toString();
+    const url = qs
+      ? `${window.location.pathname}?${qs}`
+      : window.location.pathname;
+    window.history.replaceState(null, "", url);
+  }, []);
 
   React.useEffect(() => {
     setForm(null);
