@@ -41,7 +41,7 @@ type Stage = "idle" | "parsing" | "preview" | "importing" | "done";
 
 interface RunningTotals {
   imported: number;
-  deduped: number;
+  updated: number;
   errored: number;
 }
 
@@ -67,7 +67,7 @@ export function CallsCsvImporter() {
   const [progress, setProgress] = React.useState({ done: 0, total: 0 });
   const [totals, setTotals] = React.useState<RunningTotals>({
     imported: 0,
-    deduped: 0,
+    updated: 0,
     errored: 0,
   });
   const [errorRows, setErrorRows] = React.useState<CompletedRowResult[]>([]);
@@ -90,7 +90,7 @@ export function CallsCsvImporter() {
     setParsedRows([]);
     setParseError(null);
     setProgress({ done: 0, total: 0 });
-    setTotals({ imported: 0, deduped: 0, errored: 0 });
+    setTotals({ imported: 0, updated: 0, errored: 0 });
     setErrorRows([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -181,7 +181,7 @@ export function CallsCsvImporter() {
     setProgress({ done: 0, total: importable.length });
     setTotals({
       imported: 0,
-      deduped: 0,
+      updated: 0,
       errored: preflightFailed.length,
     });
     setErrorRows(preflightFailed);
@@ -190,7 +190,7 @@ export function CallsCsvImporter() {
     for (const r of importable) indexByCallId.set(r.payload.id, r);
 
     let imported = 0;
-    let deduped = 0;
+    let updated = 0;
     let errored = preflightFailed.length;
     const errors: CompletedRowResult[] = [...preflightFailed];
 
@@ -213,7 +213,7 @@ export function CallsCsvImporter() {
           errored += 1;
         }
         setProgress({ done: i + chunk.length, total: importable.length });
-        setTotals({ imported, deduped, errored });
+        setTotals({ imported, updated, errored });
         setErrorRows([...errors]);
         continue;
       }
@@ -221,7 +221,7 @@ export function CallsCsvImporter() {
       for (const result of res.data.results) {
         const source = indexByCallId.get(result.id);
         if (result.outcome === "imported") imported += 1;
-        else if (result.outcome === "deduped") deduped += 1;
+        else if (result.outcome === "updated") updated += 1;
         else {
           errored += 1;
           errors.push({
@@ -232,13 +232,13 @@ export function CallsCsvImporter() {
       }
 
       setProgress({ done: i + chunk.length, total: importable.length });
-      setTotals({ imported, deduped, errored });
+      setTotals({ imported, updated, errored });
       setErrorRows([...errors]);
     }
 
     setStage("done");
     toast.success(
-      `Import complete: ${imported} new, ${deduped} already present, ${errored} errored`,
+      `Import complete: ${imported} new, ${updated} updated, ${errored} errored`,
     );
     // Let the rest of the app see the new rows.
     router.refresh();
@@ -565,7 +565,7 @@ function ProgressCard({
 
         <div className="grid grid-cols-3 gap-3">
           <Stat label="Imported" value={totals.imported} tone="ok" />
-          <Stat label="Already present" value={totals.deduped} tone="muted" />
+          <Stat label="Updated" value={totals.updated} tone="muted" />
           <Stat
             label="Errored"
             value={totals.errored}
