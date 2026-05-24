@@ -1,4 +1,14 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import Link from "next/link";
+import { UploadCloudIcon } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -51,6 +61,22 @@ export default async function SettingsPage() {
         Voice agents and lead fields are configured by your Skelo onboarding
         team. Reach out to support if you need a change.
       </p>
+
+      <Separator />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Data</CardTitle>
+          <CardDescription>
+            Backfill historical calls from a voice-agent CSV export.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" render={<Link href="/settings/import-calls" />}>
+            <UploadCloudIcon /> Import calls from CSV
+          </Button>
+        </CardContent>
+      </Card>
 
       <Separator />
 
