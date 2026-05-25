@@ -335,6 +335,93 @@ export function LeadDetailSheet({
     [calls, selectedCallId],
   );
 
+  // Build an "effective" view of the lead's captured fields by backfilling
+  // anything missing on the lead row from the most-recent call snapshots.
+  // Why: the canonical store is `leads.custom_data` / `leads.lead_data`,
+  // which the webhook merge keeps current. But for legacy leads (created
+  // before the merge ran) or rows where the per-key merge silently failed,
+  // the lead row can be empty while every call carries the snapshot.
+  // Pulling the latest non-null per (category, key) from calls keeps the
+  // summary card useful without depending on the merge being perfect.
+  // Precedence: lead row first; calls only fill in gaps. Calls are already
+  // ordered newest-first (started_at DESC in listCalls).
+  const effectiveCustomData = React.useMemo<Record<
+    string,
+    Record<string, unknown>
+  > | null>(() => {
+    const base: Record<string, Record<string, unknown>> = {};
+    const seed = lead?.custom_data;
+    if (seed && typeof seed === "object" && !Array.isArray(seed)) {
+      for (const [cat, bag] of Object.entries(
+        seed as Record<string, unknown>,
+      )) {
+        if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+        const cleaned: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(
+          bag as Record<string, unknown>,
+        )) {
+          if (v === null || v === undefined) continue;
+          if (typeof v === "string" && v.trim() === "") continue;
+          cleaned[k] = v;
+        }
+        if (Object.keys(cleaned).length > 0) base[cat] = cleaned;
+      }
+    }
+    if (calls) {
+      for (const call of calls) {
+        const cd = call.custom_data;
+        if (!cd || typeof cd !== "object") continue;
+        for (const [cat, bag] of Object.entries(
+          cd as Record<string, unknown>,
+        )) {
+          if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+          for (const [k, v] of Object.entries(
+            bag as Record<string, unknown>,
+          )) {
+            if (v === null || v === undefined) continue;
+            if (typeof v === "string" && v.trim() === "") continue;
+            const target = (base[cat] ??= {});
+            if (target[k] !== undefined) continue;
+            target[k] = v;
+          }
+        }
+      }
+    }
+    return Object.keys(base).length > 0 ? base : null;
+  }, [lead?.custom_data, calls]);
+
+  const effectiveLeadData = React.useMemo<Record<string, unknown> | null>(
+    () => {
+      const base: Record<string, unknown> = {};
+      const seed = lead?.lead_data;
+      if (seed && typeof seed === "object" && !Array.isArray(seed)) {
+        for (const [k, v] of Object.entries(
+          seed as Record<string, unknown>,
+        )) {
+          if (v === null || v === undefined) continue;
+          if (typeof v === "string" && v.trim() === "") continue;
+          base[k] = v;
+        }
+      }
+      if (calls) {
+        for (const call of calls) {
+          const ld = call.lead_data;
+          if (!ld || typeof ld !== "object") continue;
+          for (const [k, v] of Object.entries(
+            ld as Record<string, unknown>,
+          )) {
+            if (v === null || v === undefined) continue;
+            if (typeof v === "string" && v.trim() === "") continue;
+            if (base[k] !== undefined) continue;
+            base[k] = v;
+          }
+        }
+      }
+      return Object.keys(base).length > 0 ? base : null;
+    },
+    [lead?.lead_data, calls],
+  );
+
   if (!lead) return null;
 
   const intent = lead.current_intent ?? lead.lead_intent ?? "cold";
@@ -343,9 +430,9 @@ export function LeadDetailSheet({
   // Extras = everything in lead_data + custom_data that isn't already
   // surfaced in the Details dl. Drives whether the "Captured fields"
   // section renders at all.
-  const leadDataExtras = pickLeadDataExtras(lead.lead_data, LEAD_DATA_SURFACED);
+  const leadDataExtras = pickLeadDataExtras(effectiveLeadData, LEAD_DATA_SURFACED);
   const leadFieldGroups = buildCustomFieldGroups(
-    lead.custom_data,
+    effectiveCustomData,
     leadDataExtras,
   );
 
@@ -644,7 +731,7 @@ export function LeadDetailSheet({
               <section className="space-y-3">
                 <SectionTitle>Captured fields</SectionTitle>
                 <CustomFieldsDisplay
-                  customData={lead.custom_data}
+                  customData={effectiveCustomData}
                   extraLeadData={leadDataExtras}
                 />
               </section>

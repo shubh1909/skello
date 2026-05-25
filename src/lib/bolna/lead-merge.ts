@@ -89,38 +89,61 @@ interface MergeArgs {
   source: "inbound_call" | "manual";
 }
 
-// Builds the per-call snapshot blobs from the provider's raw lead_data.
+// Builds the per-call snapshot blobs from the provider's raw extracted_data.
 // This is the immutable record of "what the LLM said on this conversation".
 // It feeds the merge into leads AND lives on the calls row forever.
+//
+// extracted_data is keyed by category. `lead_data` is special: its keys are
+// split between first-class lead columns (FIRST_CLASS_LEAD_DATA_KEYS) and
+// the uncategorised custom_data bucket (custom_data['']). Every other
+// top-level key is treated as a custom_data category — its keys land in
+// custom_data[<category>] verbatim.
 function buildSnapshot(
-  leadData: Record<string, BolnaField> | undefined,
+  extractedData:
+    | Record<string, Record<string, BolnaField> | undefined>
+    | null
+    | undefined,
 ): MergeResult["callSnapshot"] {
-  if (!leadData) {
-    return {
-      lead_data: {},
-      custom_data: {},
-      name_extracted: null,
-      interest: null,
-      lead_intent_extracted: null,
-      actionable: null,
-      customer_status: null,
-      visit_scheduled_at: null,
-      connect_on_whatsapp: null,
-    };
-  }
+  const emptySnapshot: MergeResult["callSnapshot"] = {
+    lead_data: {},
+    custom_data: {},
+    name_extracted: null,
+    interest: null,
+    lead_intent_extracted: null,
+    actionable: null,
+    customer_status: null,
+    visit_scheduled_at: null,
+    connect_on_whatsapp: null,
+  };
+  if (!extractedData) return emptySnapshot;
 
+  const leadData = extractedData.lead_data ?? {};
   const extracted = extractLead(leadData);
   const leadDataBlob: Record<string, unknown> = {};
   const customDataBlob: Record<string, Record<string, unknown>> = {};
 
+  // lead_data category — split into first-class columns + uncategorised bag.
   for (const [key, field] of Object.entries(leadData)) {
     const value = pickValue(field);
     if (value === null) continue;
     if (FIRST_CLASS_LEAD_DATA_KEYS.has(key)) {
       leadDataBlob[key] = value;
     } else {
-      customDataBlob[""] ??= {};
-      customDataBlob[""][key] = value;
+      (customDataBlob[""] ??= {})[key] = value;
+    }
+  }
+
+  // Every other category — dump verbatim into custom_data[<category>].
+  // Defensive: only process entries that look like a BolnaField record so a
+  // stray scalar at the extracted_data level (or a category we've already
+  // handled via lead_data) doesn't poison the snapshot.
+  for (const [category, fields] of Object.entries(extractedData)) {
+    if (category === "lead_data") continue;
+    if (!fields || typeof fields !== "object" || Array.isArray(fields)) continue;
+    for (const [key, field] of Object.entries(fields)) {
+      const value = pickValue(field as BolnaField);
+      if (value === null) continue;
+      (customDataBlob[category] ??= {})[key] = value;
     }
   }
 
@@ -370,7 +393,7 @@ export async function mergePayloadIntoLead(
     args.phoneRaw,
     args.source,
   );
-  const snapshot = buildSnapshot(args.payload.extracted_data?.lead_data);
+  const snapshot = buildSnapshot(args.payload.extracted_data);
 
   // Run merge and discovery in parallel — they're independent.
   await Promise.all([
