@@ -24,10 +24,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-import {
-  importBolnaCallsChunk,
-  type ImportRowResult,
-} from "@/actions/calls-import";
+import type { ImportRowResult } from "@/lib/bolna/calls-import";
 import {
   detectBolnaCsv,
   indexLeadDataColumns,
@@ -194,31 +191,84 @@ export function CallsCsvImporter() {
     let errored = preflightFailed.length;
     const errors: CompletedRowResult[] = [...preflightFailed];
 
+    // Track how many rows we've fully accounted for, so the bar advances
+    // even if the server's NDJSON stream emits results in flush bursts.
+    let processed = 0;
+
     for (let i = 0; i < importable.length; i += IMPORT_CHUNK_SIZE) {
       const chunk = importable.slice(i, i + IMPORT_CHUNK_SIZE);
-      const res = await importBolnaCallsChunk({
-        rows: chunk.map((r) => r.payload),
-      });
 
-      if (!res.success) {
-        // Action-level failure — count the whole chunk as errored. This is
-        // the auth-failure / validation-failure case.
+      let response: Response;
+      try {
+        response = await fetch("/api/imports/calls", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: chunk.map((r) => r.payload) }),
+        });
+      } catch (networkErr) {
+        // Network drop / offline / aborted — fail the whole chunk and move on.
+        const message =
+          networkErr instanceof Error
+            ? networkErr.message
+            : "Network error while importing";
         for (const r of chunk) {
           errors.push({
             id: r.payload.id,
             outcome: "error",
-            error: res.error,
+            error: message,
             original: r.original,
           });
           errored += 1;
         }
-        setProgress({ done: i + chunk.length, total: importable.length });
+        processed += chunk.length;
+        setProgress({ done: processed, total: importable.length });
         setTotals({ imported, updated, errored });
         setErrorRows([...errors]);
         continue;
       }
 
-      for (const result of res.data.results) {
+      if (!response.ok || !response.body) {
+        // Pre-stream failure (401/400/500 with a JSON error body).
+        let message = `Server responded ${response.status}`;
+        try {
+          const errJson = (await response.json()) as { error?: string };
+          if (errJson.error) message = errJson.error;
+        } catch {
+          /* fall through with the status message */
+        }
+        for (const r of chunk) {
+          errors.push({
+            id: r.payload.id,
+            outcome: "error",
+            error: message,
+            original: r.original,
+          });
+          errored += 1;
+        }
+        processed += chunk.length;
+        setProgress({ done: processed, total: importable.length });
+        setTotals({ imported, updated, errored });
+        setErrorRows([...errors]);
+        continue;
+      }
+
+      // NDJSON stream — one JSON object per row, terminated by "\n". Buffer
+      // partial lines because TCP packet boundaries don't respect newlines.
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      const seenIds = new Set<string>();
+
+      const handleLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        let result: ImportRowResult;
+        try {
+          result = JSON.parse(trimmed) as ImportRowResult;
+        } catch {
+          return;
+        }
+        seenIds.add(result.id);
         const source = indexByCallId.get(result.id);
         if (result.outcome === "imported") imported += 1;
         else if (result.outcome === "updated") updated += 1;
@@ -229,9 +279,49 @@ export function CallsCsvImporter() {
             original: source?.original ?? {},
           });
         }
+        processed += 1;
+        // Tick the bar per row. setState during a streaming fetch is
+        // committed at normal priority (no concurrent transition is open
+        // since we removed the server-side revalidatePath), so each tick
+        // paints before the next read resolves.
+        setProgress({ done: processed, total: importable.length });
+        setTotals({ imported, updated, errored });
+        setErrorRows([...errors]);
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          // Flush any trailing partial line (shouldn't normally happen since
+          // the server always writes a "\n", but defend against it).
+          if (buffer.length > 0) handleLine(buffer);
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIdx = buffer.indexOf("\n");
+        while (newlineIdx !== -1) {
+          const line = buffer.slice(0, newlineIdx);
+          buffer = buffer.slice(newlineIdx + 1);
+          handleLine(line);
+          newlineIdx = buffer.indexOf("\n");
+        }
       }
 
-      setProgress({ done: i + chunk.length, total: importable.length });
+      // Defensive: if the stream closed mid-chunk and some rows never got
+      // a result line, mark them errored so the totals reconcile.
+      for (const r of chunk) {
+        if (!seenIds.has(r.payload.id)) {
+          errors.push({
+            id: r.payload.id,
+            outcome: "error",
+            error: "Stream closed before this row reported a result",
+            original: r.original,
+          });
+          errored += 1;
+          processed += 1;
+        }
+      }
+      setProgress({ done: processed, total: importable.length });
       setTotals({ imported, updated, errored });
       setErrorRows([...errors]);
     }
