@@ -37,10 +37,15 @@ export const bolnaCsvRowSchema = z.object({
   total_cost: z.number().finite().nullable().default(null),
   hangup_by: z.string().trim().nullable().default(null),
   hangup_reason: z.string().trim().nullable().default(null),
-  // Reconstructed nested map: { lead_score: { objective: 1, ... }, ... }.
+  // Reconstructed nested map keyed by category:
+  //   { lead_data: { lead_score: { objective: 1, ... }, ... },
+  //     finance:   { emi_amount: { objective: 12000, ... }, ... } }
   // Empty object means the CSV row had no extracted_data — we still bootstrap
   // the call row in that branch.
-  lead_data: z.record(z.string(), leadFieldSchema),
+  extracted_data: z.record(
+    z.string(),
+    z.record(z.string(), leadFieldSchema),
+  ),
 });
 
 // 50 rows per chunk is a safe middle ground: small enough to keep individual

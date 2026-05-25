@@ -23,12 +23,19 @@ const bolnaFieldSchema = z
 // completed). Only the final event has `extracted_data` populated; the first
 // two send it as `null`. The schema must accept the missing case so we can
 // short-circuit them with a 200 instead of failing validation with a 400.
+//
+// extracted_data carries `lead_data` (the canonical, first-class category)
+// plus any number of additional category buckets — e.g. extra_data, finance,
+// vehicle. The catchall captures every other top-level key under
+// extracted_data without enumerating it; each one must still be a record of
+// BolnaField entries so the merge pipeline can rely on the shape.
 export const bolnaLeadPayloadSchema = z
   .object({
     extracted_data: z
       .object({
         lead_data: z.record(z.string(), bolnaFieldSchema),
       })
+      .catchall(z.record(z.string(), bolnaFieldSchema))
       .nullable()
       .optional(),
     status: z.string().nullish(),

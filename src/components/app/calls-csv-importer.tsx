@@ -27,7 +27,7 @@ import {
 import type { ImportRowResult } from "@/lib/bolna/calls-import";
 import {
   detectBolnaCsv,
-  indexLeadDataColumns,
+  indexExtractedDataColumns,
   type ParsedRow,
   REQUIRED_BOLNA_HEADERS,
   rowToImportPayload,
@@ -115,9 +115,9 @@ export function CallsCsvImporter() {
           return;
         }
 
-        const leadDataIndex = indexLeadDataColumns(headers);
+        const extractedDataIndex = indexExtractedDataColumns(headers);
         const rows: ParsedRow[] = result.data.map((row) =>
-          rowToImportPayload(row, leadDataIndex),
+          rowToImportPayload(row, extractedDataIndex),
         );
 
         // Drop completely empty rows (no id AND no agent_id AND no phone)
@@ -554,7 +554,14 @@ function PreviewCard({
                 </tr>
               </thead>
               <tbody>
-                {sample.map((r) => (
+                {sample.map((r) => {
+                  // Count fields across every category, not just lead_data.
+                  // A 3-key lead_data + 2-key finance row shows "5 fields".
+                  let fieldCount = 0;
+                  for (const fields of Object.values(r.payload.extracted_data)) {
+                    fieldCount += Object.keys(fields).length;
+                  }
+                  return (
                   <tr key={r.payload.id || Math.random()} className="border-t border-border/40">
                     <td className="px-3 py-2 font-mono text-[11px]">
                       {r.payload.id || (
@@ -569,12 +576,9 @@ function PreviewCard({
                         : `${Math.round(r.payload.duration)}s`}
                     </td>
                     <td className="px-3 py-2">
-                      {Object.keys(r.payload.lead_data).length > 0 ? (
+                      {fieldCount > 0 ? (
                         <Badge variant="secondary" className="text-[10px]">
-                          {Object.keys(r.payload.lead_data).length} field
-                          {Object.keys(r.payload.lead_data).length === 1
-                            ? ""
-                            : "s"}
+                          {fieldCount} field{fieldCount === 1 ? "" : "s"}
                         </Badge>
                       ) : (
                         <span className="text-muted-foreground">none</span>
@@ -589,7 +593,8 @@ function PreviewCard({
                             .slice(0, 80)}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

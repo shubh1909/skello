@@ -1,12 +1,22 @@
 import type { BolnaCsvRow } from "@/lib/validations/bolna-csv";
 
-// The Bolna export CSV flattens `extracted_data.lead_data.<field>.<aspect>`
-// into one column per (field, aspect) pair. Field keys can themselves
-// contain underscores (e.g. `lead_score`, `call_back_time`,
+// The Bolna export CSV flattens
+//   `extracted_data.<category>.<field>.<aspect>`
+// into one column per (category, field, aspect) triple. Field keys can
+// themselves contain underscores (e.g. `lead_score`, `call_back_time`,
 // `interest_objective`, `interest_subjective`), so we resolve the aspect
-// suffix by longest-match before splitting.
+// suffix by longest-match before splitting category/field.
+//
+// Category naming convention: single underscore-free segment (`finance`,
+// `vehicle`, `extra_data`-style is reserved for `lead_data` only). The
+// parser hard-codes `lead_data` as the lone two-segment exception because
+// that's what the existing Bolna export emits. Any other multi-segment
+// category would collide with a field whose name starts with the same
+// segment — keep new category names single-word to avoid that.
 
-const LEAD_DATA_PREFIX = "extracted_data_lead_data_";
+const PREFIX = "extracted_data_";
+const LEAD_DATA_CATEGORY = "lead_data";
+const LEAD_DATA_CATEGORY_PREFIX = `${LEAD_DATA_CATEGORY}_`;
 
 const ASPECT_SUFFIXES = [
   "reasoning_objective",
@@ -45,29 +55,58 @@ export function detectBolnaCsv(headers: readonly string[]): DetectResult {
   return { ok: missing.length === 0, missing };
 }
 
-export interface LeadDataColumn {
+export interface ExtractedDataColumn {
   header: string;
+  category: string;
   field: string;
   aspect: Aspect;
 }
 
-// Resolve the lead_data columns once for the whole file rather than per-row.
-// Returns the parsed (field, aspect) split alongside the original header so
-// the row-to-payload step is a flat O(columns) loop.
-export function indexLeadDataColumns(
+// Resolve the extracted_data columns once for the whole file rather than
+// per-row. Returns the parsed (category, field, aspect) split alongside the
+// original header so the row-to-payload step is a flat O(columns) loop.
+//
+// Parse order matters: pull the aspect suffix off first (longest-match),
+// then disambiguate category vs field on the remaining stem.
+export function indexExtractedDataColumns(
   headers: readonly string[],
-): LeadDataColumn[] {
-  const out: LeadDataColumn[] = [];
+): ExtractedDataColumn[] {
+  const out: ExtractedDataColumn[] = [];
   for (const header of headers) {
-    if (!header.startsWith(LEAD_DATA_PREFIX)) continue;
-    const tail = header.slice(LEAD_DATA_PREFIX.length);
+    if (!header.startsWith(PREFIX)) continue;
+    const tail = header.slice(PREFIX.length);
+
+    let matchedAspect: Aspect | null = null;
+    let stem = "";
     for (const aspect of ASPECT_SUFFIXES) {
       const suffix = `_${aspect}`;
       if (tail.endsWith(suffix) && tail.length > suffix.length) {
-        out.push({ header, field: tail.slice(0, -suffix.length), aspect });
+        matchedAspect = aspect;
+        stem = tail.slice(0, -suffix.length);
         break;
       }
     }
+    if (!matchedAspect) continue;
+
+    // `lead_data` is the only multi-segment category we recognise; everything
+    // else is a single segment terminated by the first underscore.
+    if (stem.startsWith(LEAD_DATA_CATEGORY_PREFIX)) {
+      out.push({
+        header,
+        category: LEAD_DATA_CATEGORY,
+        field: stem.slice(LEAD_DATA_CATEGORY_PREFIX.length),
+        aspect: matchedAspect,
+      });
+      continue;
+    }
+    const sepIdx = stem.indexOf("_");
+    if (sepIdx <= 0 || sepIdx === stem.length - 1) continue;
+    out.push({
+      header,
+      category: stem.slice(0, sepIdx),
+      field: stem.slice(sepIdx + 1),
+      aspect: matchedAspect,
+    });
   }
   return out;
 }
@@ -114,13 +153,18 @@ export interface ParsedRow {
 
 export function rowToImportPayload(
   row: Record<string, string>,
-  leadDataIndex: readonly LeadDataColumn[],
+  index: readonly ExtractedDataColumn[],
 ): ParsedRow {
-  const leadData: Record<string, Record<string, unknown>> = {};
-  for (const { header, field, aspect } of leadDataIndex) {
+  // category -> field -> { aspect: value }
+  const extractedData: Record<
+    string,
+    Record<string, Record<string, unknown>>
+  > = {};
+  for (const { header, category, field, aspect } of index) {
     const value = coerceCell(row[header]);
     if (value === null || value === undefined) continue;
-    (leadData[field] ??= {})[aspect] = value;
+    const cat = (extractedData[category] ??= {});
+    (cat[field] ??= {})[aspect] = value;
   }
 
   const id = nonEmpty(row.id) ?? "";
@@ -154,7 +198,7 @@ export function rowToImportPayload(
       total_cost: toNumber(row.total_cost),
       hangup_by: nonEmpty(row.hangup_by),
       hangup_reason: nonEmpty(row.hangup_reason),
-      lead_data: leadData,
+      extracted_data: extractedData,
     },
     original: row,
     issues,

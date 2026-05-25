@@ -47,12 +47,22 @@ function mapStatus(raw: string | null | undefined): CallStatus {
 // the existing lead-merge pipeline. The CSV doesn't carry the provider-side
 // `summary` field — we synthesise one from the per-field reasoning blobs
 // (same way the post-call webhook does).
+//
+// extracted_data on the CSV row is { category: { field: { aspect: value }}}.
+// Drop any category that ended up empty after value coercion (so the
+// "has any extracted data" check below stays meaningful), then pass the
+// whole dict through — the webhook merge pipeline now iterates every
+// category, not just `lead_data`.
 function csvRowToPayload(row: BolnaCsvRow): BolnaLeadPayload {
-  const hasExtracted = Object.keys(row.lead_data).length > 0;
+  const categories: Record<string, Record<string, unknown>> = {};
+  for (const [category, fields] of Object.entries(row.extracted_data)) {
+    if (!fields || Object.keys(fields).length === 0) continue;
+    categories[category] = fields;
+  }
+  const hasExtracted = Object.keys(categories).length > 0;
+
   return {
-    extracted_data: hasExtracted
-      ? { lead_data: row.lead_data as never }
-      : null,
+    extracted_data: hasExtracted ? (categories as never) : null,
     status: row.status ?? undefined,
     user_number: row.user_number ?? undefined,
     agent_number: row.agent_number ?? undefined,
