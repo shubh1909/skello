@@ -1,19 +1,10 @@
-"use server";
-
-import { revalidatePath } from "next/cache";
-
-import { requireSession } from "@/lib/auth/session";
 import { writeTranscriptTurns } from "@/lib/bolna/inbound";
 import { mergePayloadIntoLead } from "@/lib/bolna/lead-merge";
 import { resolveOrgByAgentId } from "@/lib/bolna/routing";
 import { buildSummary, type BolnaLeadPayload } from "@/lib/bolna/extract";
 import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
-import {
-  type BolnaCsvRow,
-  importChunkInputSchema,
-} from "@/lib/validations/bolna-csv";
-import { type ActionResult, fail, ok } from "@/types/action";
+import type { BolnaCsvRow } from "@/lib/validations/bolna-csv";
 import type { CallStatus, CallTranscriptStatus } from "@/types/call";
 
 export type ImportRowOutcome = "imported" | "updated" | "error";
@@ -22,10 +13,6 @@ export type ImportRowResult =
   | { id: string; outcome: "imported"; callId: string; leadLinked: boolean }
   | { id: string; outcome: "updated"; callId: string; leadLinked: boolean }
   | { id: string; outcome: "error"; error: string };
-
-export interface ImportChunkResponse {
-  results: ImportRowResult[];
-}
 
 // Mirrors the SQL expression on leads.phone_normalized so the lookup matches
 // the generated column exactly.
@@ -84,7 +71,7 @@ function csvRowToPayload(row: BolnaCsvRow): BolnaLeadPayload {
   } as BolnaLeadPayload;
 }
 
-async function processRow(
+export async function processRow(
   row: BolnaCsvRow,
   sessionOrgId: string,
 ): Promise<ImportRowResult> {
@@ -295,42 +282,4 @@ async function processRow(
     callId,
     leadLinked: leadId !== null,
   };
-}
-
-export async function importBolnaCallsChunk(
-  input: unknown,
-): Promise<ActionResult<ImportChunkResponse>> {
-  const parsed = importChunkInputSchema.safeParse(input);
-  if (!parsed.success) {
-    return fail(parsed.error.issues[0]?.message ?? "Invalid input");
-  }
-
-  // requireSession() only returns the org where owner_id = auth.uid(), so
-  // by the time we have a session we already know the user owns this org.
-  const session = await requireSession();
-  const sessionOrgId = session.organisation.id;
-
-  // Sequential per-row processing keeps DB load predictable and avoids
-  // races on the same bolna_call_id within a chunk. The browser parallelises
-  // across chunks if it wants to; for v1 we ship chunks sequentially.
-  const results: ImportRowResult[] = [];
-  for (const row of parsed.data.rows) {
-    try {
-      results.push(await processRow(row, sessionOrgId));
-    } catch (err) {
-      results.push({
-        id: row.id,
-        outcome: "error",
-        error:
-          err instanceof Error ? err.message : "Unexpected error processing row",
-      });
-    }
-  }
-
-  // Revalidate any view that surfaces aggregated call data. We don't know
-  // which leads were touched, so we invalidate the leads index broadly.
-  revalidatePath("/leads");
-  revalidatePath("/dashboard");
-
-  return ok({ results });
 }
