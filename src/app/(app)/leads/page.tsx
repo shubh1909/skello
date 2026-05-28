@@ -7,10 +7,12 @@ import {
 
 import { Card } from "@/components/ui/card";
 import { LeadCreateDialog } from "@/components/app/lead-create-dialog";
-import { LeadExportDialog } from "@/components/app/lead-export-dialog";
 import { LeadsActivityTable } from "@/components/app/leads-activity-table";
 import { StatCard } from "@/components/app/stat-card";
-import { listLeadsWithCallActivity } from "@/actions/lead-activity";
+import {
+  getLeadCallLifetimeStats,
+  listLeadsWithCallActivity,
+} from "@/actions/lead-activity";
 import { listLeadFieldDefinitions } from "@/actions/lead-field-definitions";
 import { requireSession } from "@/lib/auth/session";
 
@@ -28,7 +30,7 @@ export default async function LeadsPage({ searchParams }: PageProps) {
   const includeZero = sp.include === "all";
   const search = typeof sp.q === "string" ? sp.q.trim() : "";
 
-  const [activityRes, defsRes] = await Promise.all([
+  const [activityRes, defsRes, statsRes] = await Promise.all([
     listLeadsWithCallActivity({
       org_slug: session.organisation.slug,
       include_zero_calls: includeZero,
@@ -44,6 +46,10 @@ export default async function LeadsPage({ searchParams }: PageProps) {
       organisation_id: session.organisation.id,
       visible_only: false,
     }),
+    // Lifetime stat cards — counts run independently of the page's
+    // include-zero-calls toggle, search, or filters so the headline
+    // numbers stay stable as the operator narrows the table below.
+    getLeadCallLifetimeStats({ org_slug: session.organisation.slug }),
   ]);
 
   if (!activityRes.success) {
@@ -58,9 +64,9 @@ export default async function LeadsPage({ searchParams }: PageProps) {
   const total = activityRes.data.total;
   const catalog = defsRes.success ? defsRes.data : [];
 
-  const contactedCount = rows.filter((r) => r.total_calls > 0).length;
-  const totalInbound = rows.reduce((sum, r) => sum + r.inbound_calls, 0);
-  const totalOutbound = rows.reduce((sum, r) => sum + r.outbound_calls, 0);
+  const contactedCount = statsRes.success ? statsRes.data.contacted_leads : 0;
+  const totalInbound = statsRes.success ? statsRes.data.inbound_calls : 0;
+  const totalOutbound = statsRes.success ? statsRes.data.outbound_calls : 0;
 
   return (
     <div className="flex flex-col gap-6">
@@ -75,7 +81,6 @@ export default async function LeadsPage({ searchParams }: PageProps) {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <LeadExportDialog />
           <LeadCreateDialog orgSlug={session.organisation.slug} />
         </div>
       </header>
@@ -85,19 +90,19 @@ export default async function LeadsPage({ searchParams }: PageProps) {
           label="Leads contacted"
           value={contactedCount.toLocaleString()}
           icon={<UsersIcon />}
-          hint="With at least one call"
+          hint="Lifetime · with at least one call"
         />
         <StatCard
           label="Inbound calls"
           value={totalInbound.toLocaleString()}
           icon={<PhoneIncomingIcon />}
-          hint="From the voice agent"
+          hint="Lifetime · from the voice agent"
         />
         <StatCard
           label="Outbound calls"
           value={totalOutbound.toLocaleString()}
           icon={<PhoneOutgoingIcon />}
-          hint="Placed from Skelo"
+          hint="Lifetime · placed from Skelo"
         />
       </section>
 

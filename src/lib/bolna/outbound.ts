@@ -37,12 +37,13 @@ export async function recordOutboundResult(
 
   const { data: existingCall, error: findErr } = await admin
     .from("calls")
-    .select("id, organisation_id, lead_id")
+    .select("id, organisation_id, lead_id, is_test")
     .eq("bolna_call_id", externalId)
     .maybeSingle<{
       id: string;
       organisation_id: string;
       lead_id: string | null;
+      is_test: boolean;
     }>();
 
   if (findErr) {
@@ -77,6 +78,54 @@ export async function recordOutboundResult(
       : null;
   const status: CallStatus = mapStatus(payload.status);
   const transcriptStatus: CallTranscriptStatus = transcript ? "ready" : "skipped";
+
+  // Test calls (from Campaigns > Test Call) intentionally skip the lead
+  // merge: a demo dial shouldn't create or update a real lead just because
+  // the operator happened to type a phone that matches one. We still
+  // capture the call outcome (status, transcript, recording, summary)
+  // so the demo is replayable from Conversations.
+  if (call.is_test) {
+    console.log("[outbound] updating test call", {
+      callId: call.id,
+      externalId,
+      status,
+      durationSeconds,
+      hasTranscript: !!transcript,
+      hasRecording: !!recordingUrl,
+    });
+    const { error: testUpdateErr } = await admin
+      .from("calls")
+      .update({
+        status,
+        duration_seconds: durationSeconds,
+        recording_url: recordingUrl,
+        transcript,
+        transcript_status: transcriptStatus,
+        transcript_fetched_at: transcript ? new Date().toISOString() : null,
+        ended_at: payload.updated_at ?? null,
+        error_message: payload.error_message ?? null,
+        summary: payload.summary ?? null,
+      })
+      .eq("id", call.id);
+    if (testUpdateErr) {
+      console.error("[outbound] test call update failed", testUpdateErr);
+      return {
+        callId: call.id,
+        transcriptStatus: "failed",
+        matchedExisting,
+      };
+    }
+    const finalStatus = await writeTranscriptTurns(
+      call.id,
+      call.organisation_id,
+      transcript,
+    );
+    return {
+      callId: call.id,
+      transcriptStatus: finalStatus,
+      matchedExisting,
+    };
+  }
 
   // Run the merge — keeps the lead's current view + dynamic fields in sync.
   // Phone for outbound = `to_phone` on the existing call (we dialed it).
@@ -161,6 +210,7 @@ async function bootstrapDirectOutboundCall(
   id: string;
   organisation_id: string;
   lead_id: string | null;
+  is_test: boolean;
 } | null> {
   const agentId = payload.agent_id?.trim();
   if (!agentId) return null;
@@ -191,11 +241,12 @@ async function bootstrapDirectOutboundCall(
       status: "initiated",
       ...(startedAt ? { started_at: startedAt } : {}),
     })
-    .select("id, organisation_id, lead_id")
+    .select("id, organisation_id, lead_id, is_test")
     .single<{
       id: string;
       organisation_id: string;
       lead_id: string | null;
+      is_test: boolean;
     }>();
 
   if (!insertErr && inserted) return inserted;
@@ -204,13 +255,14 @@ async function bootstrapDirectOutboundCall(
   if (insertErr?.code === "23505") {
     const { data: refetched } = await admin
       .from("calls")
-      .select("id, organisation_id, lead_id")
+      .select("id, organisation_id, lead_id, is_test")
       .eq("organisation_id", route.organisationId)
       .eq("bolna_call_id", externalId)
       .maybeSingle<{
         id: string;
         organisation_id: string;
         lead_id: string | null;
+        is_test: boolean;
       }>();
     if (refetched) return refetched;
   }

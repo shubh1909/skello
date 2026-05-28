@@ -376,12 +376,13 @@ export async function updateLead(
 
   const { data: existing, error: fetchErr } = await supabase
     .from("leads")
-    .select("org_slug, organisation_id, lead_data")
+    .select("org_slug, organisation_id, lead_data, custom_data")
     .eq("id", idParsed.data)
     .maybeSingle<{
       org_slug: string | null;
       organisation_id: string;
       lead_data: Record<string, unknown> | null;
+      custom_data: Record<string, Record<string, unknown>> | null;
     }>();
 
   if (fetchErr) return fail(fetchErr.message);
@@ -390,13 +391,47 @@ export async function updateLead(
   const org = await userOwnsOrgBySlug(supabase, user.id, existing.org_slug);
   if (!org) return fail("Forbidden");
 
-  const { rowPatch, leadDataPatch } = splitWrites({ ...parsed.data });
+  // Catalog-driven patches arrive separately — keep them out of the
+  // first-class `splitWrites` mapping so they don't get silently dropped
+  // by the default branch.
+  const { lead_data_patch, custom_data_patch, ...firstClass } = parsed.data;
+  const { rowPatch, leadDataPatch } = splitWrites({ ...firstClass });
+
+  // Start lead_data merge from existing + first-class field rewrites.
+  let nextLeadData: Record<string, unknown> | null = null;
+  if (
+    Object.keys(leadDataPatch).length > 0 ||
+    (lead_data_patch && Object.keys(lead_data_patch).length > 0)
+  ) {
+    nextLeadData = {
+      ...(existing.lead_data ?? {}),
+      ...leadDataPatch,
+      ...(lead_data_patch ?? {}),
+    };
+  }
+
+  // Deep-merge custom_data per category. Null leaf values drop the key so
+  // operators can clear a captured field from the edit form.
+  let nextCustomData: Record<string, Record<string, unknown>> | null = null;
+  if (custom_data_patch && Object.keys(custom_data_patch).length > 0) {
+    const base: Record<string, Record<string, unknown>> = {};
+    for (const [cat, bag] of Object.entries(existing.custom_data ?? {})) {
+      base[cat] = { ...(bag ?? {}) };
+    }
+    for (const [cat, bag] of Object.entries(custom_data_patch)) {
+      const target = (base[cat] ??= {});
+      for (const [k, v] of Object.entries(bag)) {
+        if (v === null) delete target[k];
+        else target[k] = v;
+      }
+      if (Object.keys(target).length === 0) delete base[cat];
+    }
+    nextCustomData = base;
+  }
 
   const updatePatch: Record<string, unknown> = { ...rowPatch };
-  if (Object.keys(leadDataPatch).length > 0) {
-    // Merge with the existing lead_data so we don't overwrite siblings.
-    updatePatch.lead_data = { ...(existing.lead_data ?? {}), ...leadDataPatch };
-  }
+  if (nextLeadData !== null) updatePatch.lead_data = nextLeadData;
+  if (nextCustomData !== null) updatePatch.custom_data = nextCustomData;
   if (Object.keys(updatePatch).length === 0) return fail("No fields to update");
 
   const admin = createAdminClient();

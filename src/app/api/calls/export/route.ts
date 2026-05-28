@@ -1,23 +1,49 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import {
+  type DiscoveredCustomField,
+  discoverCustomFields,
+  pickCustomFieldValue,
+  stringifyCustomValue,
+} from "@/lib/csv-custom-fields";
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
 import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
+import { applyCallFilters } from "@/lib/queries/call-filters";
 import { createClient } from "@/lib/supabase/server";
+import {
+  callDirectionSchema,
+  callStatusSchema,
+} from "@/lib/validations/call";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const rangeSchema = z.enum([
-  "today",
-  "yesterday",
-  "last_week",
-  "last_month",
-  "all",
-]);
+// Per-export row cap. A `limit(EXPORT_CAP + 1)` trick lets us detect
+// truncation in the same query rather than running a second count
+// roundtrip — anything past EXPORT_CAP is dropped before serialising and
+// the X-Export-Truncated header tells the dialog to surface a warning.
+const EXPORT_CAP = 10_000;
 
-type Range = z.infer<typeof rangeSchema>;
+// Backend contract: the frontend resolves a preset (or custom date inputs)
+// into concrete from/to ISO timestamps and posts them as query params.
+// `range` is carried through for the filename only; the query uses from/to.
+// `null` on either bound means "open" on that side. The filter block mirrors
+// the conversations table — `direction`, `status`, `agent_id`, `q`, plus an
+// optional `lead_id` for "export everything on this lead" flows. Each
+// filter is independent; omit the param to skip it.
+const isoDatetimeSchema = z.string().datetime({ offset: true });
+const exportInputSchema = z.object({
+  from: isoDatetimeSchema.optional(),
+  to: isoDatetimeSchema.optional(),
+  range: z.string().trim().max(40).optional(),
+  direction: callDirectionSchema.optional(),
+  status: callStatusSchema.optional(),
+  agent_id: z.string().trim().min(1).max(200).optional(),
+  q: z.string().trim().max(200).optional(),
+  lead_id: z.string().uuid().optional(),
+});
 
 // recording_url / transcript_url are intentionally omitted — downloadable
 // CSVs must not leak signed audio links. The `transcript` text body IS
@@ -67,20 +93,10 @@ interface ExportRow extends CallRow {
   counterparty_phone: string | null;
 }
 
-// One discovered custom field becomes one CSV column. We collect every
-// (source, category, key) tuple seen across the exported rows so the
-// header row stays stable for the whole batch.
-interface DiscoveredField {
-  header: string;
-  source: "lead_data" | "custom_data";
-  category: string;
-  key: string;
-}
-
 // Keys already surfaced as their own CSV columns — skip when flattening
-// lead_data into "Captured Fields" so the same value doesn't appear twice.
-// Mirrors CALL_LEAD_DATA_SURFACED in the side-sheet UI.
-const CALL_LEAD_DATA_SURFACED = new Set([
+// lead_data so the same value doesn't appear twice. Mirrors the
+// CALL_LEAD_DATA_SURFACED set in the call detail sheet.
+const SURFACED_LEAD_DATA_KEYS = new Set([
   "name",
   "interest",
   "lead_intent",
@@ -90,122 +106,6 @@ const CALL_LEAD_DATA_SURFACED = new Set([
   "date_and_time_of_visit",
   "business_slug",
 ]);
-
-const UNGROUPED_CATEGORIES = new Set(["", "__general__", "general"]);
-
-function humaniseFieldKey(key: string): string {
-  return key
-    .replace(/[_-]+/g, " ")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(" ")
-    .filter(Boolean)
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(" ");
-}
-
-function stringifyValue(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? String(value) : null;
-  }
-  if (typeof value === "string") {
-    const t = value.trim();
-    if (!t) return null;
-    const lower = t.toLowerCase();
-    if (lower === "yes" || lower === "true") return "Yes";
-    if (lower === "no" || lower === "false") return "No";
-    return t;
-  }
-  if (Array.isArray(value)) {
-    const parts = value
-      .map((v) => stringifyValue(v))
-      .filter((v): v is string => v !== null);
-    return parts.length > 0 ? parts.join(", ") : null;
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return null;
-  }
-}
-
-// Walk every exported row and collect each (source, category, key) tuple
-// that carries data, so each one can become its own CSV column. The set
-// is deduplicated and sorted by header for stable column ordering.
-function discoverCustomFields(rows: CallRow[]): DiscoveredField[] {
-  const seen = new Map<string, DiscoveredField>();
-
-  for (const c of rows) {
-    if (c.lead_data) {
-      for (const k of Object.keys(c.lead_data)) {
-        if (CALL_LEAD_DATA_SURFACED.has(k)) continue;
-        const mapKey = `lead_data::${k}`;
-        if (seen.has(mapKey)) continue;
-        seen.set(mapKey, {
-          header: humaniseFieldKey(k),
-          source: "lead_data",
-          category: "",
-          key: k,
-        });
-      }
-    }
-    if (c.custom_data) {
-      for (const [cat, bag] of Object.entries(c.custom_data)) {
-        if (!bag || typeof bag !== "object") continue;
-        const isUngrouped = UNGROUPED_CATEGORIES.has(cat);
-        const catLabel = isUngrouped ? null : humaniseFieldKey(cat);
-        for (const k of Object.keys(bag)) {
-          const mapKey = `custom_data::${cat}::${k}`;
-          if (seen.has(mapKey)) continue;
-          seen.set(mapKey, {
-            header: catLabel
-              ? `${catLabel} > ${humaniseFieldKey(k)}`
-              : humaniseFieldKey(k),
-            source: "custom_data",
-            category: cat,
-            key: k,
-          });
-        }
-      }
-    }
-  }
-
-  return Array.from(seen.values()).sort((a, b) =>
-    a.header.localeCompare(b.header),
-  );
-}
-
-function pickFieldValue(row: CallRow, f: DiscoveredField): unknown {
-  if (f.source === "lead_data") {
-    return row.lead_data?.[f.key] ?? null;
-  }
-  const bag = row.custom_data?.[f.category];
-  if (!bag || typeof bag !== "object") return null;
-  return bag[f.key] ?? null;
-}
-
-function rangeBounds(
-  range: Range,
-  now: number,
-): { from: string | null; to: string | null } {
-  const day = 24 * 60 * 60 * 1000;
-  switch (range) {
-    case "today":
-      return { from: new Date(now - day).toISOString(), to: null };
-    case "yesterday":
-      return {
-        from: new Date(now - 2 * day).toISOString(),
-        to: new Date(now - day).toISOString(),
-      };
-    case "last_week":
-      return { from: new Date(now - 7 * day).toISOString(), to: null };
-    case "last_month":
-      return { from: new Date(now - 30 * day).toISOString(), to: null };
-    case "all":
-      return { from: null, to: null };
-  }
-}
 
 const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Call ID", value: (c) => c.id },
@@ -240,11 +140,11 @@ const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
 // single "Captured Fields" column used to live), so the error pair
 // stays at the right edge of the sheet.
 function buildCsvColumns(
-  fields: DiscoveredField[],
+  fields: DiscoveredCustomField[],
 ): CsvColumn<ExportRow>[] {
   const dynamicColumns: CsvColumn<ExportRow>[] = fields.map((f) => ({
     header: f.header,
-    value: (row) => stringifyValue(pickFieldValue(row, f)),
+    value: (row) => stringifyCustomValue(pickCustomFieldValue(row, f)),
   }));
   const errorIdx = STATIC_CSV_COLUMNS.findIndex(
     (col) => col.header === "Error Code",
@@ -262,27 +162,52 @@ function buildCsvColumns(
 export async function GET(request: NextRequest) {
   const session = await requireSession();
 
-  const rawRange = request.nextUrl.searchParams.get("range") ?? "all";
-  const parsedRange = rangeSchema.safeParse(rawRange);
-  if (!parsedRange.success) {
+  const sp = request.nextUrl.searchParams;
+  const parsedInput = exportInputSchema.safeParse({
+    from: sp.get("from") ?? undefined,
+    to: sp.get("to") ?? undefined,
+    range: sp.get("range") ?? undefined,
+    direction: sp.get("direction") ?? undefined,
+    status: sp.get("status") ?? undefined,
+    agent_id: sp.get("agent_id") ?? undefined,
+    q: sp.get("q") ?? undefined,
+    lead_id: sp.get("lead_id") ?? undefined,
+  });
+  if (!parsedInput.success) {
     return NextResponse.json(
-      { error: "Invalid range. Use today, yesterday, last_week, last_month, or all." },
+      {
+        error:
+          "Invalid filter set. `from`/`to` must be ISO datetimes; `direction`, `status`, `agent_id`, `q`, `lead_id` are optional.",
+      },
       { status: 400 },
     );
   }
-  const range = parsedRange.data;
+  const { from, to, range, direction, status, agent_id, q, lead_id } =
+    parsedInput.data;
 
   const supabase = await createClient();
+  // EXPORT_CAP + 1 fetched intentionally — the +1 is a sentinel row used
+  // only to set X-Export-Truncated. It's dropped before CSV serialisation
+  // so the user never sees it.
   let query = supabase
     .from("calls")
     .select(CALL_COLUMNS)
     .eq("organisation_id", session.organisation.id)
     .order("started_at", { ascending: false })
-    .limit(10_000);
+    .limit(EXPORT_CAP + 1);
 
-  const { from, to } = rangeBounds(range, Date.now());
-  if (from) query = query.gte("started_at", from);
-  if (to) query = query.lt("started_at", to);
+  // applyCallFilters is the single source of truth for conversations table
+  // filters, also used by listConversations in actions/calls.ts. The date
+  // range and lead_id flow through the same helper.
+  query = applyCallFilters(query, {
+    from,
+    to,
+    direction,
+    status,
+    agent_id,
+    q,
+    lead_id,
+  });
 
   const { data, error } = await query.returns<CallRow[]>();
   if (error) {
@@ -293,7 +218,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
-  const calls = data ?? [];
+  const raw = data ?? [];
+  const truncated = raw.length > EXPORT_CAP;
+  const calls = truncated ? raw.slice(0, EXPORT_CAP) : raw;
 
   // Resolve agent labels in one round trip. Falls back to the raw agent_id
   // when no voice_agents row exists (e.g. a legacy / unregistered agent).
@@ -306,11 +233,12 @@ export async function GET(request: NextRequest) {
     counterparty_phone: c.direction === "inbound" ? c.from_phone : c.to_phone,
   }));
 
-  const discoveredFields = discoverCustomFields(calls);
+  const discoveredFields = discoverCustomFields(calls, SURFACED_LEAD_DATA_KEYS);
   const csvColumns = buildCsvColumns(discoveredFields);
   const body = withBom(toCsv(rows, csvColumns));
   const stamp = new Date().toISOString().slice(0, 10);
-  const filename = `skelo-calls-${range}-${stamp}.csv`;
+  const rangeLabel = (range ?? "custom").replace(/[^a-z0-9_-]+/gi, "_");
+  const filename = `skelo-calls-${rangeLabel}-${stamp}.csv`;
 
   return new NextResponse(body, {
     status: 200,
@@ -318,6 +246,12 @@ export async function GET(request: NextRequest) {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="${filename}"`,
       "Cache-Control": "no-store",
+      // Forensic + UX headers: the dialog reads these to surface a toast
+      // confirming row count and (when relevant) the cap being hit. They
+      // are also useful for anyone inspecting the response in DevTools.
+      "X-Export-Cap": String(EXPORT_CAP),
+      "X-Export-Rows": String(calls.length),
+      "X-Export-Truncated": truncated ? "true" : "false",
     },
   });
 }

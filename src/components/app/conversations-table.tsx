@@ -24,6 +24,10 @@ import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { listConversations } from "@/actions/calls";
 import { cn } from "@/lib/utils";
 import { useCallsRealtime } from "@/hooks/use-calls-realtime";
+import {
+  ColumnResizeHandle,
+  useColumnWidths,
+} from "@/hooks/use-column-widths";
 import { useInfiniteList } from "@/hooks/use-infinite-list";
 import type {
   Call,
@@ -92,13 +96,27 @@ interface SortState {
 }
 
 // Labels shown in the column header — the SortField key matches the wire
-// param consumed by listConversations.
-const SORTABLE_HEADERS: { field: SortField; label: string }[] = [
-  { field: "started_at", label: "Date & Time" },
-  { field: "duration_seconds", label: "Duration" },
-  { field: "direction", label: "Direction" },
-  { field: "status", label: "Outcome" },
+// param consumed by listConversations. Default widths are tuned to the
+// rendered content (short call IDs, compact duration strings, etc.) so
+// the table looks right before the user touches anything; the resize
+// handles let them override per-column afterwards.
+const SORTABLE_HEADERS: {
+  field: SortField;
+  label: string;
+  defaultWidth: number;
+}[] = [
+  { field: "started_at", label: "Date & Time", defaultWidth: 170 },
+  { field: "duration_seconds", label: "Duration", defaultWidth: 110 },
+  { field: "direction", label: "Direction", defaultWidth: 130 },
+  { field: "status", label: "Outcome", defaultWidth: 130 },
 ];
+
+const COL_CALL_ID = "call_id";
+const COL_LEAD = "lead";
+const COL_AUDIO = "audio";
+const DEFAULT_CALL_ID_WIDTH = 130;
+const DEFAULT_LEAD_WIDTH = 220;
+const DEFAULT_AUDIO_WIDTH = 130;
 
 export interface ConversationsTableFilters {
   direction?: CallDirection;
@@ -126,6 +144,19 @@ export function ConversationsTable({
   // Local sort state — null means use the server default (started_at desc),
   // which is also what the server-rendered initial page used.
   const [sort, setSort] = React.useState<SortState | null>(null);
+
+  // Per-user column widths, persisted in localStorage and scoped by org so
+  // each workspace remembers its own conversations layout independently
+  // from the leads layout.
+  const { widths, makeResizeStarter } = useColumnWidths(
+    `conversations-table-widths:${organisationId}`,
+  );
+  const widthCallId = widths[COL_CALL_ID] ?? DEFAULT_CALL_ID_WIDTH;
+  const widthLead = widths[COL_LEAD] ?? DEFAULT_LEAD_WIDTH;
+  const widthAudio = widths[COL_AUDIO] ?? DEFAULT_AUDIO_WIDTH;
+  function widthForSort(field: SortField, fallback: number): number {
+    return widths[field] ?? fallback;
+  }
 
   const fetchPage = React.useCallback(
     async (offset: number, limit: number) => {
@@ -216,14 +247,39 @@ export function ConversationsTable({
     <>
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
+          <table className="w-full table-fixed text-left text-sm">
+            <colgroup>
+              <col style={{ width: `${widthCallId}px` }} />
+              <col style={{ width: `${widthLead}px` }} />
+              {SORTABLE_HEADERS.map((h) => (
+                <col
+                  key={h.field}
+                  style={{
+                    width: `${widthForSort(h.field, h.defaultWidth)}px`,
+                  }}
+                />
+              ))}
+              <col style={{ width: `${widthAudio}px` }} />
+            </colgroup>
             <thead className="border-b border-border/60 bg-muted/30">
               <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                <th scope="col" className="px-4 py-3 font-medium">
+                <th
+                  scope="col"
+                  className="relative px-4 py-3 font-medium"
+                >
                   Call ID
+                  <ColumnResizeHandle
+                    onStart={makeResizeStarter(COL_CALL_ID, widthCallId)}
+                  />
                 </th>
-                <th scope="col" className="px-4 py-3 font-medium">
+                <th
+                  scope="col"
+                  className="relative px-4 py-3 font-medium"
+                >
                   Lead / Number
+                  <ColumnResizeHandle
+                    onStart={makeResizeStarter(COL_LEAD, widthLead)}
+                  />
                 </th>
                 {SORTABLE_HEADERS.map((h) => (
                   <SortableHeader
@@ -232,10 +288,20 @@ export function ConversationsTable({
                     label={h.label}
                     sort={sort}
                     onToggle={toggleSort}
+                    onResizeStart={makeResizeStarter(
+                      h.field,
+                      widthForSort(h.field, h.defaultWidth),
+                    )}
                   />
                 ))}
-                <th scope="col" className="px-4 py-3 font-medium">
+                <th
+                  scope="col"
+                  className="relative px-4 py-3 font-medium"
+                >
                   Audio
+                  <ColumnResizeHandle
+                    onStart={makeResizeStarter(COL_AUDIO, widthAudio)}
+                  />
                 </th>
               </tr>
             </thead>
@@ -384,16 +450,18 @@ function SortableHeader({
   label,
   sort,
   onToggle,
+  onResizeStart,
 }: {
   field: SortField;
   label: string;
   sort: SortState | null;
   onToggle: (f: SortField) => void;
+  onResizeStart: (e: React.MouseEvent) => void;
 }) {
   const isCurrent = sort?.field === field;
   const dir = isCurrent ? sort.dir : null;
   return (
-    <th scope="col" className="px-4 py-3 font-medium">
+    <th scope="col" className="relative px-4 py-3 font-medium">
       <button
         type="button"
         onClick={() => onToggle(field)}
@@ -412,6 +480,7 @@ function SortableHeader({
           <ChevronsUpDownIcon className="size-3 opacity-40" />
         )}
       </button>
+      <ColumnResizeHandle onStart={onResizeStart} />
     </th>
   );
 }

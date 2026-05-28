@@ -2,7 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 
+import { z } from "zod";
+
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
+import { applyCallFilters } from "@/lib/queries/call-filters";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { callInitiateSchema, callListSchema } from "@/lib/validations/call";
@@ -12,7 +15,7 @@ import type { Call, CallStatus, CallWithLead } from "@/types/call";
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const CALL_COLUMNS =
-  "id, organisation_id, lead_id, initiated_by, bolna_call_id, to_phone, from_phone, agent_id, status, direction, error_code, error_message, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript_url, transcript, transcript_status, transcript_fetched_at, language, summary, name_extracted, interest, lead_intent_extracted, actionable, customer_status, visit_scheduled_at, connect_on_whatsapp, lead_data, custom_data, created_at, updated_at";
+  "id, organisation_id, lead_id, initiated_by, bolna_call_id, to_phone, from_phone, agent_id, status, direction, error_code, error_message, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript_url, transcript, transcript_status, transcript_fetched_at, language, summary, name_extracted, interest, lead_intent_extracted, actionable, customer_status, visit_scheduled_at, connect_on_whatsapp, lead_data, custom_data, is_test, created_at, updated_at";
 
 const STATUS_MAP: Record<string, CallStatus> = {
   initiated: "initiated",
@@ -171,9 +174,173 @@ export async function initiateCall(
   return ok(callRow);
 }
 
-function escapeForOrFilter(input: string): string {
-  // PostgREST .or() uses commas as separators and percent for ilike wildcards.
-  return input.replace(/[%,]/g, " ").trim();
+// E.164 format: leading + then country code (1-9) then 6-14 more digits.
+// Strict to avoid silently feeding the provider a junk number — the test
+// dialog displays a clear validation error rather than wasting a billable
+// call attempt on a typo.
+const e164Schema = z
+  .string()
+  .trim()
+  .regex(/^\+[1-9]\d{6,14}$/, "Phone must be in E.164 form, e.g. +14155551234");
+
+const testCallSchema = z.object({
+  organisation_id: z.string().uuid(),
+  // Pick an agent the org has configured (validated server-side against
+  // the integration's agent_labels). Required even when there's only one
+  // agent — keeps the contract explicit and forward-compatible.
+  agent_id: z.string().trim().min(1).max(200),
+  // Optional override of the integration's default from_phone_number. When
+  // null/omitted the integration default is used; when set it must match
+  // one of the entries in from_phone_labels (no arbitrary spoofing).
+  from_phone: z.string().trim().min(1).max(20).optional(),
+  to_phone: e164Schema,
+});
+
+export type InitiateTestCallInput = z.infer<typeof testCallSchema>;
+
+/**
+ * Fire a one-off voice-agent call from the Campaigns > Test Call dialog.
+ *
+ * Differs from initiateCall (the lead-based path):
+ *   - no lead lookup; no lead_id on the inserted row
+ *   - is_test = true so the post-call webhook skips lead-merge and the
+ *     headline stat cards exclude it
+ *   - caller can override agent / from-phone within the org's configured set
+ *
+ * Use case: sales engineers giving a live demo to a prospect. The call
+ * still lands in Conversations so the transcript and recording are
+ * replayable afterwards.
+ */
+export async function initiateTestCall(
+  input: unknown,
+): Promise<ActionResult<Call>> {
+  const parsed = testCallSchema.safeParse(input);
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+  if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id))) {
+    return fail("Forbidden");
+  }
+
+  // Admin client only here — bolna_integrations is service-role per
+  // baseline RLS. We've already proven org ownership above so this is
+  // not a privilege escalation.
+  const admin = createAdminClient();
+  const { data: integration, error: intErr } = await admin
+    .from("bolna_integrations")
+    .select(
+      "agent_id, agent_labels, api_key, from_phone_number, from_phone_labels, enabled",
+    )
+    .eq("organisation_id", parsed.data.organisation_id)
+    .maybeSingle<{
+      agent_id: string;
+      agent_labels: Record<string, unknown> | null;
+      api_key: string;
+      from_phone_number: string | null;
+      from_phone_labels: Record<string, unknown> | null;
+      enabled: boolean;
+    }>();
+
+  if (intErr) return fail(intErr.message);
+  if (!integration) {
+    return fail("Voice agent not configured. Set it up in Settings.");
+  }
+  if (!integration.enabled) {
+    return fail("Voice agent is disabled for this workspace.");
+  }
+
+  // Allow either the configured default agent_id or one explicitly named
+  // in agent_labels. Same rule as the dispatcher uses — keeps the org's
+  // catalogue authoritative.
+  const knownAgents = new Set<string>();
+  if (integration.agent_id) knownAgents.add(integration.agent_id);
+  for (const k of Object.keys(integration.agent_labels ?? {})) {
+    knownAgents.add(k);
+  }
+  if (!knownAgents.has(parsed.data.agent_id)) {
+    return fail("Unknown agent for this workspace.");
+  }
+
+  // Resolve the from-phone: explicit override (must be in the catalogue)
+  // or fall back to the integration default. The catalogue check prevents
+  // an operator passing an arbitrary number that the provider would
+  // happily dial — keeps caller-ID truthful to the org's config.
+  let fromPhone: string | null;
+  if (parsed.data.from_phone) {
+    const knownNumbers = new Set<string>();
+    if (integration.from_phone_number) {
+      knownNumbers.add(integration.from_phone_number);
+    }
+    for (const k of Object.keys(integration.from_phone_labels ?? {})) {
+      knownNumbers.add(k);
+    }
+    if (!knownNumbers.has(parsed.data.from_phone)) {
+      return fail("Unknown dialling number for this workspace.");
+    }
+    fromPhone = parsed.data.from_phone;
+  } else {
+    fromPhone = integration.from_phone_number;
+  }
+
+  let bolnaResult;
+  try {
+    bolnaResult = await initiateBolnaCall({
+      apiKey: integration.api_key,
+      agentId: parsed.data.agent_id,
+      recipientPhone: parsed.data.to_phone,
+      fromPhone,
+      metadata: {
+        organisation_id: parsed.data.organisation_id,
+        is_test: true,
+      },
+    });
+  } catch (err) {
+    const reason =
+      err instanceof BolnaApiError
+        ? err.message
+        : "Failed to reach the voice provider";
+    // Still record the failed attempt so the operator sees it in the
+    // dialog history and isn't left wondering whether it dialed.
+    await admin.from("calls").insert({
+      organisation_id: parsed.data.organisation_id,
+      initiated_by: user.id,
+      to_phone: parsed.data.to_phone,
+      from_phone: fromPhone,
+      agent_id: parsed.data.agent_id,
+      status: "failed" satisfies CallStatus,
+      direction: "outbound",
+      is_test: true,
+      error_message: reason.slice(0, 500),
+    });
+    console.error("[calls] test initiate failed", err);
+    return fail(reason);
+  }
+
+  const { data: callRow, error: insertErr } = await admin
+    .from("calls")
+    .insert({
+      organisation_id: parsed.data.organisation_id,
+      initiated_by: user.id,
+      bolna_call_id: bolnaResult.bolnaCallId,
+      direction: "outbound",
+      to_phone: parsed.data.to_phone,
+      from_phone: fromPhone,
+      agent_id: parsed.data.agent_id,
+      status: normalizeBolnaStatus(bolnaResult.status),
+      is_test: true,
+    })
+    .select(CALL_COLUMNS)
+    .single<Call>();
+
+  if (insertErr) return fail(insertErr.message);
+
+  // Test calls don't appear in /leads (no lead_id) so we skip that
+  // revalidation. Conversations rebuilds via realtime channels and the
+  // initial server fetch on next navigation — no manual revalidate.
+  return ok(callRow);
 }
 
 export async function listCalls(
@@ -202,12 +369,7 @@ export async function listCalls(
     .order("started_at", { ascending: false })
     .range(parsed.data.offset, parsed.data.offset + parsed.data.limit - 1);
 
-  if (parsed.data.lead_id) query = query.eq("lead_id", parsed.data.lead_id);
-  if (parsed.data.status) query = query.eq("status", parsed.data.status);
-  if (parsed.data.direction) query = query.eq("direction", parsed.data.direction);
-  if (parsed.data.agent_id) query = query.eq("agent_id", parsed.data.agent_id);
-  if (parsed.data.from) query = query.gte("started_at", parsed.data.from);
-  if (parsed.data.to) query = query.lte("started_at", parsed.data.to);
+  query = applyCallFilters(query, parsed.data);
 
   const { data, error, count } = await query.returns<Call[]>();
   if (error) return fail(error.message);
@@ -238,20 +400,7 @@ export async function listConversations(
     .order("started_at", { ascending: false })
     .range(parsed.data.offset, parsed.data.offset + parsed.data.limit - 1);
 
-  if (parsed.data.lead_id) query = query.eq("lead_id", parsed.data.lead_id);
-  if (parsed.data.status) query = query.eq("status", parsed.data.status);
-  if (parsed.data.direction) query = query.eq("direction", parsed.data.direction);
-  if (parsed.data.agent_id) query = query.eq("agent_id", parsed.data.agent_id);
-  if (parsed.data.from) query = query.gte("started_at", parsed.data.from);
-  if (parsed.data.to) query = query.lte("started_at", parsed.data.to);
-  if (parsed.data.q && parsed.data.q.trim().length > 0) {
-    const safe = escapeForOrFilter(parsed.data.q);
-    if (safe.length > 0) {
-      query = query.or(
-        `to_phone.ilike.%${safe}%,from_phone.ilike.%${safe}%,bolna_call_id.ilike.%${safe}%`,
-      );
-    }
-  }
+  query = applyCallFilters(query, parsed.data);
 
   const { data, error, count } = await query.returns<CallWithLead[]>();
   if (error) return fail(error.message);

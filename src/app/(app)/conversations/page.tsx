@@ -121,7 +121,14 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <CallExportDialog />
+          <CallExportDialog
+            tableFilters={{
+              direction: filters.direction,
+              status: filters.status,
+              agent_id: filters.agent,
+              q: filters.q,
+            }}
+          />
         </div>
       </header>
 
