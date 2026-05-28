@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { CampaignUploadDialog } from "@/components/app/campaign-upload-dialog";
 import { CampaignsTable } from "@/components/app/campaigns-table";
 import { StatCard } from "@/components/app/stat-card";
+import { TestCallDialog } from "@/components/app/test-call-dialog";
 import { VoiceConfigDialog } from "@/components/app/voice-config-dialog";
 import { listCampaigns } from "@/actions/campaigns";
 import { requireSession } from "@/lib/auth/session";
@@ -93,6 +94,7 @@ export default async function CampaignsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <TestCallDialog organisationId={session.organisation.id} />
           <VoiceConfigDialog organisationId={session.organisation.id} />
           <CampaignUploadDialog organisationId={session.organisation.id} />
         </div>

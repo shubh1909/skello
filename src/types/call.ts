@@ -53,6 +53,10 @@ export interface Call {
   connect_on_whatsapp: boolean | null;
   lead_data: Record<string, unknown>;
   custom_data: Record<string, Record<string, unknown>>;
+  // True when the row came from the Campaigns > Test Call dialog. The
+  // outbound webhook skips lead-merge for these rows and lifetime stat
+  // cards exclude them so demo dials don't pollute real metrics.
+  is_test: boolean;
   created_at: string;
   updated_at: string;
 }

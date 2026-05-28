@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/select";
 import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { LeadDetailSheet } from "@/components/app/lead-detail-sheet";
+import { LeadExportDialog } from "@/components/app/lead-export-dialog";
 import { ReminderDialog } from "@/components/app/reminder-dialog";
 import { WhatsAppDialog } from "@/components/app/whatsapp-dialog";
 import { WhatsAppIcon } from "@/components/brand/whatsapp-icon";
@@ -43,6 +44,7 @@ import { formatDateTime, formatRelative, initialsOf } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useClientNow } from "@/hooks/use-client-now";
 import { useCallsRealtime } from "@/hooks/use-calls-realtime";
+import { ColumnResizeHandle, useColumnWidths } from "@/hooks/use-column-widths";
 import { useInfiniteList } from "@/hooks/use-infinite-list";
 import { useLeadsRealtime } from "@/hooks/use-leads-realtime";
 import type { Lead, LeadIntent } from "@/types/lead";
@@ -85,12 +87,17 @@ function readDynamicValue(lead: Lead, def: LeadFieldDefinition): unknown {
   return bag?.[def.key_path] ?? null;
 }
 
-function renderDynamicValue(value: unknown, type: LeadFieldDefinition["data_type"]): React.ReactNode {
-  if (value === null || value === undefined) return <span className="text-muted-foreground">—</span>;
+function renderDynamicValue(
+  value: unknown,
+  type: LeadFieldDefinition["data_type"],
+): React.ReactNode {
+  if (value === null || value === undefined)
+    return <span className="text-muted-foreground">—</span>;
   if (type === "boolean") {
     const truthy =
       value === true ||
-      (typeof value === "string" && ["true", "yes", "1"].includes(value.toLowerCase()));
+      (typeof value === "string" &&
+        ["true", "yes", "1"].includes(value.toLowerCase()));
     return truthy ? "Yes" : "No";
   }
   if (type === "date") {
@@ -139,6 +146,43 @@ function filterToWire(f: DynamicFilterValue): LeadActivityFilter | null {
   };
 }
 
+// Column-width persistence — keyed per-user per-org in localStorage so each
+// operator can shape the leads table to their own workflow. Defaults below
+// are catalog-aware so call counters render narrower than dates etc. The
+// `useColumnWidths` hook + ColumnResizeHandle live in `hooks/` and are
+// shared with the conversations table.
+const COL_KEY_LEAD = "__lead";
+const COL_KEY_ACTIONS = "__actions";
+const DEFAULT_LEAD_WIDTH = 220;
+const DEFAULT_ACTIONS_WIDTH = 140;
+const DEFAULT_DYNAMIC_WIDTH = 160;
+
+function columnKeyFor(def: LeadFieldDefinition): string {
+  return `${def.source_column}:${def.category ?? ""}:${def.key_path}`;
+}
+
+function defaultWidthFor(def: LeadFieldDefinition): number {
+  if (def.source_column === "column") {
+    switch (def.key_path) {
+      case "inbound_calls":
+      case "outbound_calls":
+      case "total_calls":
+        return 100;
+      case "current_intent":
+        return 110;
+      case "pending_action":
+        return 130;
+      case "last_call_at":
+      case "first_call_at":
+        return 170;
+    }
+  }
+  if (def.data_type === "date") return 170;
+  if (def.data_type === "boolean") return 100;
+  if (def.data_type === "number") return 120;
+  return DEFAULT_DYNAMIC_WIDTH;
+}
+
 interface LeadsActivityTableProps {
   rows: LeadWithCallActivity[];
   total: number;
@@ -162,7 +206,9 @@ interface SortState {
 }
 
 // Map a catalog data_type to the RPC's sort_by `type` field.
-function dataTypeToSortType(t: LeadFieldDefinition["data_type"]): SortState["type"] {
+function dataTypeToSortType(
+  t: LeadFieldDefinition["data_type"],
+): SortState["type"] {
   if (t === "number") return "number";
   if (t === "date") return "date";
   if (t === "boolean") return "boolean";
@@ -186,6 +232,18 @@ export function LeadsActivityTable({
   const [appliedSearch, setAppliedSearch] = React.useState(initialSearch);
   const [filters, setFilters] = React.useState<DynamicFilterValue[]>([]);
   const [sort, setSort] = React.useState<SortState | null>(null);
+
+  // Per-user column widths, persisted in localStorage and scoped by org so
+  // each workspace remembers its own layout. `widthFor` resolves to the
+  // stored value or the catalog-derived default.
+  const { widths, makeResizeStarter } = useColumnWidths(
+    `leads-table-widths:${orgSlug}`,
+  );
+  const widthForLead = widths[COL_KEY_LEAD] ?? DEFAULT_LEAD_WIDTH;
+  const widthForActions = widths[COL_KEY_ACTIONS] ?? DEFAULT_ACTIONS_WIDTH;
+  function widthForCol(def: LeadFieldDefinition): number {
+    return widths[columnKeyFor(def)] ?? defaultWidthFor(def);
+  }
 
   // Visible columns (in display_order) — drive both the <th> and <td> render.
   const visibleColumns = React.useMemo(
@@ -442,9 +500,15 @@ export function LeadsActivityTable({
           </Button>
         </form>
 
-        {filterableDefs.length > 0 ? (
-          <FilterMenu defs={filterableDefs} onAdd={addFilter} />
-        ) : null}
+        <div className="flex items-center gap-2">
+          {filterableDefs.length > 0 ? (
+            <FilterMenu defs={filterableDefs} onAdd={addFilter} />
+          ) : null}
+          <LeadExportDialog
+            tableFilters={wireFilters}
+            tableSearch={appliedSearch}
+          />
+        </div>
       </div>
 
       {filters.length > 0 ? (
@@ -479,24 +543,49 @@ export function LeadsActivityTable({
       ) : (
         <Card className="overflow-hidden p-0">
           <div className="overflow-x-auto">
-            <table
-              className={cn(
-                "w-full text-left text-sm",
-                visibleColumns.length > 3 ? "min-w-[1400px]" : "min-w-[1100px]",
-              )}
-            >
+            <table className="w-full table-fixed text-left text-sm">
+              <colgroup>
+                <col style={{ width: `${widthForLead}px` }} />
+                {visibleColumns.map((def) => (
+                  <col
+                    key={def.id}
+                    style={{ width: `${widthForCol(def)}px` }}
+                  />
+                ))}
+                <col style={{ width: `${widthForActions}px` }} />
+              </colgroup>
               <thead className="border-b border-border/60 bg-muted/30">
                 <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  <th scope="col" className="w-55 px-4 py-4 font-medium">Lead</th>
+                  <th scope="col" className="relative px-4 py-4 font-medium">
+                    Lead
+                    <ColumnResizeHandle
+                      onStart={makeResizeStarter(COL_KEY_LEAD, widthForLead)}
+                    />
+                  </th>
                   {visibleColumns.map((def) => (
                     <ColumnHeader
                       key={def.id}
                       def={def}
                       sort={sort}
                       onToggleSort={toggleSort}
+                      onResizeStart={makeResizeStarter(
+                        columnKeyFor(def),
+                        widthForCol(def),
+                      )}
                     />
                   ))}
-                  <th scope="col" className="px-5 py-4 text-right font-medium">Actions</th>
+                  <th
+                    scope="col"
+                    className="relative px-5 py-4 text-right font-medium"
+                  >
+                    Actions
+                    <ColumnResizeHandle
+                      onStart={makeResizeStarter(
+                        COL_KEY_ACTIONS,
+                        widthForActions,
+                      )}
+                    />
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
@@ -526,7 +615,7 @@ export function LeadsActivityTable({
                           </span>
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-medium leading-tight">
-                              {row.name ?? "Unnamed lead"}
+                              {row.name ?? "Unnamed"}
                             </p>
                             {hasPhone ? (
                               <a
@@ -543,11 +632,6 @@ export function LeadsActivityTable({
                                 No phone
                               </span>
                             )}
-                            {row.interest ? (
-                              <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
-                                {row.interest}
-                              </p>
-                            ) : null}
                           </div>
                         </div>
                       </td>
@@ -561,7 +645,10 @@ export function LeadsActivityTable({
                           onTogglePending={() => onTogglePendingAction(row)}
                         />
                       ))}
-                      <td className="px-5 py-4" onClick={(e) => e.stopPropagation()}>
+                      <td
+                        className="px-5 py-4"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <div className="flex items-center justify-end gap-1.5">
                           <Button
                             size="icon-sm"
@@ -569,7 +656,9 @@ export function LeadsActivityTable({
                             onClick={() => onCall(row)}
                             disabled={isPending || !hasPhone}
                             aria-label="Call"
-                            title={hasPhone ? "Place a call" : "No phone on file"}
+                            title={
+                              hasPhone ? "Place a call" : "No phone on file"
+                            }
                           >
                             <PhoneIcon />
                           </Button>
@@ -579,7 +668,9 @@ export function LeadsActivityTable({
                             onClick={() => openWhatsApp(row)}
                             disabled={!hasPhone}
                             aria-label="WhatsApp"
-                            title={hasPhone ? "Open WhatsApp" : "No phone on file"}
+                            title={
+                              hasPhone ? "Open WhatsApp" : "No phone on file"
+                            }
                           >
                             <WhatsAppIcon className="size-4" />
                           </Button>
@@ -627,6 +718,7 @@ export function LeadsActivityTable({
       <LeadDetailSheet
         lead={detailLead}
         organisationId={organisationId}
+        catalog={catalog}
         open={detailOpen}
         onOpenChange={setDetailOpen}
         pending={pending}
@@ -684,7 +776,8 @@ function FilterChip({
   onChange: (patch: Partial<DynamicFilterValue>) => void;
   onRemove: () => void;
 }) {
-  const opOptions = OP_OPTIONS_BY_TYPE[filter.type] ?? OP_OPTIONS_BY_TYPE.string;
+  const opOptions =
+    OP_OPTIONS_BY_TYPE[filter.type] ?? OP_OPTIONS_BY_TYPE.string;
   // Base UI's <SelectValue/> renders the raw `value` string by default — so
   // without an explicit render function the trigger shows "eq", "neq", etc.
   // We pass a children fn that maps the value back to the option label.
@@ -774,9 +867,7 @@ const OP_OPTIONS_BY_TYPE: Record<
     { value: "lt", label: "before" },
     { value: "gt", label: "after" },
   ],
-  boolean: [
-    { value: "eq", label: "is" },
-  ],
+  boolean: [{ value: "eq", label: "is" }],
   unknown: [
     { value: "contains", label: "contains" },
     { value: "eq", label: "is" },
@@ -874,10 +965,12 @@ function ColumnHeader({
   def,
   sort,
   onToggleSort,
+  onResizeStart,
 }: {
   def: LeadFieldDefinition;
   sort: SortState | null;
   onToggleSort: (def: LeadFieldDefinition) => void;
+  onResizeStart: (e: React.MouseEvent) => void;
 }) {
   const layout = columnLayout(def);
   const label = columnLabel(def);
@@ -894,15 +987,18 @@ function ColumnHeader({
     sort.category === (def.category ?? "");
   const dir = isCurrent ? sort.dir : null;
 
+  const thClass = cn("relative", layout.thClass);
+
   if (!def.sortable) {
     return (
-      <th scope="col" className={layout.thClass} title={def.key_path}>
+      <th scope="col" className={thClass} title={def.key_path}>
         {label}
+        <ColumnResizeHandle onStart={onResizeStart} />
       </th>
     );
   }
   return (
-    <th scope="col" className={layout.thClass} title={def.key_path}>
+    <th scope="col" className={thClass} title={def.key_path}>
       <button
         type="button"
         onClick={() => onToggleSort(def)}
@@ -922,6 +1018,7 @@ function ColumnHeader({
           <ChevronsUpDownIcon className="size-3 opacity-40" />
         )}
       </button>
+      <ColumnResizeHandle onStart={onResizeStart} />
     </th>
   );
 }
@@ -986,31 +1083,32 @@ function ColumnCell({
         const actionPending = Boolean(row.pending_action);
         return (
           <td className={layout.tdClass} onClick={(e) => e.stopPropagation()}>
-            <Badge
-              render={
-                <button
-                  type="button"
-                  onClick={onTogglePending}
-                  disabled={pendingBusy}
-                  aria-pressed={!actionPending}
-                  className="disabled:cursor-not-allowed disabled:opacity-60"
-                />
-              }
-              variant="outline"
-              className={cn(
-                actionPending
-                  ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
-                  : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300",
-              )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onTogglePending();
+              }}
+              disabled={pendingBusy}
+              aria-pressed={!actionPending}
               title={
                 actionPending
                   ? "Click to mark as done"
                   : "Click to reopen action"
               }
+              className={cn(
+                "inline-flex h-5 items-center gap-1 rounded-4xl border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all",
+                "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                "disabled:cursor-not-allowed disabled:opacity-60",
+                "[&>svg]:size-3",
+                actionPending
+                  ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
+                  : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300",
+              )}
             >
               <CheckIcon />
               {actionPending ? "Pending" : "Done"}
-            </Badge>
+            </button>
           </td>
         );
       }

@@ -1,6 +1,14 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import { leadActivityFilterSchema } from "@/lib/validations/lead-activity";
+import {
+  type CustomFieldsCarrier,
+  type DiscoveredCustomField,
+  discoverCustomFields,
+  pickCustomFieldValue,
+  stringifyCustomValue,
+} from "@/lib/csv-custom-fields";
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
 import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
@@ -9,24 +17,55 @@ import { createClient } from "@/lib/supabase/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const rangeSchema = z.enum([
-  "today",
-  "yesterday",
-  "last_week",
-  "last_month",
-  "all",
-]);
+// Per-export row cap. We fetch CAP+1 from the RPC and use the +1 sentinel
+// to flag truncation — same trick as the calls export route — so the
+// dialog can warn that the filter still has more matches than this file
+// contains.
+const EXPORT_CAP = 10_000;
 
-type Range = z.infer<typeof rangeSchema>;
+// Backend contract: the frontend resolves a preset (or custom date inputs)
+// into concrete from/to ISO timestamps and posts them as query params.
+// `range` is carried through for the filename only; the query uses
+// from/to. `null` on either bound means "open" on that side.
+//
+// `filters` and `search` mirror the leads-table state and flow into the
+// `lead_call_activity` RPC via p_filters / p_search. The route does NOT
+// validate the filter set's referential integrity (key existence in the
+// catalog) — the RPC silently drops filters whose `source` it doesn't
+// recognise, and any wrong-type comparison turns into "no rows match"
+// (safer than returning everything by accident).
+const isoDatetimeSchema = z.string().datetime({ offset: true });
+const filtersJsonSchema = z
+  .string()
+  .max(8_000)
+  .transform((raw, ctx) => {
+    try {
+      const parsed = JSON.parse(raw);
+      return z.array(leadActivityFilterSchema).max(20).parse(parsed);
+    } catch (err) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          err instanceof Error
+            ? `Invalid filters JSON: ${err.message}`
+            : "Invalid filters JSON",
+      });
+      return z.NEVER;
+    }
+  });
+const exportInputSchema = z.object({
+  from: isoDatetimeSchema.optional(),
+  to: isoDatetimeSchema.optional(),
+  range: z.string().trim().max(40).optional(),
+  filters: filtersJsonSchema.optional(),
+  search: z.string().trim().max(200).optional(),
+});
 
-// Post-remodel: select what actually exists on `leads`, then join the most
-// recent call's per-conversation snapshot (interest / summary / actionable /
-// recording) for export rows that need it.
-const LEAD_COLUMNS =
-  "id, created_at, updated_at, name, phone, current_intent, source, status, " +
-  "pending_action, notes, city, pincode, lead_data";
-
-interface LeadRow {
+// The RPC `lead_call_activity` returns LeadRow's fields + the per-row call
+// snapshot (latest_call_interest/summary/recording_url) + the aggregate
+// columns. The export only consumes the LeadRow fields here; downstream
+// code doesn't read the aggregates so they're typed as unknown extras.
+interface LeadRow extends CustomFieldsCarrier {
   id: string;
   created_at: string;
   updated_at: string;
@@ -39,7 +78,6 @@ interface LeadRow {
   notes: string | null;
   city: string | null;
   pincode: string | null;
-  lead_data: Record<string, unknown> | null;
 }
 
 // Per-call snapshot fields surfaced into the CSV. recording_url was
@@ -89,29 +127,18 @@ function pickJsonDate(blob: Record<string, unknown> | null, key: string): string
   return d.toISOString();
 }
 
-function rangeBounds(
-  range: Range,
-  now: number,
-): { from: string | null; to: string | null } {
-  const day = 24 * 60 * 60 * 1000;
-  switch (range) {
-    case "today":
-      return { from: new Date(now - day).toISOString(), to: null };
-    case "yesterday":
-      return {
-        from: new Date(now - 2 * day).toISOString(),
-        to: new Date(now - day).toISOString(),
-      };
-    case "last_week":
-      return { from: new Date(now - 7 * day).toISOString(), to: null };
-    case "last_month":
-      return { from: new Date(now - 30 * day).toISOString(), to: null };
-    case "all":
-      return { from: null, to: null };
-  }
-}
+// lead_data keys that already get a dedicated static column above
+// (Interest, Customer Type, Visit Scheduled, Wants WA). Skipping them
+// in discovery prevents the same value from being duplicated as a
+// dynamic column.
+const SURFACED_LEAD_DATA_KEYS = new Set([
+  "interest",
+  "customer_status",
+  "connect_on_whatsapp",
+  "date_and_time_of_visit",
+]);
 
-const CSV_COLUMNS: CsvColumn<ExportRow>[] = [
+const STATIC_CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "ID", value: (l) => l.id },
   { header: "Created At", value: (l) => l.created_at },
   { header: "Name", value: (l) => l.name },
@@ -130,32 +157,76 @@ const CSV_COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Notes", value: (l) => l.notes },
 ];
 
+// Catalog-derived columns slot in just before "Notes" so the trailing
+// free-text column keeps its position at the right edge of the sheet
+// (admins are used to scrolling all the way over for it).
+function buildCsvColumns(
+  fields: DiscoveredCustomField[],
+): CsvColumn<ExportRow>[] {
+  const dynamicColumns: CsvColumn<ExportRow>[] = fields.map((f) => ({
+    header: f.header,
+    value: (row) => stringifyCustomValue(pickCustomFieldValue(row, f)),
+  }));
+  const notesIdx = STATIC_CSV_COLUMNS.findIndex(
+    (col) => col.header === "Notes",
+  );
+  if (notesIdx === -1) {
+    return [...STATIC_CSV_COLUMNS, ...dynamicColumns];
+  }
+  return [
+    ...STATIC_CSV_COLUMNS.slice(0, notesIdx),
+    ...dynamicColumns,
+    ...STATIC_CSV_COLUMNS.slice(notesIdx),
+  ];
+}
+
 export async function GET(request: NextRequest) {
   const session = await requireSession();
 
-  const rawRange = request.nextUrl.searchParams.get("range") ?? "all";
-  const parsedRange = rangeSchema.safeParse(rawRange);
-  if (!parsedRange.success) {
+  const sp = request.nextUrl.searchParams;
+  const parsedInput = exportInputSchema.safeParse({
+    from: sp.get("from") ?? undefined,
+    to: sp.get("to") ?? undefined,
+    range: sp.get("range") ?? undefined,
+    filters: sp.get("filters") ?? undefined,
+    search: sp.get("search") ?? undefined,
+  });
+  if (!parsedInput.success) {
     return NextResponse.json(
-      { error: "Invalid range. Use today, yesterday, last_week, last_month, or all." },
+      {
+        error:
+          parsedInput.error.issues[0]?.message ??
+          "Invalid query. `from`/`to` must be ISO datetimes; `filters` must be JSON.",
+      },
       { status: 400 },
     );
   }
-  const range = parsedRange.data;
+  const { from, to, range, filters, search } = parsedInput.data;
 
   const supabase = await createClient();
-  let query = supabase
-    .from("leads")
-    .select(LEAD_COLUMNS)
-    .eq("organisation_id", session.organisation.id)
-    .order("created_at", { ascending: false })
-    .limit(10_000);
-
-  const { from, to } = rangeBounds(range, Date.now());
-  if (from) query = query.gte("created_at", from);
-  if (to) query = query.lt("created_at", to);
-
-  const { data, error } = await query.returns<LeadRow[]>();
+  // Use the same RPC as the leads table so the export's WHERE clause stays
+  // in lockstep with the in-app filter logic — same catalog awareness for
+  // dynamic JSONB fields, same column allowlist, same date-range handling.
+  // Sort by created_at desc to match the route's pre-RPC behaviour (newest
+  // captured leads first), and pull include_zero_calls=true since exporters
+  // generally want every lead in the window, not just contacted ones.
+  const { data, error } = await supabase.rpc("lead_call_activity", {
+    p_org_id: session.organisation.id,
+    p_org_slug: session.organisation.slug,
+    p_include_zero_calls: true,
+    p_limit: EXPORT_CAP + 1,
+    p_offset: 0,
+    p_filters: filters ?? [],
+    p_sort_by: {
+      source: "column",
+      key: "created_at",
+      dir: "desc",
+      type: "date",
+    },
+    p_search: search ?? null,
+    p_from: from ?? null,
+    p_to: to ?? null,
+  });
   if (error) {
     const message = logSkeloError("EXPORT", "Lead export query failed", {
       organisationId: session.organisation.id,
@@ -164,7 +235,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
-  const leads = data ?? [];
+  // supabase-js generates the RPC return as the row union rather than the
+  // set type, so we widen-then-narrow rather than chaining .returns<T[]>().
+  const raw = (data ?? []) as LeadRow[];
+  const truncated = raw.length > EXPORT_CAP;
+  const leads = truncated ? raw.slice(0, EXPORT_CAP) : raw;
 
   // Batch-fetch the most recent call per lead for the snapshot fields.
   // Single round trip; DISTINCT ON pinned via in-memory pick to avoid an
@@ -190,9 +265,12 @@ export async function GET(request: NextRequest) {
     };
   });
 
-  const body = withBom(toCsv(rows, CSV_COLUMNS));
+  const discoveredFields = discoverCustomFields(leads, SURFACED_LEAD_DATA_KEYS);
+  const csvColumns = buildCsvColumns(discoveredFields);
+  const body = withBom(toCsv(rows, csvColumns));
   const stamp = new Date().toISOString().slice(0, 10);
-  const filename = `skelo-leads-${range}-${stamp}.csv`;
+  const rangeLabel = (range ?? "custom").replace(/[^a-z0-9_-]+/gi, "_");
+  const filename = `skelo-leads-${rangeLabel}-${stamp}.csv`;
 
   return new NextResponse(body, {
     status: 200,
@@ -200,6 +278,11 @@ export async function GET(request: NextRequest) {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="${filename}"`,
       "Cache-Control": "no-store",
+      // Forensic + UX headers: the dialog reads these to surface a toast
+      // confirming row count and (when relevant) the cap being hit.
+      "X-Export-Cap": String(EXPORT_CAP),
+      "X-Export-Rows": String(leads.length),
+      "X-Export-Truncated": truncated ? "true" : "false",
     },
   });
 }

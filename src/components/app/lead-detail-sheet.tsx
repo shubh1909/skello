@@ -56,6 +56,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useClientNow } from "@/hooks/use-client-now";
 import type { Lead, LeadIntent, LeadSource, LeadStatus } from "@/types/lead";
+import type { LeadFieldDefinition } from "@/types/lead-field-definition";
 import type { Reminder } from "@/types/reminder";
 import type { Call, CallStatus } from "@/types/call";
 import type {
@@ -115,6 +116,10 @@ const CALL_STATUS_LABEL: Record<CallStatus, string> = {
 interface LeadDetailSheetProps {
   lead: Lead | null;
   organisationId: string;
+  // Catalog drives the editable form for captured fields — the sheet needs
+  // it to know each field's data_type (string / number / boolean / date /
+  // enum) and which keys are admin-declared vs. orphan extractions.
+  catalog?: LeadFieldDefinition[];
   open: boolean;
   onOpenChange: (next: boolean) => void;
   pending: boolean;
@@ -128,6 +133,7 @@ interface LeadDetailSheetProps {
 export function LeadDetailSheet({
   lead,
   organisationId,
+  catalog,
   open,
   onOpenChange,
   pending,
@@ -146,6 +152,12 @@ export function LeadDetailSheet({
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [form, setForm] = React.useState<EditForm | null>(null);
+  // Captured-fields form runs independently from the main Details edit
+  // form so an operator can tweak a single voice-agent-extracted field
+  // without first entering edit mode on the whole lead record.
+  const [capturedForm, setCapturedForm] = React.useState<CapturedForm | null>(
+    null,
+  );
   const [saving, startSaveTransition] = React.useTransition();
   const [historyMode, setHistoryMode] = React.useState(false);
   const [selectedCallId, setSelectedCallId] = React.useState<string | null>(
@@ -182,6 +194,7 @@ export function LeadDetailSheet({
 
   React.useEffect(() => {
     setForm(null);
+    setCapturedForm(null);
   }, [leadId, open]);
 
   // Hydrate history mode from the URL on open. We intentionally read the URL
@@ -322,6 +335,54 @@ export function LeadDetailSheet({
       }
       toast.success("Lead updated");
       setForm(null);
+      router.refresh();
+    });
+  }
+
+  function startCapturedEdit() {
+    if (!lead) return;
+    const fields = pickEditableCatalog(catalog ?? []);
+    if (fields.length === 0) return;
+    // Prefill the form from the lead's actual JSONB blobs first (canonical
+    // store) and use effective values as a fallback for leads where the
+    // row is empty but call snapshots carry the captured fields. Reading
+    // from lead.custom_data directly (not effectiveCustomData) is important
+    // because effectiveCustomData drops flat ungrouped scalars during its
+    // dedupe pass.
+    setCapturedForm(
+      buildCapturedForm(
+        fields,
+        lead.lead_data ?? null,
+        lead.custom_data ?? null,
+        effectiveLeadData,
+        effectiveCustomData,
+      ),
+    );
+    setError(null);
+  }
+  function cancelCapturedEdit() {
+    setCapturedForm(null);
+  }
+  function onSaveCaptured() {
+    if (!lead || !capturedForm) return;
+    const fields = pickEditableCatalog(catalog ?? []);
+    const patch = diffCapturedForm(capturedForm, fields, lead);
+    if (
+      Object.keys(patch.lead_data_patch ?? {}).length === 0 &&
+      Object.keys(patch.custom_data_patch ?? {}).length === 0
+    ) {
+      toast.info("No changes to save");
+      setCapturedForm(null);
+      return;
+    }
+    startSaveTransition(async () => {
+      const result = await updateLead(lead.id, patch);
+      if (!result.success) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success("Lead updated");
+      setCapturedForm(null);
       router.refresh();
     });
   }
@@ -478,26 +539,32 @@ export function LeadDetailSheet({
                 <Badge variant={INTENT_VARIANT[intent]}>
                   {INTENT_LABEL[intent]}
                 </Badge>
-                <Badge
-                  render={
-                    <button
-                      type="button"
-                      onClick={() => onToggleContacted(lead)}
-                      disabled={pending}
-                      aria-pressed={!isPending}
-                      className="disabled:cursor-not-allowed disabled:opacity-60"
-                    />
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleContacted(lead);
+                  }}
+                  disabled={pending}
+                  aria-pressed={!isPending}
+                  title={
+                    isPending
+                      ? "Click to mark as done"
+                      : "Click to reopen action"
                   }
-                  className={
+                  className={cn(
+                    "inline-flex h-5 items-center gap-1 rounded-4xl border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all",
+                    "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    "disabled:cursor-not-allowed disabled:opacity-60",
+                    "[&>svg]:size-3",
                     isPending
                       ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
-                      : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
-                  }
-                  variant="outline"
+                      : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300",
+                  )}
                 >
                   <CheckIcon />
-                  {isPending ? "Mark as Done" : "Done"}
-                </Badge>
+                  {isPending ? "Pending" : "Done"}
+                </button>
               </div>
             </div>
           </div>
@@ -725,18 +792,74 @@ export function LeadDetailSheet({
             )}
           </section>
 
-          {leadFieldGroups.length > 0 ? (
-            <>
-              <Separator />
-              <section className="space-y-3">
-                <SectionTitle>Captured fields</SectionTitle>
-                <CustomFieldsDisplay
-                  customData={effectiveCustomData}
-                  extraLeadData={leadDataExtras}
-                />
-              </section>
-            </>
-          ) : null}
+          {(() => {
+            const editableCatalog = pickEditableCatalog(catalog ?? []);
+            const isEditingCaptured = capturedForm !== null;
+            const hasAnything =
+              leadFieldGroups.length > 0 || editableCatalog.length > 0;
+            if (!hasAnything) return null;
+            return (
+              <>
+                <Separator />
+                <section className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <SectionTitle>Captured fields</SectionTitle>
+                    {editableCatalog.length > 0 ? (
+                      isEditingCaptured ? (
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={cancelCapturedEdit}
+                            disabled={saving}
+                          >
+                            <XIcon /> Cancel
+                          </Button>
+                          <Button
+                            size="xs"
+                            onClick={onSaveCaptured}
+                            disabled={saving}
+                          >
+                            {saving ? (
+                              <Loader2Icon className="animate-spin" />
+                            ) : (
+                              <CheckIcon />
+                            )}
+                            {saving ? "Saving…" : "Save"}
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={startCapturedEdit}
+                        >
+                          <PencilIcon /> Edit
+                        </Button>
+                      )
+                    ) : null}
+                  </div>
+                  {isEditingCaptured && capturedForm ? (
+                    <CapturedFieldsEditForm
+                      fields={editableCatalog}
+                      form={capturedForm}
+                      onChange={setCapturedForm}
+                      disabled={saving}
+                    />
+                  ) : leadFieldGroups.length > 0 ? (
+                    <CustomFieldsDisplay
+                      customData={effectiveCustomData}
+                      extraLeadData={leadDataExtras}
+                    />
+                  ) : (
+                    <EmptyHint>
+                      No fields captured yet. Click Edit to add values.
+                    </EmptyHint>
+                  )}
+                </section>
+              </>
+            );
+          })()}
 
           <Separator />
 
@@ -1600,6 +1723,331 @@ function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+// ---------------------------------------------------------------------------
+// Captured fields edit form — catalog-driven inline editor for the lead's
+// JSONB-backed fields (lead_data + custom_data). Each catalog row maps to
+// one typed input. The hardcoded keys below are already editable via the
+// main Details form, so the captured-fields editor skips them to avoid
+// the same field appearing twice in the sheet.
+// ---------------------------------------------------------------------------
+
+// lead_data key_paths handled by the main Details form (LeadEditForm).
+// Keep in sync with splitWrites() in src/actions/leads.ts.
+const DETAILS_FORM_LEAD_DATA_KEYS = new Set<string>([
+  "interest",
+  "customer_status",
+  "connect_on_whatsapp",
+  "date_and_time_of_visit",
+]);
+
+function pickEditableCatalog(
+  catalog: LeadFieldDefinition[],
+): LeadFieldDefinition[] {
+  return catalog
+    .filter((d) => {
+      if (d.source_column === "column") return false;
+      if (
+        d.source_column === "lead_data" &&
+        DETAILS_FORM_LEAD_DATA_KEYS.has(d.key_path)
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .slice()
+    .sort((a, b) => {
+      // Category first (empty/"" first so flat lead_data keys lead), then
+      // display_order, then label for stability.
+      const cat = (a.category ?? "").localeCompare(b.category ?? "");
+      if (cat !== 0) return cat;
+      if (a.display_order !== b.display_order) {
+        return a.display_order - b.display_order;
+      }
+      return (a.label ?? a.key_path).localeCompare(b.label ?? b.key_path);
+    });
+}
+
+// Form state is keyed by catalog field id and holds the raw input value
+// (string for text/number/date, "true"/"false"/"" for booleans). Coercion
+// to the wire type happens in diffCapturedForm so the input components
+// stay simple.
+type CapturedForm = Record<string, string>;
+
+function readCatalogValue(
+  def: LeadFieldDefinition,
+  leadData: Record<string, unknown> | null | undefined,
+  customData: Record<string, unknown> | null | undefined,
+): unknown {
+  if (def.source_column === "lead_data") {
+    return leadData?.[def.key_path] ?? null;
+  }
+  if (!customData) return null;
+  const cd = customData as Record<string, unknown>;
+  const category = def.category ?? "";
+  if (category === "") {
+    // Flat top-level scalar — the apply_lead_field_jsonb convention for an
+    // ungrouped category. Don't return objects here; if the key collides
+    // with a named category we'd otherwise hand back a nested bag.
+    const candidate = cd[def.key_path];
+    if (candidate !== null && typeof candidate === "object") return null;
+    return candidate ?? null;
+  }
+  const bag = cd[category];
+  if (!bag || typeof bag !== "object" || Array.isArray(bag)) return null;
+  return (bag as Record<string, unknown>)[def.key_path] ?? null;
+}
+
+function rawToFormValue(value: unknown, def: LeadFieldDefinition): string {
+  if (value === null || value === undefined) return "";
+  if (def.data_type === "boolean") {
+    if (value === true) return "true";
+    if (value === false) return "false";
+    if (typeof value === "string") {
+      const lc = value.toLowerCase();
+      if (["true", "yes", "1"].includes(lc)) return "true";
+      if (["false", "no", "0"].includes(lc)) return "false";
+    }
+    return "";
+  }
+  if (def.data_type === "date") {
+    const iso = typeof value === "string" ? value : null;
+    if (!iso) return "";
+    try {
+      return toLocalDateTimeInputValue(iso);
+    } catch {
+      return "";
+    }
+  }
+  if (def.data_type === "number") {
+    return typeof value === "number" ? String(value) : String(value);
+  }
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function buildCapturedForm(
+  fields: LeadFieldDefinition[],
+  leadData: Record<string, unknown> | null | undefined,
+  customData: Record<string, unknown> | null | undefined,
+  fallbackLeadData?: Record<string, unknown> | null,
+  fallbackCustomData?: Record<string, Record<string, unknown>> | null,
+): CapturedForm {
+  const form: CapturedForm = {};
+  for (const def of fields) {
+    let value = readCatalogValue(def, leadData, customData);
+    if (
+      (value === null || value === "" || value === undefined) &&
+      (fallbackLeadData || fallbackCustomData)
+    ) {
+      // Lead row was empty — fall back to the call-snapshot-backfilled
+      // values so the form prefills with whatever the user actually saw
+      // in the read view.
+      value = readCatalogValue(
+        def,
+        fallbackLeadData ?? null,
+        fallbackCustomData ?? null,
+      );
+    }
+    form[def.id] = rawToFormValue(value, def);
+  }
+  return form;
+}
+
+function formValueToWire(
+  value: string,
+  def: LeadFieldDefinition,
+): string | number | boolean | null {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  if (def.data_type === "boolean") {
+    if (trimmed === "true") return true;
+    if (trimmed === "false") return false;
+    return null;
+  }
+  if (def.data_type === "number") {
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (def.data_type === "date") {
+    try {
+      return fromLocalDateTimeInput(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+interface CapturedFieldsPatch {
+  lead_data_patch?: Record<string, string | number | boolean | null>;
+  custom_data_patch?: Record<
+    string,
+    Record<string, string | number | boolean | null>
+  >;
+}
+
+function diffCapturedForm(
+  form: CapturedForm,
+  fields: LeadFieldDefinition[],
+  lead: Lead,
+): CapturedFieldsPatch {
+  const patch: CapturedFieldsPatch = {};
+  const ld: Record<string, string | number | boolean | null> = {};
+  const cd: Record<string, Record<string, string | number | boolean | null>> = {};
+
+  for (const def of fields) {
+    const raw = form[def.id] ?? "";
+    const next = formValueToWire(raw, def);
+    const currentRaw = readCatalogValue(
+      def,
+      lead.lead_data,
+      lead.custom_data,
+    );
+    const currentWire = formValueToWire(rawToFormValue(currentRaw, def), def);
+    if (next === currentWire) continue;
+    if (def.source_column === "lead_data") {
+      ld[def.key_path] = next;
+    } else {
+      const cat = def.category ?? "";
+      (cd[cat] ??= {})[def.key_path] = next;
+    }
+  }
+
+  if (Object.keys(ld).length > 0) patch.lead_data_patch = ld;
+  if (Object.keys(cd).length > 0) patch.custom_data_patch = cd;
+  return patch;
+}
+
+function humaniseCapturedKey(s: string): string {
+  return s
+    .split(/[_\s-]+/)
+    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
+    .join(" ");
+}
+
+function CapturedFieldsEditForm({
+  fields,
+  form,
+  onChange,
+  disabled,
+}: {
+  fields: LeadFieldDefinition[];
+  form: CapturedForm;
+  onChange: (next: CapturedForm) => void;
+  disabled: boolean;
+}) {
+  function update(id: string, value: string) {
+    onChange({ ...form, [id]: value });
+  }
+
+  // Group by category so nested custom_data fields visually cluster
+  // under their group header, matching the read-only display.
+  const groups = React.useMemo(() => {
+    const map = new Map<string, LeadFieldDefinition[]>();
+    for (const def of fields) {
+      const key =
+        def.source_column === "lead_data" ? "" : (def.category ?? "");
+      const bag = map.get(key) ?? [];
+      bag.push(def);
+      map.set(key, bag);
+    }
+    return Array.from(map.entries());
+  }, [fields]);
+
+  return (
+    <div className="space-y-4">
+      {groups.map(([category, defs]) => (
+        <div key={category || "_ungrouped"} className="space-y-2">
+          {category ? (
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              {humaniseCapturedKey(category)}
+            </div>
+          ) : null}
+          <div className="grid gap-3 rounded-md border border-border/70 bg-card p-3">
+            {defs.map((def) => {
+              const inputId = `cap-${def.id}`;
+              const label = def.label ?? humaniseCapturedKey(def.key_path);
+              const value = form[def.id] ?? "";
+              return (
+                <div key={def.id} className="grid gap-1.5">
+                  <Label htmlFor={inputId} className="text-xs">
+                    {label}
+                  </Label>
+                  {def.data_type === "boolean" ? (
+                    <Select
+                      value={value === "" ? "unset" : value}
+                      onValueChange={(v) =>
+                        update(def.id, !v || v === "unset" ? "" : v)
+                      }
+                      disabled={disabled}
+                    >
+                      <SelectTrigger id={inputId} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="unset">Unset</SelectItem>
+                        <SelectItem value="true">Yes</SelectItem>
+                        <SelectItem value="false">No</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ) : def.data_type === "enum" &&
+                    def.enum_options &&
+                    def.enum_options.length > 0 ? (
+                    <Select
+                      value={value === "" ? "unset" : value}
+                      onValueChange={(v) =>
+                        update(def.id, !v || v === "unset" ? "" : v)
+                      }
+                      disabled={disabled}
+                    >
+                      <SelectTrigger id={inputId} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="unset">Unset</SelectItem>
+                        {def.enum_options.map((opt) => (
+                          <SelectItem key={opt} value={opt}>
+                            {opt}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : def.data_type === "date" ? (
+                    <Input
+                      id={inputId}
+                      type="datetime-local"
+                      value={value}
+                      onChange={(e) => update(def.id, e.target.value)}
+                      disabled={disabled}
+                    />
+                  ) : def.data_type === "number" ? (
+                    <Input
+                      id={inputId}
+                      type="number"
+                      value={value}
+                      onChange={(e) => update(def.id, e.target.value)}
+                      disabled={disabled}
+                      step="any"
+                    />
+                  ) : (
+                    <Input
+                      id={inputId}
+                      value={value}
+                      onChange={(e) => update(def.id, e.target.value)}
+                      disabled={disabled}
+                      maxLength={2000}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,10 @@ import * as React from "react";
 import { DownloadIcon, Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  type ExportScope,
+  ExportScopeChooser,
+} from "@/components/app/export-scope-chooser";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,43 +19,123 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  DEFAULT_EXPORT_RANGE_VALUE,
+  ExportRangePicker,
+  type ExportRangeValue,
+  resolveExportRange,
+} from "@/components/app/export-range-picker";
+import type { LeadActivityFilter } from "@/actions/lead-activity";
 
-type ExportRange = "today" | "yesterday" | "last_week" | "last_month" | "all";
-type ExportFormat = "csv";
+interface LeadExportDialogProps {
+  // The leads table's live wire-format filter chips. Empty when no
+  // filter is active; the dialog suppresses the scope chooser in that
+  // case since "Filtered" and "All" would be identical.
+  tableFilters?: LeadActivityFilter[];
+  // The leads table's currently *applied* (not draft) search query.
+  // Matched to filters: only present in the URL when a filter is on.
+  tableSearch?: string;
+}
 
-const RANGE_OPTIONS: { value: ExportRange; label: string; hint: string }[] = [
-  { value: "today", label: "Today", hint: "Last 24 hours" },
-  { value: "yesterday", label: "Yesterday", hint: "24–48 hours ago" },
-  { value: "last_week", label: "Last week", hint: "Last 7 days" },
-  { value: "last_month", label: "Last month", hint: "Last 30 days" },
-  { value: "all", label: "All time", hint: "Every lead" },
-];
+interface CountState {
+  filtered: number | null;
+  all: number | null;
+  cap: number;
+}
 
-const FORMAT_OPTIONS: { value: ExportFormat; label: string }[] = [
-  { value: "csv", label: "CSV (.csv)" },
-];
+const DEFAULT_COUNT_STATE: CountState = {
+  filtered: null,
+  all: null,
+  cap: 10_000,
+};
 
-export function LeadExportDialog() {
+export function LeadExportDialog({
+  tableFilters,
+  tableSearch,
+}: LeadExportDialogProps) {
   const [open, setOpen] = React.useState(false);
-  const [range, setRange] = React.useState<ExportRange>("last_month");
-  const [format, setFormat] = React.useState<ExportFormat>("csv");
+  const [range, setRange] = React.useState<ExportRangeValue>(
+    DEFAULT_EXPORT_RANGE_VALUE,
+  );
+  const [scope, setScope] = React.useState<ExportScope | null>(null);
+  const [counts, setCounts] = React.useState<CountState>(DEFAULT_COUNT_STATE);
   const [pending, setPending] = React.useState(false);
 
+  const hasActiveFilters =
+    (tableFilters && tableFilters.length > 0) ||
+    Boolean(tableSearch && tableSearch.trim().length > 0);
+
+  // Reset scope + counts when the dialog transitions to open. Lives in
+  // the open handler (not a useEffect) per react-hooks/set-state-in-effect:
+  // synchronous resets driven by user events should be in callbacks, not
+  // mounted-effect bodies. The "Always ask" UX requires a deliberate pick
+  // per export so the stale-state risk would silently bypass the choice.
+  function handleOpenChange(next: boolean) {
+    if (next && !open) {
+      setScope(hasActiveFilters ? null : "all");
+      setCounts(DEFAULT_COUNT_STATE);
+    }
+    setOpen(next);
+  }
+
+  // Debounced count fetch on open + on any param that affects the
+  // returned set (date range, filters, search). 300ms covers the user
+  // tabbing through "From"/"To" date inputs without firing per keystroke.
+  React.useEffect(() => {
+    if (!open) return;
+    const resolved = resolveExportRange(range);
+    if (resolved.error) {
+      // Bad custom range — skip the fetch. Whatever count is currently on
+      // screen lingers until the user corrects the dates and the effect
+      // re-runs with a valid resolution.
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetchCounts({
+        from: resolved.from,
+        to: resolved.to,
+        tableFilters: hasActiveFilters ? tableFilters : undefined,
+        tableSearch: hasActiveFilters ? tableSearch : undefined,
+        signal: controller.signal,
+      }).then((next) => {
+        if (!controller.signal.aborted) setCounts(next);
+      });
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [open, range, tableFilters, tableSearch, hasActiveFilters]);
+
   async function onExport() {
+    if (hasActiveFilters && scope === null) {
+      toast.error("Choose what to export first.");
+      return;
+    }
+    const resolved = resolveExportRange(range);
+    if (resolved.error) {
+      toast.error(resolved.error);
+      return;
+    }
     setPending(true);
     try {
-      const res = await fetch(
-        `/api/leads/export?range=${encodeURIComponent(range)}`,
-        { method: "GET" },
-      );
+      const params = new URLSearchParams();
+      params.set("range", range.preset);
+      if (resolved.from) params.set("from", resolved.from);
+      if (resolved.to) params.set("to", resolved.to);
+      if (scope === "filtered" && hasActiveFilters) {
+        if (tableFilters && tableFilters.length > 0) {
+          params.set("filters", JSON.stringify(tableFilters));
+        }
+        if (tableSearch && tableSearch.trim().length > 0) {
+          params.set("search", tableSearch.trim());
+        }
+      }
+
+      const res = await fetch(`/api/leads/export?${params.toString()}`, {
+        method: "GET",
+      });
       if (!res.ok) {
         const msg = await res
           .json()
@@ -63,7 +147,7 @@ export function LeadExportDialog() {
       const blob = await res.blob();
       const cd = res.headers.get("content-disposition") ?? "";
       const match = /filename="?([^"]+)"?/.exec(cd);
-      const filename = match?.[1] ?? `skelo-leads-${range}.csv`;
+      const filename = match?.[1] ?? `skelo-leads-${range.preset}.csv`;
 
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -74,7 +158,18 @@ export function LeadExportDialog() {
       a.remove();
       URL.revokeObjectURL(url);
 
-      toast.success("Export ready — check your downloads.");
+      const rows = Number.parseInt(res.headers.get("x-export-rows") ?? "", 10);
+      const truncated = res.headers.get("x-export-truncated") === "true";
+      const cap = Number.parseInt(res.headers.get("x-export-cap") ?? "", 10);
+      if (truncated && Number.isFinite(cap)) {
+        toast.warning(
+          `Exported ${cap.toLocaleString()} rows — filter still has more matches.`,
+        );
+      } else {
+        toast.success(
+          `Exported ${(Number.isFinite(rows) ? rows : 0).toLocaleString()} leads.`,
+        );
+      }
       setOpen(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Export failed");
@@ -84,7 +179,7 @@ export function LeadExportDialog() {
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger
         render={
           <Button variant="outline">
@@ -102,50 +197,24 @@ export function LeadExportDialog() {
         </DialogHeader>
 
         <div className="grid gap-4">
-          <div className="grid gap-1.5">
-            <Label htmlFor="export-range">Duration</Label>
-            <Select
-              value={range}
-              onValueChange={(v) => setRange(v as ExportRange)}
-              disabled={pending}
-            >
-              <SelectTrigger id="export-range" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {RANGE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    <div className="flex flex-col">
-                      <span>{o.label}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {o.hint}
-                      </span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <ExportRangePicker
+            value={range}
+            onChange={setRange}
+            disabled={pending}
+            idPrefix="leads-export"
+          />
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="export-format">Format</Label>
-            <Select
-              value={format}
-              onValueChange={(v) => setFormat(v as ExportFormat)}
+          {hasActiveFilters ? (
+            <ExportScopeChooser
+              value={scope}
+              onChange={setScope}
+              filteredCount={counts.filtered}
+              totalCount={counts.all}
+              cap={counts.cap}
+              noun="leads"
               disabled={pending}
-            >
-              <SelectTrigger id="export-format" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {FORMAT_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+            />
+          ) : null}
         </div>
 
         <DialogFooter>
@@ -156,7 +225,11 @@ export function LeadExportDialog() {
           >
             Cancel
           </DialogClose>
-          <Button type="button" onClick={onExport} disabled={pending}>
+          <Button
+            type="button"
+            onClick={onExport}
+            disabled={pending || (hasActiveFilters && scope === null)}
+          >
             {pending ? (
               <Loader2Icon className="animate-spin" />
             ) : (
@@ -168,4 +241,64 @@ export function LeadExportDialog() {
       </DialogContent>
     </Dialog>
   );
+}
+
+interface FetchCountsArgs {
+  from: string | null;
+  to: string | null;
+  tableFilters: LeadActivityFilter[] | undefined;
+  tableSearch: string | undefined;
+  signal: AbortSignal;
+}
+
+async function fetchCounts(args: FetchCountsArgs): Promise<CountState> {
+  // Two parallel requests: one with the table's filters/search applied,
+  // one without. When the dialog is invoked without active filters we
+  // skip the filtered request — both numbers would match.
+  const baseParams = new URLSearchParams();
+  if (args.from) baseParams.set("from", args.from);
+  if (args.to) baseParams.set("to", args.to);
+
+  const filteredParams = new URLSearchParams(baseParams);
+  if (args.tableFilters && args.tableFilters.length > 0) {
+    filteredParams.set("filters", JSON.stringify(args.tableFilters));
+  }
+  if (args.tableSearch && args.tableSearch.trim().length > 0) {
+    filteredParams.set("search", args.tableSearch.trim());
+  }
+
+  const filteredApplied =
+    Boolean(args.tableFilters?.length) ||
+    Boolean(args.tableSearch?.trim().length);
+
+  try {
+    const requests: Promise<Response>[] = [
+      fetch(`/api/leads/export/count?${baseParams.toString()}`, {
+        signal: args.signal,
+      }),
+    ];
+    if (filteredApplied) {
+      requests.push(
+        fetch(`/api/leads/export/count?${filteredParams.toString()}`, {
+          signal: args.signal,
+        }),
+      );
+    }
+    const [allRes, filteredRes] = await Promise.all(requests);
+    const allJson = (await allRes.json()) as { count: number; cap: number };
+    const filteredJson = filteredRes
+      ? ((await filteredRes.json()) as { count: number; cap: number })
+      : null;
+    return {
+      filtered: filteredJson?.count ?? allJson.count,
+      all: allJson.count,
+      cap: allJson.cap,
+    };
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      // Superseded by a newer fetch — preserve current display.
+      return DEFAULT_COUNT_STATE;
+    }
+    return DEFAULT_COUNT_STATE;
+  }
 }

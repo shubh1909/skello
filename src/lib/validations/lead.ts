@@ -53,6 +53,30 @@ export const leadCreateSchema = z.object({
   visit_date_time: z.string().datetime({ offset: true }).nullish(),
 });
 
+// Bag of JSONB-friendly scalars accepted for catalog-driven field patches.
+// JSONB tolerates more, but constraining the type surface keeps the API
+// predictable and prevents accidental nested objects landing in a "string"
+// catalog slot.
+const jsonScalarSchema = z.union([
+  z.string().max(2000),
+  z.number(),
+  z.boolean(),
+  z.null(),
+]);
+
+const fieldKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(120)
+  .regex(/^[a-zA-Z0-9_\-.]+$/, "Invalid field key");
+
+const categoryKeySchema = z
+  .string()
+  .trim()
+  .max(120)
+  .regex(/^[a-zA-Z0-9_\-.]*$/, "Invalid category");
+
 export const leadUpdateSchema = z
   .object({
     name: z.string().trim().min(1).max(200).nullish(),
@@ -70,6 +94,13 @@ export const leadUpdateSchema = z
     customer_status: z.string().trim().max(50).nullish(),
     wants_to_connect_on_watsapp: z.boolean().nullish(),
     visit_date_time: z.string().datetime({ offset: true }).nullish(),
+    // Catalog-driven patches: arbitrary keys defined by the lead-field
+    // catalog. These are merged into the existing JSONB so siblings stay
+    // intact. Keys are character-constrained to keep payloads sane.
+    lead_data_patch: z.record(fieldKeySchema, jsonScalarSchema).optional(),
+    custom_data_patch: z
+      .record(categoryKeySchema, z.record(fieldKeySchema, jsonScalarSchema))
+      .optional(),
   })
   .partial();
 

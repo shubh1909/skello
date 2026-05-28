@@ -5,32 +5,12 @@ import { z } from "zod";
 import { logSkeloError } from "@/lib/errors";
 import { createClient } from "@/lib/supabase/server";
 import { orgSlugSchema } from "@/lib/validations/lead";
+import {
+  leadActivityFilterSchema as filterSchema,
+  leadActivitySortBySchema as sortBySchema,
+} from "@/lib/validations/lead-activity";
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { Lead, LeadIntent } from "@/types/lead";
-
-const filterSchema = z.object({
-  // "column" was added so the catalog-toggled first-class columns
-  // (current_intent, pending_action, inbound_calls, etc.) can be filtered
-  // through the same RPC path as JSONB fields. See migration
-  // 20260520000001 for the allowlist of acceptable column keys.
-  source: z
-    .enum(["lead_data", "custom_data", "column"])
-    .default("lead_data"),
-  category: z.string().max(100).optional(),
-  key: z.string().min(1).max(200),
-  op: z.enum(["eq", "neq", "contains", "lt", "lte", "gt", "gte"]).default("eq"),
-  // jsonb-safe scalar: string | number | boolean. Null isn't sent — empty
-  // filters are dropped client-side.
-  value: z.union([z.string(), z.number(), z.boolean()]),
-});
-
-const sortBySchema = z.object({
-  source: z.enum(["column", "lead_data", "custom_data"]),
-  category: z.string().max(100).optional(),
-  key: z.string().min(1).max(200),
-  dir: z.enum(["asc", "desc"]).default("desc"),
-  type: z.enum(["text", "number", "date", "boolean"]).default("text"),
-});
 
 const inputSchema = z.object({
   org_slug: orgSlugSchema,
@@ -49,8 +29,12 @@ const countInputSchema = z.object({
   search: z.string().trim().max(200).optional(),
 });
 
-export type LeadActivityFilter = z.infer<typeof filterSchema>;
-export type LeadActivitySortBy = z.infer<typeof sortBySchema>;
+// Re-exported for backward compatibility — consumers historically imported
+// these from this module before the schemas moved to lib/validations.
+export type {
+  LeadActivityFilter,
+  LeadActivitySortBy,
+} from "@/lib/validations/lead-activity";
 
 export interface LeadWithCallActivity extends Lead {
   inbound_calls: number;
@@ -234,6 +218,108 @@ export async function listLeadsWithCallActivity(
   const rows = (itemsRes.data ?? []) as ActivityRow[];
   const items = rows.map(buildActivity);
   return ok({ items, total: toNumber(countRes.data) });
+}
+
+export interface LeadCallLifetimeStats {
+  // Distinct leads with at least one call across the org's entire history.
+  contacted_leads: number;
+  inbound_calls: number;
+  outbound_calls: number;
+}
+
+const lifetimeStatsInputSchema = z.object({
+  org_slug: orgSlugSchema,
+});
+
+// Lifetime-wide totals for the leads page stat cards. Intentionally
+// ignores pagination, the include-zero-calls toggle, search, and filter
+// chips — these cards are the "from day one" headline numbers and need
+// to stay stable as the operator scrolls / filters the table below.
+export async function getLeadCallLifetimeStats(
+  input: unknown,
+): Promise<ActionResult<LeadCallLifetimeStats>> {
+  const parsed = lifetimeStatsInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+  const { org_slug } = parsed.data;
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return fail("Not authenticated");
+
+  const { data: org } = await supabase
+    .from("organisations")
+    .select("id, slug")
+    .eq("slug", org_slug)
+    .eq("owner_id", user.id)
+    .maybeSingle<{ id: string; slug: string }>();
+  if (!org) return fail("Forbidden");
+
+  // Three parallel counts:
+  //  - contacted_leads: reuse lead_call_activity_count with no filters and
+  //    include_zero_calls=false, which the RPC defines as "leads with at
+  //    least one call". Test calls don't carry a lead_id (the outbound
+  //    webhook short-circuits the lead merge for them) so they don't
+  //    inflate this number — no extra filter needed here.
+  //  - inbound_calls / outbound_calls: direct counts on the `calls` table
+  //    scoped by direction. Filter `is_test = false` so the headline
+  //    cards reflect real activity only; the calls_org_real_only_idx
+  //    partial index covers this WHERE clause.
+  const [contactedRes, inboundRes, outboundRes] = await Promise.all([
+    supabase.rpc("lead_call_activity_count", {
+      p_org_id: org.id,
+      p_org_slug: org_slug,
+      p_include_zero_calls: false,
+      p_filters: [],
+      p_search: null,
+    }),
+    supabase
+      .from("calls")
+      .select("id", { count: "exact", head: true })
+      .eq("organisation_id", org.id)
+      .eq("direction", "inbound")
+      .eq("is_test", false),
+    supabase
+      .from("calls")
+      .select("id", { count: "exact", head: true })
+      .eq("organisation_id", org.id)
+      .eq("direction", "outbound")
+      .eq("is_test", false),
+  ]);
+
+  if (contactedRes.error) {
+    return fail(
+      logSkeloError("LEAD-READ-FAIL", "Lifetime contacted leads failed", {
+        organisationId: org.id,
+        cause: contactedRes.error,
+      }),
+    );
+  }
+  if (inboundRes.error) {
+    return fail(
+      logSkeloError("LEAD-READ-FAIL", "Lifetime inbound count failed", {
+        organisationId: org.id,
+        cause: inboundRes.error,
+      }),
+    );
+  }
+  if (outboundRes.error) {
+    return fail(
+      logSkeloError("LEAD-READ-FAIL", "Lifetime outbound count failed", {
+        organisationId: org.id,
+        cause: outboundRes.error,
+      }),
+    );
+  }
+
+  return ok({
+    contacted_leads: toNumber(contactedRes.data),
+    inbound_calls: inboundRes.count ?? 0,
+    outbound_calls: outboundRes.count ?? 0,
+  });
 }
 
 export async function countLeadCallActivity(
