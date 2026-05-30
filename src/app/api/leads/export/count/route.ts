@@ -4,6 +4,7 @@ import { z } from "zod";
 import { leadActivityFilterSchema } from "@/lib/validations/lead-activity";
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
+import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -47,6 +48,19 @@ const countInputSchema = z.object({
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
+
+  // 30 count probes per minute per user. Higher cap than the actual
+  // export because the dialog fires this on every range change and
+  // open/close cycle (debounced 300ms client-side).
+  const rl = await checkRateLimit({
+    key: `leads-export-count:user:${session.userId}`,
+    windowSeconds: 60,
+    max: 30,
+  });
+  if (!rl.allowed) {
+    return tooManyRequestsResponse(rl.retryAfterSeconds);
+  }
+
   const sp = request.nextUrl.searchParams;
   const parsed = countInputSchema.safeParse({
     from: sp.get("from") ?? undefined,

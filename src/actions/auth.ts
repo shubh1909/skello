@@ -1,8 +1,13 @@
 "use server";
 
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 
+import {
+  checkRateLimit,
+  clientIpFromHeaders,
+} from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { loginSchema, signupSchema } from "@/lib/validations/auth";
@@ -24,6 +29,22 @@ export async function signUp(
   const parsed = signupSchema.safeParse(input);
   if (!parsed.success) {
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  // 3 signup attempts per hour per IP. Stops automated org-spam scripts
+  // from burning through anon auth.signUp + admin-client org inserts.
+  // Failing open on RPC error is acceptable here — signup is high-cost
+  // (sends an email) so even unlimited bursts are self-limiting.
+  const ip = clientIpFromHeaders(await headers());
+  const rl = await checkRateLimit({
+    key: `signup:ip:${ip}`,
+    windowSeconds: 3600,
+    max: 3,
+  });
+  if (!rl.allowed) {
+    return fail(
+      `Too many signups from this address. Try again in ${rl.retryAfterSeconds}s.`,
+    );
   }
 
   const { email, password, organisationName } = parsed.data;
@@ -68,6 +89,22 @@ export async function login(
   const parsed = loginSchema.safeParse(input);
   if (!parsed.success) {
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  // 5 login attempts per minute per IP. Tight enough to thwart casual
+  // credential stuffing without blocking a human typo loop. Per-IP
+  // (not per-email) because the email is attacker-controlled — keying
+  // on it would let an attacker rotate through usernames freely.
+  const ip = clientIpFromHeaders(await headers());
+  const rl = await checkRateLimit({
+    key: `login:ip:${ip}`,
+    windowSeconds: 60,
+    max: 5,
+  });
+  if (!rl.allowed) {
+    return fail(
+      `Too many login attempts. Try again in ${rl.retryAfterSeconds}s.`,
+    );
   }
 
   const supabase = await createClient();

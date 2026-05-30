@@ -4,6 +4,7 @@ import { z } from "zod";
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
 import { applyCallFilters } from "@/lib/queries/call-filters";
+import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 import {
   callDirectionSchema,
@@ -32,6 +33,18 @@ const countInputSchema = z.object({
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
+
+  // 30 count probes per minute per user. Same envelope as the leads
+  // count endpoint — sized for the dialog's debounced UI flow.
+  const rl = await checkRateLimit({
+    key: `calls-export-count:user:${session.userId}`,
+    windowSeconds: 60,
+    max: 30,
+  });
+  if (!rl.allowed) {
+    return tooManyRequestsResponse(rl.retryAfterSeconds);
+  }
+
   const sp = request.nextUrl.searchParams;
   const parsed = countInputSchema.safeParse({
     from: sp.get("from") ?? undefined,
