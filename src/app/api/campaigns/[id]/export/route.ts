@@ -7,6 +7,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Note: the campaign CSV deliberately omits the call's recording URL.
+// Bolna serves recordings via signed URLs that need no Skelo login to
+// play, and the URLs live for hours. A CSV with the link inside leaks
+// the audio wherever the file gets forwarded (email, shared drives,
+// support tickets). Operators who need playback open the campaign in
+// Skelo and play from the UI, where org membership is enforced.
+// Matches the same omission in /api/leads/export and /api/calls/export.
 interface ExportRow {
   phone: string;
   name: string | null;
@@ -18,7 +25,6 @@ interface ExportRow {
   last_call_started_at: string | null;
   last_call_ended_at: string | null;
   last_call_duration_seconds: number | null;
-  last_call_recording_url: string | null;
 }
 
 const COLUMNS: CsvColumn<ExportRow>[] = [
@@ -32,7 +38,6 @@ const COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Started At", value: (r) => r.last_call_started_at },
   { header: "Ended At", value: (r) => r.last_call_ended_at },
   { header: "Duration (s)", value: (r) => r.last_call_duration_seconds },
-  { header: "Recording", value: (r) => r.last_call_recording_url },
 ];
 
 export async function GET(
@@ -67,7 +72,7 @@ export async function GET(
   const { data, error } = await admin
     .from("campaign_contacts")
     .select(
-      "phone, name, status, attempt, next_attempt_at, last_status, last_error, call:calls!last_call_id(started_at, ended_at, duration_seconds, recording_url)",
+      "phone, name, status, attempt, next_attempt_at, last_status, last_error, call:calls!last_call_id(started_at, ended_at, duration_seconds)",
     )
     .eq("campaign_id", campaign.id)
     .order("phone", { ascending: true })
@@ -84,7 +89,6 @@ export async function GET(
           started_at: string | null;
           ended_at: string | null;
           duration_seconds: number | null;
-          recording_url: string | null;
         } | null;
       }>
     >();
@@ -104,7 +108,6 @@ export async function GET(
     last_call_started_at: r.call?.started_at ?? null,
     last_call_ended_at: r.call?.ended_at ?? null,
     last_call_duration_seconds: r.call?.duration_seconds ?? null,
-    last_call_recording_url: r.call?.recording_url ?? null,
   }));
 
   const body = withBom(toCsv(rows, COLUMNS));

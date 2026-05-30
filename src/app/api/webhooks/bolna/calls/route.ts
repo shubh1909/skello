@@ -6,6 +6,11 @@ import {
   applyCallStatusUpdate,
   mapBolnaStatus,
 } from "@/lib/bolna/status-update";
+import {
+  checkRateLimit,
+  clientIpFromRequest,
+  tooManyRequestsResponse,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,6 +68,29 @@ export async function POST(request: NextRequest) {
   }
   if (!verifySecret(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // 2000 webhook deliveries per minute per source IP. The cap is a
+  // tertiary defence behind the IP allowlist + secret check — it
+  // exists to stop a forged-payload flood from saturating worker
+  // memory if both upstream gates fail, not to throttle legitimate
+  // Bolna traffic. Bolna sends from a small pool of IPs shared by
+  // every tenant, so this bucket is global across orgs: a single
+  // busy outbound campaign at ~30 concurrent calls already produces
+  // ~120 events/min (initiated → ringing → answered → completed),
+  // and several orgs running campaigns in parallel pile on top.
+  // Sizing for ~500 concurrent calls × 4 events/min = 2000 keeps us
+  // well above realistic peak load while still capping the flood.
+  // A tighter cap risks losing status updates / transcripts because
+  // Bolna's 429 retry behaviour isn't guaranteed.
+  const sourceIp = clientIpFromRequest(request);
+  const rl = await checkRateLimit({
+    key: `bolna-calls-webhook:ip:${sourceIp}`,
+    windowSeconds: 60,
+    max: 2000,
+  });
+  if (!rl.allowed) {
+    return tooManyRequestsResponse(rl.retryAfterSeconds);
   }
 
   let body: unknown;

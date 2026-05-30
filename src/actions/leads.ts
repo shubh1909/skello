@@ -173,6 +173,25 @@ async function userOwnsOrgBySlug(
   return data ?? null;
 }
 
+// Resolve the caller's owned organisation without taking a slug from
+// input. Used by read-by-id paths (getLead, deleteLead, etc.) so the
+// lead query can be scoped server-side by `organisation_id` rather
+// than being read first and ownership-checked after — the latter
+// pattern leaks an existence oracle on foreign-org UUIDs.
+async function getUserOwnedOrg(
+  supabase: SupabaseServerClient,
+  userId: string,
+): Promise<{ id: string; slug: string } | null> {
+  const { data } = await supabase
+    .from("organisations")
+    .select("id, slug")
+    .eq("owner_id", userId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle<{ id: string; slug: string }>();
+  return data ?? null;
+}
+
 export async function listLeads(
   input: unknown,
 ): Promise<ActionResult<{ items: Lead[]; total: number }>> {
@@ -245,18 +264,22 @@ export async function getLead(id: unknown): Promise<ActionResult<Lead>> {
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
+  // Resolve the caller's org first, then scope the lead read by both
+  // id AND organisation_id. Foreign-org IDs and truly missing IDs
+  // return the same generic error — no existence oracle on UUIDs from
+  // other tenants.
+  const org = await getUserOwnedOrg(supabase, user.id);
+  if (!org) return fail("Lead not found");
+
   const { data, error } = await supabase
     .from("leads")
     .select(LEAD_COLUMNS)
     .eq("id", parsed.data)
+    .eq("organisation_id", org.id)
     .maybeSingle<LeadRow>();
 
   if (error) return fail(error.message);
   if (!data) return fail("Lead not found");
-
-  if (!data.org_slug) return fail("Forbidden");
-  const org = await userOwnsOrgBySlug(supabase, user.id, data.org_slug);
-  if (!org) return fail("Forbidden");
 
   const snapshots = await fetchLatestCallSnapshots(org.id, [data.id]);
   return ok(buildLead(data, snapshots.get(data.id) ?? null));
@@ -461,20 +484,26 @@ export async function deleteLead(
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
+  const org = await getUserOwnedOrg(supabase, user.id);
+  if (!org) return fail("Lead not found");
+
+  // Scope the existence probe by org so cross-tenant UUIDs collapse
+  // to "Lead not found" rather than "Forbidden".
   const { data: existing, error: fetchErr } = await supabase
     .from("leads")
-    .select("org_slug")
+    .select("id")
     .eq("id", parsed.data)
-    .maybeSingle<{ org_slug: string | null }>();
+    .eq("organisation_id", org.id)
+    .maybeSingle<{ id: string }>();
 
   if (fetchErr) return fail(fetchErr.message);
   if (!existing) return fail("Lead not found");
-  if (!existing.org_slug) return fail("Forbidden");
-  if (!(await userOwnsOrgBySlug(supabase, user.id, existing.org_slug))) {
-    return fail("Forbidden");
-  }
 
-  const { error } = await supabase.from("leads").delete().eq("id", parsed.data);
+  const { error } = await supabase
+    .from("leads")
+    .delete()
+    .eq("id", parsed.data)
+    .eq("organisation_id", org.id);
   if (error) return fail(error.message);
 
   revalidatePath("/leads");
@@ -490,35 +519,36 @@ export async function toggleLeadPendingAction(
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
+  const org = await getUserOwnedOrg(supabase, user.id);
+  if (!org) return fail("Lead not found");
+
   const { data: existing, error: fetchErr } = await supabase
     .from("leads")
-    .select("org_slug, pending_action, organisation_id")
+    .select("pending_action")
     .eq("id", parsed.data)
-    .maybeSingle<{
-      org_slug: string | null;
-      pending_action: boolean | null;
-      organisation_id: string;
-    }>();
+    .eq("organisation_id", org.id)
+    .maybeSingle<{ pending_action: boolean | null }>();
 
   if (fetchErr) return fail(fetchErr.message);
   if (!existing) return fail("Lead not found");
-  if (!existing.org_slug) return fail("Forbidden");
-  if (!(await userOwnsOrgBySlug(supabase, user.id, existing.org_slug))) {
-    return fail("Forbidden");
-  }
 
+  // Admin client write is safe — we've already proven the lead is in
+  // the caller's org above, and the .eq("organisation_id", org.id)
+  // filter below is belt-and-braces against the unlikely case the
+  // user holds another org id in their session.
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("leads")
     .update({ pending_action: !existing.pending_action })
     .eq("id", parsed.data)
+    .eq("organisation_id", org.id)
     .select(LEAD_COLUMNS)
     .single<LeadRow>();
 
   if (error) return fail(error.message);
 
   const snapshots = await fetchLatestCallSnapshots(
-    existing.organisation_id,
+    org.id,
     [data.id],
   );
   revalidatePath("/leads");

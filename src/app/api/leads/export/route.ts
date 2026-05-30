@@ -12,6 +12,7 @@ import {
 import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
 import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
+import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -182,6 +183,19 @@ function buildCsvColumns(
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
+
+  // 5 exports per minute per user. Each request runs the full
+  // lead_call_activity RPC up to 10k rows; the cap keeps a tab-spamming
+  // user from saturating the database without being so tight that the
+  // dialog's count-then-export flow gets blocked.
+  const rl = await checkRateLimit({
+    key: `leads-export:user:${session.userId}`,
+    windowSeconds: 60,
+    max: 5,
+  });
+  if (!rl.allowed) {
+    return tooManyRequestsResponse(rl.retryAfterSeconds);
+  }
 
   const sp = request.nextUrl.searchParams;
   const parsedInput = exportInputSchema.safeParse({

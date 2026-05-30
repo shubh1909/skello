@@ -36,6 +36,23 @@ async function userOwnsOrg(
   return !!data;
 }
 
+// Used by read-by-id paths so the reminder query is scoped to the
+// caller's org BEFORE the row is fetched, avoiding the existence
+// oracle on cross-tenant UUIDs.
+async function getUserOwnedOrg(
+  supabase: SupabaseServerClient,
+  userId: string,
+): Promise<{ id: string } | null> {
+  const { data } = await supabase
+    .from("organisations")
+    .select("id")
+    .eq("owner_id", userId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle<{ id: string }>();
+  return data ?? null;
+}
+
 async function leadBelongsToOrg(
   supabase: SupabaseServerClient,
   leadId: string,
@@ -92,18 +109,18 @@ export async function getReminder(id: unknown): Promise<ActionResult<Reminder>> 
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
+  const org = await getUserOwnedOrg(supabase, user.id);
+  if (!org) return fail("Reminder not found");
+
   const { data, error } = await supabase
     .from("reminders")
     .select("*")
     .eq("id", parsed.data)
+    .eq("organisation_id", org.id)
     .maybeSingle<Reminder>();
 
   if (error) return fail(error.message);
   if (!data) return fail("Reminder not found");
-
-  if (!(await userOwnsOrg(supabase, user.id, data.organisation_id))) {
-    return fail("Forbidden");
-  }
 
   return ok(data);
 }
@@ -166,25 +183,22 @@ export async function updateReminder(
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
+  const org = await getUserOwnedOrg(supabase, user.id);
+  if (!org) return fail("Reminder not found");
+
   const { data: existing, error: fetchErr } = await supabase
     .from("reminders")
-    .select("organisation_id")
+    .select("id")
     .eq("id", idParsed.data)
-    .maybeSingle<{ organisation_id: string }>();
+    .eq("organisation_id", org.id)
+    .maybeSingle<{ id: string }>();
 
   if (fetchErr) return fail(fetchErr.message);
   if (!existing) return fail("Reminder not found");
-  if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id))) {
-    return fail("Forbidden");
-  }
 
   if (
     parsed.data.lead_id &&
-    !(await leadBelongsToOrg(
-      supabase,
-      parsed.data.lead_id,
-      existing.organisation_id,
-    ))
+    !(await leadBelongsToOrg(supabase, parsed.data.lead_id, org.id))
   ) {
     return fail("Lead does not belong to this organisation");
   }
@@ -197,12 +211,13 @@ export async function updateReminder(
     .from("reminders")
     .update(patch)
     .eq("id", idParsed.data)
+    .eq("organisation_id", org.id)
     .select("*")
     .single<Reminder>();
 
   if (error) return fail(error.message);
 
-  revalidatePath(`/organisations/${existing.organisation_id}/reminders`);
+  revalidatePath(`/organisations/${org.id}/reminders`);
   return ok(data);
 }
 
@@ -215,25 +230,27 @@ export async function deleteReminder(
   const { supabase, user } = await requireUser();
   if (!user) return fail("Not authenticated");
 
+  const org = await getUserOwnedOrg(supabase, user.id);
+  if (!org) return fail("Reminder not found");
+
   const { data: existing, error: fetchErr } = await supabase
     .from("reminders")
-    .select("organisation_id")
+    .select("id")
     .eq("id", parsed.data)
-    .maybeSingle<{ organisation_id: string }>();
+    .eq("organisation_id", org.id)
+    .maybeSingle<{ id: string }>();
 
   if (fetchErr) return fail(fetchErr.message);
   if (!existing) return fail("Reminder not found");
-  if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id))) {
-    return fail("Forbidden");
-  }
 
   const { error } = await supabase
     .from("reminders")
     .delete()
-    .eq("id", parsed.data);
+    .eq("id", parsed.data)
+    .eq("organisation_id", org.id);
   if (error) return fail(error.message);
 
-  revalidatePath(`/organisations/${existing.organisation_id}/reminders`);
+  revalidatePath(`/organisations/${org.id}/reminders`);
   return ok({ id: parsed.data });
 }
 

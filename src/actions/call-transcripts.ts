@@ -27,12 +27,25 @@ export async function listCallTranscript(
   } = await supabase.auth.getUser();
   if (!user) return fail("Not authenticated");
 
-  // RLS on call_transcripts scopes to the caller's org, so the filter below is
-  // the only explicit scoping we need. Order is stable via (call_id, seq).
+  // Resolve the caller's org server-side and scope the query by both
+  // call_id AND organisation_id. Previously this relied on RLS alone,
+  // which CLAUDE.md Law #1 explicitly forbids ("RLS is the safety net,
+  // not the primary gate"). Foreign-org call IDs now return an empty
+  // transcript rather than a cross-tenant read.
+  const { data: org } = await supabase
+    .from("organisations")
+    .select("id")
+    .eq("owner_id", user.id)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle<{ id: string }>();
+  if (!org) return ok([]);
+
   const { data, error } = await supabase
     .from("call_transcripts")
     .select(TURN_COLUMNS)
     .eq("call_id", parsed.data.call_id)
+    .eq("organisation_id", org.id)
     .order("seq", { ascending: true })
     .returns<CallTranscriptTurn[]>();
 

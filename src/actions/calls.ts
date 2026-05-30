@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
 import { applyCallFilters } from "@/lib/queries/call-filters";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { callInitiateSchema, callListSchema } from "@/lib/validations/call";
@@ -223,6 +224,22 @@ export async function initiateTestCall(
   if (!user) return fail("Not authenticated");
   if (!(await userOwnsOrg(supabase, user.id, parsed.data.organisation_id))) {
     return fail("Forbidden");
+  }
+
+  // 10 test calls per hour per org. Test calls fire real billable
+  // dials through the voice provider; the cap stops an operator (or
+  // a compromised session inside an org) from running up a bill or
+  // turning the workspace into a robo-dialer. Keyed on org so a
+  // shared workspace doesn't penalise quieter teammates.
+  const rl = await checkRateLimit({
+    key: `test-call:org:${parsed.data.organisation_id}`,
+    windowSeconds: 3600,
+    max: 10,
+  });
+  if (!rl.allowed) {
+    return fail(
+      `Test-call limit reached. Try again in ${rl.retryAfterSeconds}s.`,
+    );
   }
 
   // Admin client only here — bolna_integrations is service-role per

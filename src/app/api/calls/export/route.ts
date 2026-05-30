@@ -11,6 +11,7 @@ import { logSkeloError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/session";
 import { type CsvColumn, toCsv, withBom } from "@/lib/csv";
 import { applyCallFilters } from "@/lib/queries/call-filters";
+import { checkRateLimit, tooManyRequestsResponse } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 import {
   callDirectionSchema,
@@ -161,6 +162,18 @@ function buildCsvColumns(
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
+
+  // 5 exports per minute per user. Same envelope as the leads export
+  // — keeps the database from being saturated by a tab-spamming user
+  // without blocking the dialog's count-then-export flow.
+  const rl = await checkRateLimit({
+    key: `calls-export:user:${session.userId}`,
+    windowSeconds: 60,
+    max: 5,
+  });
+  if (!rl.allowed) {
+    return tooManyRequestsResponse(rl.retryAfterSeconds);
+  }
 
   const sp = request.nextUrl.searchParams;
   const parsedInput = exportInputSchema.safeParse({

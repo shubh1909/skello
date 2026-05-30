@@ -4,6 +4,7 @@ import {
   ArrowLeftIcon,
   Building2Icon,
   ChevronRightIcon,
+  GaugeIcon,
   HeadphonesIcon,
   SlidersHorizontalIcon,
   UserIcon,
@@ -134,6 +135,13 @@ export default async function AdminOrganisationDetailPage({
             title="Lead fields"
             description="Choose which extracted fields appear on the leads table for this workspace."
             icon={<SlidersHorizontalIcon className="size-4" />}
+          />
+          <Separator />
+          <ConfigLink
+            href={`/admin/organisations/${org.id}/dashboard`}
+            title="Dashboard"
+            description="Compose the org's analytics dashboard from a catalogue of stat cards, charts, and pivot tables."
+            icon={<GaugeIcon className="size-4" />}
           />
         </CardContent>
       </Card>
