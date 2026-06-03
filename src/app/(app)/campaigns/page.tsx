@@ -13,7 +13,6 @@ import { TestCallDialog } from "@/components/app/test-call-dialog";
 import { VoiceConfigDialog } from "@/components/app/voice-config-dialog";
 import { listCampaigns } from "@/actions/campaigns";
 import { requireSession } from "@/lib/auth/session";
-import { createAdminClient } from "@/lib/supabase/admin";
 
 export const metadata = { title: "Campaigns · Skelo" };
 
@@ -22,49 +21,11 @@ const INITIAL_PAGE_SIZE = 50;
 export default async function CampaignsPage() {
   const session = await requireSession();
 
-  const [listResult, voiceLabels] = await Promise.all([
-    listCampaigns({
-      organisation_id: session.organisation.id,
-      limit: INITIAL_PAGE_SIZE,
-      offset: 0,
-    }),
-    (async () => {
-      // Build lookup tables so the table can render labels next to each
-      // campaign's chosen agent / dialling number without N+1 queries.
-      const admin = createAdminClient();
-      const { data } = await admin
-        .from("bolna_integrations")
-        .select(
-          "agent_id, agent_labels, from_phone_number, from_phone_labels",
-        )
-        .eq("organisation_id", session.organisation.id)
-        .maybeSingle<{
-          agent_id: string;
-          agent_labels: Record<string, unknown>;
-          from_phone_number: string | null;
-          from_phone_labels: Record<string, unknown>;
-        }>();
-      const agentLabels: Record<string, string> = {};
-      const numberLabels: Record<string, string> = {};
-      if (data) {
-        for (const [k, v] of Object.entries(data.agent_labels ?? {})) {
-          if (typeof v === "string" && v.length > 0) agentLabels[k] = v;
-        }
-        for (const [k, v] of Object.entries(data.from_phone_labels ?? {})) {
-          if (typeof v === "string" && v.length > 0) numberLabels[k] = v;
-        }
-        if (data.agent_id && !agentLabels[data.agent_id]) {
-          agentLabels[data.agent_id] = "Default agent";
-        }
-      }
-      return {
-        defaultAgentId: data?.agent_id ?? null,
-        defaultFromPhone: data?.from_phone_number ?? null,
-        agentLabels,
-        numberLabels,
-      };
-    })(),
-  ]);
+  const listResult = await listCampaigns({
+    organisation_id: session.organisation.id,
+    limit: INITIAL_PAGE_SIZE,
+    offset: 0,
+  });
 
   if (!listResult.success) {
     return (
@@ -132,10 +93,6 @@ export default async function CampaignsPage() {
         total={total}
         pageSize={INITIAL_PAGE_SIZE}
         organisationId={session.organisation.id}
-        defaultAgentId={voiceLabels.defaultAgentId}
-        defaultFromPhone={voiceLabels.defaultFromPhone}
-        agentLabels={voiceLabels.agentLabels}
-        numberLabels={voiceLabels.numberLabels}
       />
     </div>
   );

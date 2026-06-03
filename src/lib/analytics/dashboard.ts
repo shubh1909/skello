@@ -77,8 +77,6 @@ function pickInterest(lead: LeadRow): string | null {
   if (!ld) return null;
   const direct = ld.interest;
   if (typeof direct === "string" && direct.trim()) return direct.trim();
-  const product = ld.product;
-  if (typeof product === "string" && product.trim()) return product.trim();
   return null;
 }
 

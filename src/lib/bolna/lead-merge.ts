@@ -27,7 +27,6 @@ function coerceIntent(raw: string | null): LeadIntent | null {
 const FIRST_CLASS_LEAD_DATA_KEYS = new Set([
   "name",
   "interest",
-  "product",
   "lead_intent",
   "actionable",
   "customer_status",

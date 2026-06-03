@@ -107,7 +107,7 @@ function buildLead(row: LeadRow, snapshot: LatestCallSnapshot | null): Lead {
     custom_data: row.custom_data ?? {},
     // Back-compat fields:
     lead_intent: row.current_intent,
-    interest: pickJsonString(ld, "interest") ?? pickJsonString(ld, "product"),
+    interest: pickJsonString(ld, "interest"),
     customer_status: pickJsonString(ld, "customer_status"),
     wants_to_connect_on_watsapp: pickJsonBool(ld, "connect_on_whatsapp"),
     visit_date_time: pickJsonDate(ld, "date_and_time_of_visit"),

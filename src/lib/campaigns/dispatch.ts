@@ -12,6 +12,14 @@ const PER_CAMPAIGN_LIMIT = 10;
 // telephony provider's concurrent-call ceiling and avoids stampeding their
 // rate limit. 5 workers × ~1s/call = 25 contacts processed in ~5 seconds.
 const CONCURRENCY = 5;
+// A contact is claimed (status='in_flight') the instant we dial it, and only
+// leaves that state when the provider's result webhook lands. If that webhook
+// is lost, delayed, or arrives unmatched, the contact — and therefore the
+// whole campaign — would be stuck "in flight" forever. After this long with
+// no result we give up on the dial and mark it failed so the campaign can
+// finish. Generous on purpose: a real call + its webhook resolve well inside
+// this window.
+const STUCK_IN_FLIGHT_MS = 30 * 60 * 1000;
 
 /**
  * Run `fn` over `items` with a fixed worker pool. Preserves
@@ -39,6 +47,65 @@ async function pooledMap<T, U>(
     Array.from({ length: Math.min(workers, items.length) }, worker),
   );
   return results;
+}
+
+/**
+ * Repair campaigns that the happy-path can't close on its own.
+ *
+ * Two failure modes, both of which leave a campaign showing "Running" forever:
+ *   1. A contact was dialed (status='in_flight') but its result webhook never
+ *      landed (lost / delayed / unmatched). It would sit in_flight forever.
+ *   2. Every contact is already terminal, but the auto-complete trigger — which
+ *      only fires on a contact row *change* — missed the final flip.
+ *
+ * Runs at the top of every dispatch tick. Cheap: both queries are indexed on
+ * status and bounded by the small number of active campaigns.
+ */
+export async function reconcileStuckCampaigns(): Promise<void> {
+  const admin = createAdminClient();
+
+  // (1) Time out abandoned in-flight contacts. updated_at was bumped to the
+  // dial time when we set status='in_flight', so it's our "claimed at" clock.
+  const cutoff = new Date(Date.now() - STUCK_IN_FLIGHT_MS).toISOString();
+  await admin
+    .from("campaign_contacts")
+    .update({
+      status: "failed",
+      last_status: "failed",
+      last_error: "No call result received — timed out",
+    })
+    .eq("status", "in_flight")
+    .lt("updated_at", cutoff);
+
+  // (2) Close out any in_progress campaign with nothing left to do. We can't
+  // express the "no pending/in_flight children" check in one PostgREST call,
+  // so find candidates that still have open contacts and exclude them.
+  const { data: active } = await admin
+    .from("campaigns")
+    .select("id")
+    .eq("status", "in_progress")
+    .returns<{ id: string }[]>();
+  if (!active || active.length === 0) return;
+
+  const { data: openContacts } = await admin
+    .from("campaign_contacts")
+    .select("campaign_id")
+    .in(
+      "campaign_id",
+      active.map((c) => c.id),
+    )
+    .in("status", ["pending", "in_flight"])
+    .returns<{ campaign_id: string }[]>();
+  const stillBusy = new Set((openContacts ?? []).map((r) => r.campaign_id));
+
+  const doneIds = active.map((c) => c.id).filter((id) => !stillBusy.has(id));
+  if (doneIds.length === 0) return;
+
+  await admin
+    .from("campaigns")
+    .update({ status: "completed", completed_at: new Date().toISOString() })
+    .in("id", doneIds)
+    .eq("status", "in_progress");
 }
 
 interface DueContact {
@@ -82,6 +149,11 @@ export interface DispatchResult {
 export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   const admin = createAdminClient();
   const nowIso = new Date().toISOString();
+
+  // Self-heal before dispatching: time out abandoned in-flight contacts and
+  // close out any campaign that has no work left. This is what makes the
+  // progress/status truthful even when a result webhook never arrived.
+  await reconcileStuckCampaigns();
 
   // Flip any 'scheduled' campaigns whose start time has arrived.
   await admin

@@ -40,6 +40,25 @@ const STATUS_LABEL: Record<CampaignStatus, string> = {
   failed: "Failed",
 };
 
+// A campaign's stored status can lag behind reality: the DB only flips
+// in_progress → completed via a trigger, and a lost result webhook can leave
+// it "Running" after every contact has actually resolved. The dispatch tick
+// reconciles this server-side, but the UI shouldn't show a stale "Running"
+// in the meantime. If a campaign reads in_progress yet has nothing left to
+// process (no in-flight calls and the finished count covers every contact),
+// display it as "Wrapping up" so the operator knows it's effectively done.
+function displayStatus(c: Campaign): { label: string; className: string } {
+  const finished = c.succeeded_count + c.failed_count;
+  const allResolved =
+    c.in_flight_count === 0 &&
+    c.total_contacts > 0 &&
+    finished >= c.total_contacts;
+  if (c.status === "in_progress" && allResolved) {
+    return { label: "Wrapping up", className: STATUS_CLASS.completed };
+  }
+  return { label: STATUS_LABEL[c.status], className: STATUS_CLASS[c.status] };
+}
+
 const STATUS_CLASS: Record<CampaignStatus, string> = {
   draft: "bg-muted text-muted-foreground",
   scheduled:
@@ -57,10 +76,6 @@ interface CampaignsTableProps {
   total: number;
   pageSize: number;
   organisationId: string;
-  defaultAgentId: string | null;
-  defaultFromPhone: string | null;
-  agentLabels: Record<string, string>;
-  numberLabels: Record<string, string>;
 }
 
 export function CampaignsTable({
@@ -68,10 +83,6 @@ export function CampaignsTable({
   total,
   pageSize,
   organisationId,
-  defaultAgentId,
-  defaultFromPhone,
-  agentLabels,
-  numberLabels,
 }: CampaignsTableProps) {
   const router = useRouter();
   const now = useClientNow();
@@ -200,7 +211,7 @@ export function CampaignsTable({
     <>
       <Card className="overflow-hidden p-0">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1200px] text-left text-sm">
+          <table className="w-full min-w-260 text-left text-sm">
             <thead className="border-b border-border/60 bg-muted/30">
               <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 <th scope="col" className="px-5 py-4 font-medium">ID</th>
@@ -208,7 +219,6 @@ export function CampaignsTable({
                 <th scope="col" className="px-3 py-4 font-medium">Contacts</th>
                 <th scope="col" className="px-3 py-4 font-medium">Status</th>
                 <th scope="col" className="px-4 py-4 font-medium">Progress</th>
-                <th scope="col" className="px-3 py-4 font-medium">Workflow</th>
                 <th scope="col" className="px-3 py-4 font-medium">Created</th>
                 <th scope="col" className="px-5 py-4 text-right font-medium">
                   Actions
@@ -228,6 +238,18 @@ export function CampaignsTable({
                 const succeededPct = Math.round((c.succeeded_count / total) * 100);
                 const failedPct = Math.round((c.failed_count / total) * 100);
                 const inFlightPct = Math.round((c.in_flight_count / total) * 100);
+                // Whatever's left is "not yet attempted" (pending/queued). The
+                // bar shows it as the empty remainder; we surface the number so
+                // the operator can see how much of the list is still to dial.
+                const finishedCount = c.succeeded_count + c.failed_count;
+                const remainingCount = Math.max(
+                  0,
+                  c.total_contacts - finishedCount - c.in_flight_count,
+                );
+                const donePct = Math.min(
+                  100,
+                  Math.round((finishedCount / total) * 100),
+                );
 
                 return (
                   <tr key={c.id} className="align-top hover:bg-muted/20">
@@ -256,65 +278,61 @@ export function CampaignsTable({
                       <span className="text-muted-foreground"> / {c.total_contacts}</span>
                     </td>
                     <td className="px-3 py-4">
-                      <Badge className={STATUS_CLASS[c.status]}>
-                        {STATUS_LABEL[c.status]}
-                      </Badge>
+                      {(() => {
+                        const s = displayStatus(c);
+                        return <Badge className={s.className}>{s.label}</Badge>;
+                      })()}
                     </td>
-                    <td className="px-4 py-4 min-w-[180px]">
+                    <td className="px-4 py-4 min-w-55">
                       <div className="flex items-center justify-between text-[11px] tabular-nums">
                         <span className="font-medium text-foreground">
-                          {c.succeeded_count}
+                          {donePct}% done
                         </span>
                         <span className="text-muted-foreground">
-                          / {c.total_contacts}
+                          {finishedCount} / {c.total_contacts}
                         </span>
                       </div>
-                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted">
                         <div className="flex h-full">
                           <span
                             className="bg-emerald-500/80"
                             style={{ width: `${succeededPct}%` }}
-                          />
-                          <span
-                            className="bg-blue-500/70"
-                            style={{ width: `${inFlightPct}%` }}
+                            title={`${c.succeeded_count} connected`}
                           />
                           <span
                             className="bg-red-500/70"
                             style={{ width: `${failedPct}%` }}
+                            title={`${c.failed_count} failed`}
+                          />
+                          <span
+                            className="animate-pulse bg-blue-500/70"
+                            style={{ width: `${inFlightPct}%` }}
+                            title={`${c.in_flight_count} dialing`}
                           />
                         </div>
                       </div>
-                      <div className="mt-1 flex flex-wrap gap-x-2 text-[10px] text-muted-foreground">
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] tabular-nums text-muted-foreground">
+                        <span className="inline-flex items-center gap-1">
+                          <span className="size-1.5 rounded-full bg-emerald-500/80" />
+                          {c.succeeded_count} connected
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <span className="size-1.5 rounded-full bg-red-500/70" />
+                          {c.failed_count} failed
+                        </span>
                         {c.in_flight_count > 0 ? (
-                          <span>{c.in_flight_count} in flight</span>
+                          <span className="inline-flex items-center gap-1">
+                            <span className="size-1.5 rounded-full bg-blue-500/70" />
+                            {c.in_flight_count} dialing
+                          </span>
                         ) : null}
-                        {c.failed_count > 0 ? (
-                          <span>{c.failed_count} failed</span>
+                        {remainingCount > 0 ? (
+                          <span className="inline-flex items-center gap-1">
+                            <span className="size-1.5 rounded-full bg-muted-foreground/40" />
+                            {remainingCount} to go
+                          </span>
                         ) : null}
                       </div>
-                    </td>
-                    <td className="px-3 py-4 text-xs text-muted-foreground">
-                      {(() => {
-                        const aid = c.agent_id ?? defaultAgentId;
-                        const aLabel = aid
-                          ? (agentLabels[aid] ?? aid)
-                          : "—";
-                        const phone = c.from_phone_number ?? defaultFromPhone;
-                        const pLabel = phone
-                          ? (numberLabels[phone] ?? phone)
-                          : null;
-                        return (
-                          <span className="flex flex-col gap-0.5">
-                            <span className="text-foreground">{aLabel}</span>
-                            {pLabel ? (
-                              <span className="font-mono text-[10px]">
-                                {pLabel}
-                              </span>
-                            ) : null}
-                          </span>
-                        );
-                      })()}
                     </td>
                     <td
                       className="px-3 py-4 text-xs text-muted-foreground"

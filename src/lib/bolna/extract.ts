@@ -116,12 +116,15 @@ export function extractLead(
     if (typeof field?.confidence === "number") confidence[key] = field.confidence;
   }
 
-  // Accept either `interest` (current agent schema) or `product` (legacy
-  // agents) as the source field — we map both onto the `interest` column.
+  // `interest` is read straight from the agent's `interest` key. We no
+  // longer alias the legacy `product` key onto it — every key is captured
+  // as-is (a stray `product` flows through to custom_data via the generic
+  // path), so consolidating two keys into one column here only hid where
+  // the data actually came from. Keep keys separate; let admins promote.
   return {
     business_slug: pickValue(ld.business_slug),
     name: pickValue(ld.name),
-    interest: pickValue(ld.interest) ?? pickValue(ld.product),
+    interest: pickValue(ld.interest),
     customer_status: pickValue(ld.customer_status),
     lead_intent: pickValue(ld.lead_intent),
     actionable: pickValue(ld.actionable),
