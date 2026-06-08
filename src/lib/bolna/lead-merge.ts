@@ -11,6 +11,7 @@ import type {
   LeadFieldDataType,
   LeadFieldSource,
 } from "@/types/lead-field-definition";
+import type { CallOutcome } from "@/types/call";
 import type { LeadIntent } from "@/types/lead";
 
 const VALID_INTENTS: readonly LeadIntent[] = ["hot", "warm", "cold"];
@@ -33,6 +34,8 @@ const FIRST_CLASS_LEAD_DATA_KEYS = new Set([
   "connect_on_whatsapp",
   "date_and_time_of_visit",
   "business_slug",
+  "call_outcome",
+  "callback_at",
 ]);
 
 // Lead-row fields the admin can lock via lead_field_overrides. The merge
@@ -78,6 +81,8 @@ export interface MergeResult {
     customer_status: string | null;
     visit_scheduled_at: string | null;
     connect_on_whatsapp: boolean | null;
+    call_outcome: CallOutcome | null;
+    requested_callback_at: string | null;
   };
 }
 
@@ -113,6 +118,8 @@ function buildSnapshot(
     customer_status: null,
     visit_scheduled_at: null,
     connect_on_whatsapp: null,
+    call_outcome: null,
+    requested_callback_at: null,
   };
   if (!extractedData) return emptySnapshot;
 
@@ -156,6 +163,8 @@ function buildSnapshot(
     customer_status: extracted.customer_status,
     visit_scheduled_at: extracted.visit_scheduled_at,
     connect_on_whatsapp: extracted.connect_on_whatsapp,
+    call_outcome: extracted.call_outcome,
+    requested_callback_at: extracted.requested_callback_at,
   };
 }
 

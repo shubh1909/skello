@@ -3,6 +3,7 @@ import "server-only";
 import type { BolnaLeadPayload } from "@/lib/bolna/extract";
 import { mapStatus, writeTranscriptTurns } from "@/lib/bolna/inbound";
 import { mergePayloadIntoLead } from "@/lib/bolna/lead-merge";
+import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveOrgByAgentId } from "@/lib/bolna/routing";
 import type { CallStatus, CallTranscriptStatus } from "@/types/call";
@@ -37,13 +38,14 @@ export async function recordOutboundResult(
 
   const { data: existingCall, error: findErr } = await admin
     .from("calls")
-    .select("id, organisation_id, lead_id, is_test")
+    .select("id, organisation_id, lead_id, is_test, campaign_contact_id")
     .eq("bolna_call_id", externalId)
     .maybeSingle<{
       id: string;
       organisation_id: string;
       lead_id: string | null;
       is_test: boolean;
+      campaign_contact_id: string | null;
     }>();
 
   if (findErr) {
@@ -174,6 +176,8 @@ export async function recordOutboundResult(
       customer_status: merge.callSnapshot.customer_status,
       visit_scheduled_at: merge.callSnapshot.visit_scheduled_at,
       connect_on_whatsapp: merge.callSnapshot.connect_on_whatsapp,
+      call_outcome: merge.callSnapshot.call_outcome,
+      requested_callback_at: merge.callSnapshot.requested_callback_at,
       lead_data: merge.callSnapshot.lead_data,
       custom_data: merge.callSnapshot.custom_data,
     })
@@ -193,6 +197,26 @@ export async function recordOutboundResult(
     call.organisation_id,
     transcript,
   );
+
+  // Advance the campaign state machine with the customer's disposition. This is
+  // the ONLY place a `completed` campaign contact is finalised — the disposition
+  // (call_outcome) lives only in the extracted payload, so the status-only
+  // webhook path defers `completed` to here. Best-effort: a failure must not
+  // break the call-record response (the in-flight reconcile is the backstop).
+  if (call.campaign_contact_id) {
+    try {
+      await applyCampaignContactOutcome({
+        contactId: call.campaign_contact_id,
+        callId: call.id,
+        callStatus: status,
+        callOutcome: merge.callSnapshot.call_outcome,
+        requestedCallbackAt: merge.callSnapshot.requested_callback_at,
+      });
+    } catch (err) {
+      console.error("[outbound] campaign outcome failed", err);
+    }
+  }
+
   return {
     callId: call.id,
     transcriptStatus: finalStatus,
@@ -211,6 +235,7 @@ async function bootstrapDirectOutboundCall(
   organisation_id: string;
   lead_id: string | null;
   is_test: boolean;
+  campaign_contact_id: string | null;
 } | null> {
   const agentId = payload.agent_id?.trim();
   if (!agentId) return null;
@@ -241,12 +266,13 @@ async function bootstrapDirectOutboundCall(
       status: "initiated",
       ...(startedAt ? { started_at: startedAt } : {}),
     })
-    .select("id, organisation_id, lead_id, is_test")
+    .select("id, organisation_id, lead_id, is_test, campaign_contact_id")
     .single<{
       id: string;
       organisation_id: string;
       lead_id: string | null;
       is_test: boolean;
+      campaign_contact_id: string | null;
     }>();
 
   if (!insertErr && inserted) return inserted;
@@ -255,7 +281,7 @@ async function bootstrapDirectOutboundCall(
   if (insertErr?.code === "23505") {
     const { data: refetched } = await admin
       .from("calls")
-      .select("id, organisation_id, lead_id, is_test")
+      .select("id, organisation_id, lead_id, is_test, campaign_contact_id")
       .eq("organisation_id", route.organisationId)
       .eq("bolna_call_id", externalId)
       .maybeSingle<{
@@ -263,6 +289,7 @@ async function bootstrapDirectOutboundCall(
         organisation_id: string;
         lead_id: string | null;
         is_test: boolean;
+        campaign_contact_id: string | null;
       }>();
     if (refetched) return refetched;
   }

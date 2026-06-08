@@ -408,6 +408,20 @@ export async function listConversations(
     return fail("Forbidden");
   }
 
+  // Campaign scoping: resolve the campaign's contact ids and constrain the
+  // call query to those. Done here (not in the generic filter helper) so the
+  // helper stays free of an extra round-trip.
+  let campaignContactIds: string[] | undefined;
+  if (parsed.data.campaign_id) {
+    const ids = await resolveCampaignContactIds(
+      supabase,
+      parsed.data.organisation_id,
+      parsed.data.campaign_id,
+    );
+    if (ids === null) return fail("Campaign not found");
+    campaignContactIds = ids;
+  }
+
   const ascending = parsed.data.dir === "asc";
   let query = supabase
     .from("calls")
@@ -417,12 +431,39 @@ export async function listConversations(
     .order("started_at", { ascending: false })
     .range(parsed.data.offset, parsed.data.offset + parsed.data.limit - 1);
 
-  query = applyCallFilters(query, parsed.data);
+  query = applyCallFilters(query, {
+    ...parsed.data,
+    campaign_contact_ids: campaignContactIds,
+  });
 
   const { data, error, count } = await query.returns<CallWithLead[]>();
   if (error) return fail(error.message);
 
   return ok({ items: data ?? [], total: count ?? 0 });
+}
+
+// Resolve a campaign's contact-id set, verifying the campaign belongs to the
+// org. Returns null if the campaign doesn't exist (or is cross-tenant), or a
+// (possibly empty) id array otherwise.
+async function resolveCampaignContactIds(
+  supabase: SupabaseServerClient,
+  organisationId: string,
+  campaignId: string,
+): Promise<string[] | null> {
+  const { data: campaign } = await supabase
+    .from("campaigns")
+    .select("id")
+    .eq("id", campaignId)
+    .eq("organisation_id", organisationId)
+    .maybeSingle<{ id: string }>();
+  if (!campaign) return null;
+
+  const { data: contacts } = await supabase
+    .from("campaign_contacts")
+    .select("id")
+    .eq("campaign_id", campaignId)
+    .returns<{ id: string }[]>();
+  return (contacts ?? []).map((c) => c.id);
 }
 
 export interface ConversationAgentOption {

@@ -11,6 +11,10 @@ export interface CallFilterInput {
   from?: string;
   to?: string;
   q?: string;
+  // Restrict to calls belonging to this set of campaign_contact ids. The
+  // caller resolves a campaign_id → its contact ids; an empty array means
+  // "this campaign has no contacts", which must match zero rows (not all).
+  campaign_contact_ids?: string[];
 }
 
 // PostgREST .or() uses commas as separators and percent for ilike wildcards.
@@ -33,6 +37,16 @@ export function applyCallFilters<
 >(query: Q, f: CallFilterInput): Q {
   let q = query;
   if (f.lead_id) q = q.eq("lead_id", f.lead_id);
+  if (f.campaign_contact_ids) {
+    // Empty set → match nothing. Supabase's .in() with [] already yields no
+    // rows, but a sentinel keeps intent explicit and avoids edge-case quirks.
+    q = q.in(
+      "campaign_contact_id",
+      f.campaign_contact_ids.length > 0
+        ? f.campaign_contact_ids
+        : ["00000000-0000-0000-0000-000000000000"],
+    );
+  }
   if (f.status) q = q.eq("status", f.status);
   if (f.direction) q = q.eq("direction", f.direction);
   if (f.agent_id) q = q.eq("agent_id", f.agent_id);

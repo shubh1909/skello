@@ -4,7 +4,6 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
   DownloadIcon,
-  ListIcon,
   PlayIcon,
   RadioIcon,
   SquareIcon,
@@ -15,7 +14,6 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { CampaignCallLogSheet } from "@/components/app/campaign-call-log-sheet";
 import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import {
   deleteCampaign,
@@ -121,13 +119,6 @@ export function CampaignsTable({
 
   const [pendingId, setPendingId] = React.useState<string | null>(null);
   const [pending, startTransition] = React.useTransition();
-  const [logCampaignId, setLogCampaignId] = React.useState<string | null>(null);
-  const [logOpen, setLogOpen] = React.useState(false);
-
-  function openCallLog(c: Campaign) {
-    setLogCampaignId(c.id);
-    setLogOpen(true);
-  }
 
   function onRunNow(c: Campaign) {
     setPendingId(c.id);
@@ -186,11 +177,6 @@ export function CampaignsTable({
     a.href = `/api/campaigns/${c.id}/export`;
     a.click();
   }
-
-  const logCampaign = React.useMemo(
-    () => items.find((r) => r.id === logCampaignId) ?? null,
-    [items, logCampaignId],
-  );
 
   if (items.length === 0) {
     return (
@@ -252,16 +238,24 @@ export function CampaignsTable({
                 );
 
                 return (
-                  <tr key={c.id} className="align-top hover:bg-muted/20">
+                  <tr
+                    key={c.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open campaign ${c.name}`}
+                    onClick={() => router.push(`/campaigns/${c.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        router.push(`/campaigns/${c.id}`);
+                      }
+                    }}
+                    className="group cursor-pointer align-top transition-colors hover:bg-muted/30 focus-visible:bg-muted/30 focus-visible:outline-none"
+                  >
                     <td className="px-5 py-4">
-                      <button
-                        type="button"
-                        onClick={() => openCallLog(c)}
-                        className="font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
-                        title="Open call log"
-                      >
+                      <span className="font-mono text-xs text-muted-foreground group-hover:text-foreground">
                         {c.id.slice(0, 8)}
-                      </button>
+                      </span>
                       <p className="mt-0.5 line-clamp-1 text-sm font-medium">
                         {c.name}
                       </p>
@@ -341,7 +335,11 @@ export function CampaignsTable({
                       {now === null ? "—" : formatRelative(c.created_at, now)}
                     </td>
                     <td className="px-5 py-4">
-                      <div className="flex items-center justify-end gap-1">
+                      {/* Stop row-navigation when an action button is used. */}
+                      <div
+                        className="flex items-center justify-end gap-1"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <Button
                           size="icon-sm"
                           variant="ghost"
@@ -374,15 +372,6 @@ export function CampaignsTable({
                         <Button
                           size="icon-sm"
                           variant="ghost"
-                          onClick={() => openCallLog(c)}
-                          aria-label="Call log"
-                          title="Call log"
-                        >
-                          <ListIcon />
-                        </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
                           onClick={() => onDelete(c)}
                           disabled={isBusy}
                           aria-label="Delete"
@@ -409,13 +398,6 @@ export function CampaignsTable({
         loadedCount={items.length}
         total={liveTotal}
         sentinelRef={sentinelRef}
-      />
-
-      <CampaignCallLogSheet
-        campaignId={logCampaignId}
-        campaignName={logCampaign?.name ?? null}
-        open={logOpen}
-        onOpenChange={setLogOpen}
       />
     </>
   );

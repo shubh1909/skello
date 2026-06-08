@@ -143,7 +143,14 @@ export async function applyCallStatusUpdate(
     });
   }
 
-  if (data.campaign_contact_id) {
+  // Advance the campaign state machine for TECHNICAL terminal statuses only
+  // (no_answer / busy / failed / canceled). A `completed` call's fate depends
+  // on the customer's disposition (call_outcome), which only arrives on the
+  // final extracted_data webhook — recordOutboundResult() owns that transition.
+  // Finalising `completed` here would race ahead of the disposition and could
+  // mark a "do not call" contact as succeeded. If the extracted event never
+  // lands, the 30-min in-flight reconcile sweeps the contact to failed.
+  if (data.campaign_contact_id && input.status !== "completed") {
     const contactId = data.campaign_contact_id;
     const callId = data.id;
     const status = input.status;

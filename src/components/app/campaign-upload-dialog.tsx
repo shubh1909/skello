@@ -103,13 +103,6 @@ function defaultAgentPlaceholder(c: VoiceConfig | null): string {
   return "Workspace default";
 }
 
-function defaultNumberPlaceholder(c: VoiceConfig | null): string {
-  if (!c) return "Loading…";
-  if (c.dial_numbers.length === 0)
-    return "No numbers — open Manage to add one";
-  return "Workspace default";
-}
-
 interface CampaignUploadDialogProps {
   organisationId: string;
 }
@@ -143,7 +136,9 @@ export function CampaignUploadDialog({
   );
   const [voiceLoading, setVoiceLoading] = React.useState(false);
   const [agentChoice, setAgentChoice] = React.useState<string>("");
-  const [fromPhoneChoice, setFromPhoneChoice] = React.useState<string>("");
+  // Caller-ID rotation pool: the set of numbers this campaign may dial from.
+  // Empty = use the workspace default. 2+ enables rotation under the daily cap.
+  const [fromPhoneChoices, setFromPhoneChoices] = React.useState<string[]>([]);
 
   const loadVoiceConfig = React.useCallback(async () => {
     setVoiceLoading(true);
@@ -161,10 +156,12 @@ export function CampaignUploadDialog({
       const def = res.data.agents.find((a) => a.is_default);
       return def ? def.id : "";
     });
-    setFromPhoneChoice((prev) => {
-      if (prev) return prev;
-      const def = res.data.dial_numbers.find((n) => n.is_default);
-      return def ? def.phone : "";
+    // Default the pool to ALL available numbers — the safe default is to
+    // spread volume across every caller-ID, so a user only narrows to one
+    // deliberately. Only seeds if the user hasn't already chosen.
+    setFromPhoneChoices((prev) => {
+      if (prev.length > 0) return prev;
+      return res.data.dial_numbers.map((n) => n.phone);
     });
   }, [organisationId]);
 
@@ -181,7 +178,7 @@ export function CampaignUploadDialog({
     setRetryOn(DEFAULT_RETRY_TRIGGERS);
     setSubmitting(false);
     setAgentChoice("");
-    setFromPhoneChoice("");
+    setFromPhoneChoices([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -255,6 +252,32 @@ export function CampaignUploadDialog({
     );
   }
 
+  function toggleFromPhone(phone: string) {
+    setFromPhoneChoices((prev) =>
+      prev.includes(phone)
+        ? prev.filter((p) => p !== phone)
+        : [...prev, phone],
+    );
+  }
+
+  // Capacity check: how many numbers are needed to dial the whole list in a day
+  // without any single number exceeding the cap. Drives the warning banner.
+  // The cap is the org's configurable per-number/day ceiling.
+  const dailyCallsPerNumber = voiceConfig?.daily_calls_per_number ?? 200;
+  const numbersAvailable = voiceConfig?.dial_numbers.length ?? 0;
+  // Effective pool = explicit choices, or (if none chosen) the workspace
+  // default = all available numbers.
+  const effectiveNumberCount =
+    fromPhoneChoices.length > 0 ? fromPhoneChoices.length : numbersAvailable;
+  const contactsToDial = parsed?.valid_rows ?? 0;
+  const dailyCapacity = effectiveNumberCount * dailyCallsPerNumber;
+  const overCapacity =
+    contactsToDial > 0 &&
+    effectiveNumberCount > 0 &&
+    contactsToDial > dailyCapacity;
+  // Numbers needed to cover the list comfortably within the daily cap.
+  const numbersRecommended = Math.ceil(contactsToDial / dailyCallsPerNumber);
+
   async function onConfirm() {
     if (!name.trim()) {
       toast.error("Give the campaign a name");
@@ -286,7 +309,11 @@ export function CampaignUploadDialog({
         // Empty string = "use workspace default"; the action treats null/empty
         // identically and falls back at dispatch time.
         agent_id: agentChoice || null,
-        from_phone_number: fromPhoneChoice || null,
+        // Single override only when exactly one number is chosen (a consistent
+        // caller ID for the whole run); otherwise the rotation pool drives it.
+        from_phone_number:
+          fromPhoneChoices.length === 1 ? fromPhoneChoices[0] : null,
+        from_phone_numbers: fromPhoneChoices,
         max_attempts: retries + 1,
         retry_interval_seconds: retryInterval,
         retry_on: retryOn,
@@ -489,97 +516,163 @@ export function CampaignUploadDialog({
                     setAgentChoice("");
                   }
                   const phoneSet = new Set(c.dial_numbers.map((n) => n.phone));
-                  if (fromPhoneChoice && !phoneSet.has(fromPhoneChoice)) {
-                    setFromPhoneChoice("");
-                  }
+                  setFromPhoneChoices((prev) =>
+                    prev.filter((p) => phoneSet.has(p)),
+                  );
                 }}
               />
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1.5">
-                <Label htmlFor="campaign-agent" className="text-xs">
-                  Voice agent
-                </Label>
-                <Select
-                  value={agentChoice}
-                  onValueChange={(v) => setAgentChoice(v ?? "")}
-                  disabled={submitting || voiceLoading}
-                >
-                  <SelectTrigger id="campaign-agent" className="w-full">
-                    {/* Render the label, not the underlying agent_id, so the
-                        trigger reads as a friendly name rather than the
-                        cryptic Bolna id. */}
-                    <SelectValue
-                      placeholder={defaultAgentPlaceholder(voiceConfig)}
-                    >
-                      {(value: unknown) => {
-                        if (typeof value !== "string" || !value) {
-                          return defaultAgentPlaceholder(voiceConfig);
-                        }
-                        const found = voiceConfig?.agents.find(
-                          (a) => a.id === value,
-                        );
-                        return found ? found.label : value;
-                      }}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(voiceConfig?.agents ?? []).map((a) => (
-                      <SelectItem key={a.id} value={a.id}>
-                        <span className="font-medium">{a.label}</span>
-                        {a.is_default ? (
-                          <span className="ml-1 text-[10px] text-muted-foreground">
-                            (default)
-                          </span>
-                        ) : null}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            <div className="grid gap-1.5">
+              <Label htmlFor="campaign-agent" className="text-xs">
+                Voice agent
+              </Label>
+              <Select
+                value={agentChoice}
+                onValueChange={(v) => setAgentChoice(v ?? "")}
+                disabled={submitting || voiceLoading}
+              >
+                <SelectTrigger id="campaign-agent" className="w-full">
+                  {/* Render the label, not the underlying agent_id, so the
+                      trigger reads as a friendly name rather than the
+                      cryptic Bolna id. */}
+                  <SelectValue
+                    placeholder={defaultAgentPlaceholder(voiceConfig)}
+                  >
+                    {(value: unknown) => {
+                      if (typeof value !== "string" || !value) {
+                        return defaultAgentPlaceholder(voiceConfig);
+                      }
+                      const found = voiceConfig?.agents.find(
+                        (a) => a.id === value,
+                      );
+                      return found ? found.label : value;
+                    }}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {(voiceConfig?.agents ?? []).map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      <span className="font-medium">{a.label}</span>
+                      {a.is_default ? (
+                        <span className="ml-1 text-[10px] text-muted-foreground">
+                          (default)
+                        </span>
+                      ) : null}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Caller-ID pool — multi-select. The campaign rotates across the
+                checked numbers under a per-number daily cap to avoid carrier
+                spam-flagging. */}
+            <div className="grid gap-1.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Dialling numbers (caller ID)</Label>
+                {numbersAvailable > 0 ? (
+                  <button
+                    type="button"
+                    disabled={submitting || voiceLoading}
+                    onClick={() =>
+                      setFromPhoneChoices(
+                        fromPhoneChoices.length === numbersAvailable
+                          ? []
+                          : (voiceConfig?.dial_numbers ?? []).map(
+                              (n) => n.phone,
+                            ),
+                      )
+                    }
+                    className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                  >
+                    {fromPhoneChoices.length === numbersAvailable
+                      ? "Clear all"
+                      : "Select all"}
+                  </button>
+                ) : null}
               </div>
 
-              <div className="grid gap-1.5">
-                <Label htmlFor="campaign-from-phone" className="text-xs">
-                  Dialling number
-                </Label>
-                <Select
-                  value={fromPhoneChoice}
-                  onValueChange={(v) => setFromPhoneChoice(v ?? "")}
-                  disabled={submitting || voiceLoading}
-                >
-                  <SelectTrigger id="campaign-from-phone" className="w-full">
-                    <SelectValue
-                      placeholder={defaultNumberPlaceholder(voiceConfig)}
-                    >
-                      {(value: unknown) => {
-                        if (typeof value !== "string" || !value) {
-                          return defaultNumberPlaceholder(voiceConfig);
-                        }
-                        const found = voiceConfig?.dial_numbers.find(
-                          (n) => n.phone === value,
-                        );
-                        return found ? found.label : value;
-                      }}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(voiceConfig?.dial_numbers ?? []).map((n) => (
-                      <SelectItem key={n.phone} value={n.phone}>
-                        <span className="font-medium">{n.label}</span>
-                        <span className="ml-1 font-mono text-[10px] text-muted-foreground">
-                          {n.phone}
+              {numbersAvailable === 0 ? (
+                <p className="rounded-md border border-dashed border-border/60 p-3 text-[11px] text-muted-foreground">
+                  No numbers saved — we&apos;ll use the default caller ID on the
+                  voice agent. Add numbers via{" "}
+                  <span className="font-medium text-foreground">
+                    Manage agents &amp; numbers
+                  </span>{" "}
+                  to enable rotation.
+                </p>
+              ) : (
+                <div className="grid gap-1.5 sm:grid-cols-2">
+                  {(voiceConfig?.dial_numbers ?? []).map((n) => {
+                    const checked = fromPhoneChoices.includes(n.phone);
+                    return (
+                      <button
+                        key={n.phone}
+                        type="button"
+                        onClick={() => toggleFromPhone(n.phone)}
+                        disabled={submitting || voiceLoading}
+                        className={cn(
+                          "flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors",
+                          checked
+                            ? "border-foreground/30 bg-background"
+                            : "border-border/60 bg-transparent text-muted-foreground hover:bg-background",
+                          (submitting || voiceLoading) &&
+                            "cursor-not-allowed opacity-60",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "grid size-3.5 shrink-0 place-items-center rounded border",
+                            checked
+                              ? "border-foreground bg-foreground text-background"
+                              : "border-border",
+                          )}
+                          aria-hidden
+                        >
+                          {checked ? <CheckMark /> : null}
                         </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate font-medium text-foreground">
+                            {n.label}
+                          </span>
+                          <span className="truncate font-mono text-[10px] text-muted-foreground">
+                            {n.phone}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <p className="text-[11px] leading-relaxed text-muted-foreground">
-              Pick a voice agent from your saved list. If you don&apos;t pick
-              a dialling number, we&apos;ll use the default caller ID
-              configured on that voice agent.
-            </p>
+
+            {/* Capacity warning — concrete, driven by the daily cap. Soft: the
+                user can still proceed. */}
+            {overCapacity ? (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+                <span className="font-medium">Spam-risk warning:</span>{" "}
+                {contactsToDial.toLocaleString()} contacts across{" "}
+                {effectiveNumberCount} number
+                {effectiveNumberCount === 1 ? "" : "s"} ≈{" "}
+                {Math.ceil(
+                  contactsToDial / effectiveNumberCount,
+                ).toLocaleString()}{" "}
+                dials/number/day, over the safe limit of{" "}
+                {dailyCallsPerNumber}. Calls beyond the cap are deferred to
+                later days. Add ~
+                {Math.max(0, numbersRecommended - effectiveNumberCount)} more
+                number
+                {numbersRecommended - effectiveNumberCount === 1 ? "" : "s"} (≈
+                {numbersRecommended} total) to finish faster and reduce
+                spam-flagging.
+              </div>
+            ) : (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                {effectiveNumberCount > 1
+                  ? `Rotating across ${effectiveNumberCount} numbers, capped at ${dailyCallsPerNumber} dials/number/day.`
+                  : "Using one caller ID. Select more numbers to rotate and reduce spam-flagging on large lists."}
+              </p>
+            )}
           </div>
 
           <div className="grid gap-2">

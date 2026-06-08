@@ -1,3 +1,5 @@
+import type { CallOutcome } from "./call";
+
 export type CampaignStatus =
   | "draft"
   | "scheduled"
@@ -28,11 +30,17 @@ export interface Campaign {
   file_name: string | null;
   agent_id: string | null;
   from_phone_number: string | null;
+  // Caller-ID rotation pool. Empty → fall back to from_phone_number then the
+  // org default. The dispatcher round-robins across these under a daily cap.
+  from_phone_numbers: string[];
   status: CampaignStatus;
   scheduled_at: string | null;
   started_at: string | null;
   completed_at: string | null;
   max_attempts: number;
+  // Max customer-requested callbacks ("call me later") honored per contact,
+  // independent of max_attempts. 0 disables callback honoring.
+  max_callbacks: number;
   retry_interval_seconds: number;
   retry_on: CampaignRetryTrigger[];
   total_contacts: number;
@@ -54,9 +62,13 @@ export interface CampaignContact {
   metadata: Record<string, unknown>;
   status: CampaignContactStatus;
   attempt: number;
+  // Honored callbacks so far — a budget separate from `attempt`.
+  callback_count: number;
   next_attempt_at: string | null;
   last_call_id: string | null;
   last_status: string | null;
+  // Most recent semantic disposition (mirrors calls.call_outcome).
+  last_outcome: CallOutcome | null;
   last_error: string | null;
   lead_id: string | null;
   created_at: string;

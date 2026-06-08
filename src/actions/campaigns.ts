@@ -19,7 +19,7 @@ import type { Campaign, CampaignContact } from "@/types/campaign";
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const CAMPAIGN_COLUMNS =
-  "id, organisation_id, created_by, name, file_name, agent_id, from_phone_number, status, scheduled_at, started_at, completed_at, max_attempts, retry_interval_seconds, retry_on, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
+  "id, organisation_id, created_by, name, file_name, agent_id, from_phone_number, from_phone_numbers, status, scheduled_at, started_at, completed_at, max_attempts, max_callbacks, retry_interval_seconds, retry_on, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -124,6 +124,17 @@ export async function createCampaign(
     return fail("Selected dialling number is not in this workspace's saved numbers");
   }
 
+  // Validate the rotation pool: every chosen number must be a saved workspace
+  // number. De-dupe while preserving order. An empty pool is fine — dispatch
+  // falls back to from_phone_number then the org default.
+  const pool: string[] = [];
+  for (const n of parsed.data.from_phone_numbers) {
+    if (!allowedNumbers.has(n)) {
+      return fail(`Dialling number ${n} is not in this workspace's saved numbers`);
+    }
+    if (!pool.includes(n)) pool.push(n);
+  }
+
   const isRunNow = parsed.data.schedule_mode === "now";
   const scheduledAt = isRunNow ? null : parsed.data.scheduled_at!;
 
@@ -136,6 +147,7 @@ export async function createCampaign(
       file_name: parsed.data.file_name ?? null,
       agent_id: parsed.data.agent_id,
       from_phone_number: parsed.data.from_phone_number,
+      from_phone_numbers: pool,
       status: isRunNow ? "in_progress" : "scheduled",
       scheduled_at: scheduledAt,
       started_at: isRunNow ? new Date().toISOString() : null,
@@ -422,4 +434,249 @@ export async function getCampaignCalls(
 
   if (error) return fail(error.message);
   return ok(data ?? []);
+}
+
+// Fetch a single campaign by id, org-scoped. Powers the detail page header.
+export async function getCampaign(
+  input: unknown,
+): Promise<ActionResult<Campaign>> {
+  const parsed = campaignIdSchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid id");
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("campaigns")
+    .select(CAMPAIGN_COLUMNS)
+    .eq("id", parsed.data.id)
+    .maybeSingle<Campaign>();
+  if (error) return fail(error.message);
+  if (!data) return fail("Campaign not found");
+  if (!(await userOwnsOrg(supabase, user.id, data.organisation_id))) {
+    return fail("Forbidden");
+  }
+  return ok(data);
+}
+
+export interface CampaignStats {
+  // Contact-level funnel.
+  totalContacts: number;
+  attemptedContacts: number; // contacts with at least one dial
+  connectedContacts: number; // contacts whose latest outcome is completed
+  succeededContacts: number; // contact.status = 'succeeded'
+  failedContacts: number; // contact.status = 'failed'
+  pendingContacts: number; // still pending / in flight
+  connectRatePct: number; // connected / attempted
+  successRatePct: number; // succeeded / total
+  avgAttemptsPerContact: number;
+  // Call-level outcomes (every dial, all attempts).
+  totalCalls: number;
+  outcomes: Array<{ status: CallStatus; count: number }>;
+  // Talk time (seconds). Cost isn't tracked on calls, so it's omitted.
+  totalTalkSeconds: number;
+  avgTalkSeconds: number; // over connected calls
+  longestTalkSeconds: number;
+  // Dials per day across the run (YYYY-MM-DD → count), ascending.
+  callsPerDay: Array<{ date: string; count: number }>;
+  // Per caller-ID breakdown so operators can see how rotation spread the load
+  // and which numbers connect best. `dailyCap` is the same per-number/day
+  // ceiling the dispatcher enforces.
+  dailyCap: number;
+  byNumber: Array<{
+    phone: string;
+    label: string;
+    totalCalls: number;
+    connected: number;
+    connectRatePct: number;
+    callsToday: number; // dials in the last 24h (against the cap)
+  }>;
+}
+
+// Fallback when an integration row predates the configurable cap column.
+// Matches DEFAULT_DAILY_CALLS_PER_NUMBER in lib/campaigns/dispatch.ts.
+const DEFAULT_DAILY_CALLS_PER_NUMBER = 200;
+
+const ALL_CALL_STATUSES: CallStatus[] = [
+  "completed",
+  "no_answer",
+  "busy",
+  "failed",
+  "canceled",
+  "in_progress",
+  "ringing",
+  "initiated",
+];
+
+export async function getCampaignStats(
+  input: unknown,
+): Promise<ActionResult<CampaignStats>> {
+  const parsed = campaignIdSchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid id");
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+
+  const admin = createAdminClient();
+  const { data: campaign } = await admin
+    .from("campaigns")
+    .select("id, organisation_id")
+    .eq("id", parsed.data.id)
+    .maybeSingle<{ id: string; organisation_id: string }>();
+  if (!campaign) return fail("Campaign not found");
+  if (!(await userOwnsOrg(supabase, user.id, campaign.organisation_id))) {
+    return fail("Forbidden");
+  }
+
+  // Caller-ID labels + the org's daily cap for the per-number breakdown.
+  const { data: integration } = await admin
+    .from("bolna_integrations")
+    .select("from_phone_labels, daily_calls_per_number")
+    .eq("organisation_id", campaign.organisation_id)
+    .maybeSingle<{
+      from_phone_labels: Record<string, unknown> | null;
+      daily_calls_per_number: number | null;
+    }>();
+  const numberLabels = integration?.from_phone_labels ?? {};
+  const dailyCap =
+    integration?.daily_calls_per_number ?? DEFAULT_DAILY_CALLS_PER_NUMBER;
+
+  // Contacts (small per campaign — bounded by CSV upload).
+  const { data: contacts, error: cErr } = await admin
+    .from("campaign_contacts")
+    .select("id, status, attempt, last_status")
+    .eq("campaign_id", campaign.id)
+    .returns<
+      Array<{
+        id: string;
+        status: string;
+        attempt: number;
+        last_status: string | null;
+      }>
+    >();
+  if (cErr) return fail(cErr.message);
+
+  const totalContacts = contacts?.length ?? 0;
+  let attemptedContacts = 0;
+  let connectedContacts = 0;
+  let succeededContacts = 0;
+  let failedContacts = 0;
+  let pendingContacts = 0;
+  let attemptSum = 0;
+  for (const c of contacts ?? []) {
+    attemptSum += c.attempt;
+    if (c.attempt > 0) attemptedContacts += 1;
+    if (c.last_status === "completed") connectedContacts += 1;
+    if (c.status === "succeeded") succeededContacts += 1;
+    else if (c.status === "failed") failedContacts += 1;
+    else if (c.status === "pending" || c.status === "in_flight")
+      pendingContacts += 1;
+  }
+
+  // Calls (every dial). Bounded by attempts × contacts; fine to pull for
+  // aggregation. Exclude test rows defensively (campaign calls never are).
+  const ids = (contacts ?? []).map((c) => c.id);
+  const calls = ids.length
+    ? (
+        await admin
+          .from("calls")
+          .select("status, duration_seconds, started_at, from_phone")
+          .in("campaign_contact_id", ids)
+          .eq("is_test", false)
+          .returns<
+            Array<{
+              status: CallStatus;
+              duration_seconds: number | null;
+              started_at: string;
+              from_phone: string | null;
+            }>
+          >()
+      ).data ?? []
+    : [];
+
+  const outcomeCounts = new Map<CallStatus, number>();
+  const perDay = new Map<string, number>();
+  // Per caller-ID tallies.
+  const numberAgg = new Map<
+    string,
+    { total: number; connected: number; today: number }
+  >();
+  const since24h = Date.now() - 24 * 60 * 60 * 1000;
+  let totalTalkSeconds = 0;
+  let connectedCalls = 0;
+  let longestTalkSeconds = 0;
+  for (const call of calls) {
+    outcomeCounts.set(call.status, (outcomeCounts.get(call.status) ?? 0) + 1);
+    const day = call.started_at.slice(0, 10);
+    perDay.set(day, (perDay.get(day) ?? 0) + 1);
+    if (call.from_phone) {
+      const agg = numberAgg.get(call.from_phone) ?? {
+        total: 0,
+        connected: 0,
+        today: 0,
+      };
+      agg.total += 1;
+      if (call.status === "completed") agg.connected += 1;
+      if (new Date(call.started_at).getTime() >= since24h) agg.today += 1;
+      numberAgg.set(call.from_phone, agg);
+    }
+    if (call.status === "completed") {
+      const d = call.duration_seconds ?? 0;
+      totalTalkSeconds += d;
+      connectedCalls += 1;
+      if (d > longestTalkSeconds) longestTalkSeconds = d;
+    }
+  }
+
+  const outcomes = ALL_CALL_STATUSES.map((status) => ({
+    status,
+    count: outcomeCounts.get(status) ?? 0,
+  })).filter((o) => o.count > 0);
+
+  const callsPerDay = Array.from(perDay.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, count]) => ({ date, count }));
+
+  const pct = (num: number, den: number) =>
+    den > 0 ? Math.round((num / den) * 1000) / 10 : 0;
+
+  const labelFor = (phone: string): string => {
+    const raw = numberLabels[phone];
+    return typeof raw === "string" && raw.trim() ? raw : phone;
+  };
+  const byNumber = Array.from(numberAgg.entries())
+    .map(([phone, agg]) => ({
+      phone,
+      label: labelFor(phone),
+      totalCalls: agg.total,
+      connected: agg.connected,
+      connectRatePct: pct(agg.connected, agg.total),
+      callsToday: agg.today,
+    }))
+    .sort((a, b) => b.totalCalls - a.totalCalls);
+
+  return ok({
+    totalContacts,
+    attemptedContacts,
+    connectedContacts,
+    succeededContacts,
+    failedContacts,
+    pendingContacts,
+    connectRatePct: pct(connectedContacts, attemptedContacts),
+    successRatePct: pct(succeededContacts, totalContacts),
+    avgAttemptsPerContact:
+      totalContacts > 0
+        ? Math.round((attemptSum / totalContacts) * 10) / 10
+        : 0,
+    totalCalls: calls.length,
+    outcomes,
+    totalTalkSeconds,
+    avgTalkSeconds:
+      connectedCalls > 0 ? Math.round(totalTalkSeconds / connectedCalls) : 0,
+    longestTalkSeconds,
+    callsPerDay,
+    dailyCap,
+    byNumber,
+  });
 }

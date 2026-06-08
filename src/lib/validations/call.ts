@@ -32,6 +32,9 @@ export const callListSchema = z.object({
   limit: z.number().int().min(1).max(500).default(50),
   offset: z.number().int().min(0).default(0),
   lead_id: z.string().uuid().optional(),
+  // When set, restrict to calls placed for this campaign's contacts. The
+  // action resolves it to the campaign's contact-id set before querying.
+  campaign_id: z.string().uuid().optional(),
   status: callStatusSchema.optional(),
   direction: callDirectionSchema.optional(),
   agent_id: z.string().min(1).max(200).optional(),
