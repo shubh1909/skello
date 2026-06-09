@@ -15,12 +15,15 @@ interface IntegrationRow {
   api_key: string;
   from_phone_number: string | null;
   enabled: boolean;
+  daily_calls_per_number: number | null;
   created_at: string;
   updated_at: string;
 }
 
+const DEFAULT_DAILY_CALLS_PER_NUMBER = 200;
+
 const INTEGRATION_COLUMNS =
-  "organisation_id, agent_id, api_key, from_phone_number, enabled, created_at, updated_at";
+  "organisation_id, agent_id, api_key, from_phone_number, enabled, daily_calls_per_number, created_at, updated_at";
 
 function toPublic(row: IntegrationRow): BolnaIntegration {
   return {
@@ -28,6 +31,8 @@ function toPublic(row: IntegrationRow): BolnaIntegration {
     agent_id: row.agent_id,
     from_phone_number: row.from_phone_number,
     enabled: row.enabled,
+    daily_calls_per_number:
+      row.daily_calls_per_number ?? DEFAULT_DAILY_CALLS_PER_NUMBER,
     created_at: row.created_at,
     updated_at: row.updated_at,
     api_key_last4: row.api_key.slice(-4),
@@ -42,11 +47,14 @@ const fromPhone = z
   .nullish()
   .transform((v) => (v && v.length > 0 ? v : null));
 
+const dailyCap = z.number().int().min(1).max(10000);
+
 const upsertSchema = z.object({
   organisation_id: z.string().uuid(),
   agent_id: z.string().trim().min(1).max(200),
   api_key: z.string().trim().min(1).max(500),
   from_phone_number: fromPhone,
+  daily_calls_per_number: dailyCap.default(200),
   enabled: z.boolean().default(true),
 });
 
@@ -55,6 +63,7 @@ const updateSchema = z.object({
   agent_id: z.string().trim().min(1).max(200).optional(),
   api_key: z.string().trim().min(1).max(500).optional(),
   from_phone_number: fromPhone.optional(),
+  daily_calls_per_number: dailyCap.optional(),
   enabled: z.boolean().optional(),
 });
 
@@ -94,6 +103,7 @@ export async function upsertVoiceAgentAdmin(
       agent_id: parsed.data.agent_id,
       api_key: parsed.data.api_key,
       from_phone_number: parsed.data.from_phone_number,
+      daily_calls_per_number: parsed.data.daily_calls_per_number,
       enabled: parsed.data.enabled,
     })
     .select(INTEGRATION_COLUMNS)

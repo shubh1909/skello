@@ -113,13 +113,23 @@ Use a fresh value for each secret in each environment. Don't reuse one string ac
 
 ## Migration strategy
 
-After the cleanup, `supabase/migrations/` contains exactly three files:
+The foundation files (apply first, in order):
 
 | File | Purpose |
 | --- | --- |
 | `20260507000000_baseline_schema.sql` | Consolidated schema through 2026-05-05 — every table, enum, RLS policy, trigger, index, and RPC needed before campaigns. **Idempotent** — `IF NOT EXISTS` on every CREATE, drop-then-recreate on every policy. Safe to re-apply. |
 | `20260508000000_campaigns.sql` | Campaigns + campaign_contacts tables, the `calls.campaign_contact_id` FK, RLS, the counter trigger, and the realtime publication entries. |
 | `20260508000001_campaigns_cron.sql` | `pg_cron` + `pg_net` extensions, the `campaigns_cron_tick()` function, and the every-minute schedule. **Apply only after** the two extensions are enabled in the dashboard. |
+
+Later timestamped files build on these (dynamic lead fields, the voice-agents registry, dashboard widgets, and the campaign caller-ID-pool + configurable daily-call-cap migrations). Always apply **every** file in `supabase/migrations/` in timestamp order — don't assume the three above are the whole set.
+
+Relevant to the number-rotation feature:
+
+| File | Purpose |
+| --- | --- |
+| `20260604000000_campaign_number_pool.sql` | `campaigns.from_phone_numbers[]` (rotation pool) + an index on `calls(from_phone, started_at)` for the per-number usage queries. |
+| `20260604000001_configurable_daily_call_cap.sql` | `bolna_integrations.daily_calls_per_number` (default 200, 1..10000) — the per-org spam cap the dispatcher enforces. |
+| `20260608000000_call_outcome_retry.sql` | Disposition-based retry: `calls.call_outcome` + `calls.requested_callback_at`, `campaign_contacts.callback_count` + `last_outcome`, `campaigns.max_callbacks` (default 2). Existing campaigns get `max_callbacks = 2` automatically. |
 
 **Rule:** every new schema change goes in a **new timestamped file** under `supabase/migrations/`. Never edit baseline_schema.sql or the existing campaigns migrations after a release. Append, don't mutate.
 
@@ -204,7 +214,10 @@ After a `main` deploy lands, do this in 90 seconds:
 2. Open `/leads` — table renders, infinite scroll works.
 3. From `/leads`, click the phone icon on any lead with a number you control. A `calls` row should appear within a few seconds with `bolna_call_id` populated.
 4. From `/campaigns`, upload a 1-row CSV (your own number). Within ~60 seconds, the contact should move `pending → in_flight`. (If it stays `pending` past two minutes, the cron tick isn't reaching the route — see *Common gotchas*.)
-5. `curl -X POST https://app.skelo.team/api/cron/campaigns/tick` (no secret header) → should return `401`. Confirms the route is gated.
+5. Open the campaign row → lands on `/campaigns/[id]`. Check the **Performance** tab renders (funnel, outcomes, dials-over-time) and the **Calls** tab lists the dial. If you saved ≥1 caller-ID for the org, the **Caller IDs** table shows the number with `today / cap`.
+6. (Number config) In `/admin/organisations/[id]/voice-agents`, confirm the voice-agent form shows **Daily calls per number** (default 200) and saving a new value sticks after refresh.
+7. (Disposition retry) Place one campaign call to your own number and, on the voice agent, give an answer that maps to a disposition (e.g. "call me tomorrow"). After the call completes, the `calls` row should have `call_outcome` set (`callback_requested`) and the `campaign_contacts` row should go back to `pending` with `next_attempt_at` near the requested time and `callback_count = 1` (not `succeeded`). A "not interested" answer should land the contact `failed` with no retry.
+8. `curl -X POST https://app.skelo.team/api/cron/campaigns/tick` (no secret header) → should return `401`. Confirms the route is gated.
 
 ---
 
@@ -232,3 +245,15 @@ alter type public.intent_type rename value 'Cold' to 'cold';
 
 **Migration order matters.**
 Always apply the migration files in **timestamp order**. The Supabase CLI does this for you; if you're pasting into the SQL editor, paste in filename order.
+
+**Campaign contacts stall as `pending` with "All caller IDs hit their daily cap".**
+The number-rotation dispatcher refuses to dial from a caller-ID that has placed `daily_calls_per_number` calls in the last 24h (default 200). If a campaign's whole pool is capped, contacts defer (~1h) instead of dialing — expected spam-avoidance behavior, not a bug. To dial more in a day: add more numbers to the org (**Manage agents & numbers**), select more of them on the campaign, or raise the org's cap in `/admin/organisations/[id]/voice-agents`. The campaign-create dialog warns up front when `contacts > numbers × cap`.
+
+**Caller-ID rotation does nothing / always uses one number.**
+Rotation only spreads across numbers the campaign was given. If the org has just one saved number (or the user picked one), every dial uses it — and it'll hit the cap on large lists. Also note Bolna only honors a `from_phone_number` it recognizes (a Bolna dedicated number or one on a connected Twilio/Plivo/SIP account); an unrecognized number surfaces Bolna's error on the failed call rather than silently falling back.
+
+**Disposition retry doesn't fire / every completed call shows `succeeded`.**
+`call_outcome` is driven entirely by the **voice agent's extraction config** — the agent must emit a `call_outcome` field (and `callback_at` for callbacks). If the agent doesn't extract it, every connected call collapses to `no_decision` → `succeeded` (the safe default). Update the Bolna agent's post-call extraction to output the closed vocabulary (`interested | meeting_booked | not_interested | callback_requested | do_not_call | wrong_number | no_decision`). Verify on a `calls` row: `call_outcome` should be non-null after a completed outbound call.
+
+**A "call me later" contact never gets re-dialed past max_attempts.**
+Callbacks have their **own** budget (`campaigns.max_callbacks`, default 2), separate from technical retries (`max_attempts`). Each honored callback grants one extra dial (gate is `attempt < max_attempts + callback_count`). If `max_callbacks = 0`, callbacks are not honored and the contact closes as `succeeded` instead. The disposition transition happens only on the **final extracted webhook** (`recordOutboundResult`); the status-only path defers `completed`, so if Bolna never sends the extracted event the contact sits `in_flight` until the 30-min reconcile marks it `failed`.

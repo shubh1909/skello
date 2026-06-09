@@ -135,10 +135,7 @@ function buildActivity(row: ActivityRow): LeadWithCallActivity {
     lead_data: ld,
     custom_data: row.custom_data ?? {},
     lead_intent: row.current_intent,
-    interest:
-      pickJsonString(ld, "interest") ??
-      pickJsonString(ld, "product") ??
-      row.latest_call_interest,
+    interest: pickJsonString(ld, "interest") ?? row.latest_call_interest,
     customer_status: pickJsonString(ld, "customer_status"),
     wants_to_connect_on_watsapp: pickJsonBool(ld, "connect_on_whatsapp"),
     visit_date_time: pickJsonDate(ld, "date_and_time_of_visit"),

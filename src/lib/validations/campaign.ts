@@ -52,6 +52,13 @@ export const createCampaignSchema = z.object({
     .max(32)
     .nullish()
     .transform((v) => (v && v.length > 0 ? v : null)),
+  // The caller-ID pool to rotate across. When 2+ numbers are chosen the
+  // dispatcher round-robins under a per-number daily cap. Empty falls back to
+  // from_phone_number, then the org default. Capped at 50 to bound the array.
+  from_phone_numbers: z
+    .array(z.string().trim().min(5).max(32))
+    .max(50)
+    .default([]),
   max_attempts: z.number().int().min(1).max(6),
   retry_interval_seconds: z.number().int().min(60).max(86400),
   retry_on: z.array(campaignRetryTriggerSchema).max(4),

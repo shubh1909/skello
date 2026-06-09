@@ -30,6 +30,9 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
   const [fromPhone, setFromPhone] = React.useState(
     integration?.from_phone_number ?? "",
   );
+  const [dailyCap, setDailyCap] = React.useState(
+    String(integration?.daily_calls_per_number ?? 200),
+  );
   const [enabled, setEnabled] = React.useState(integration?.enabled ?? true);
 
   const hasExisting = integration !== null;
@@ -37,6 +40,12 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
   function onSave(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     startTransition(async () => {
+      const capNum = Number(dailyCap);
+      if (!Number.isInteger(capNum) || capNum < 1 || capNum > 10000) {
+        toast.error("Daily call cap must be a whole number between 1 and 10000");
+        return;
+      }
+
       if (!hasExisting) {
         if (!agentId.trim() || !apiKey.trim()) {
           toast.error("Agent ID and API key are required");
@@ -47,6 +56,7 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
           agent_id: agentId.trim(),
           api_key: apiKey.trim(),
           from_phone_number: fromPhone.trim() || null,
+          daily_calls_per_number: capNum,
           enabled,
         });
         if (!result.success) {
@@ -67,6 +77,9 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
       }
       if ((fromPhone.trim() || null) !== integration.from_phone_number) {
         patch.from_phone_number = fromPhone.trim() || null;
+      }
+      if (capNum !== integration.daily_calls_per_number) {
+        patch.daily_calls_per_number = capNum;
       }
       if (enabled !== integration.enabled) patch.enabled = enabled;
       if (apiKey.trim().length > 0) patch.api_key = apiKey.trim();
@@ -123,6 +136,7 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
       setAgentId("");
       setApiKey("");
       setFromPhone("");
+      setDailyCap("200");
       setEnabled(true);
       router.refresh();
     });
@@ -196,6 +210,26 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
           onChange={(e) => setFromPhone(e.target.value)}
           autoComplete="off"
         />
+      </div>
+
+      <div className="grid gap-1.5">
+        <Label htmlFor="admin-daily-cap">Daily calls per number</Label>
+        <Input
+          id="admin-daily-cap"
+          type="number"
+          min={1}
+          max={10000}
+          step={1}
+          placeholder="200"
+          value={dailyCap}
+          onChange={(e) => setDailyCap(e.target.value)}
+          autoComplete="off"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Max outbound dials per caller-ID in 24h before a campaign rests that
+          number (spam avoidance). Default 200. Raise it for registered /
+          warmed numbers; lower it for fresh ones.
+        </p>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 pt-2">

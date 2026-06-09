@@ -1,83 +1,101 @@
 import "server-only";
 
+import {
+  decideOutcome,
+  isTerminalCallStatus,
+} from "@/lib/campaigns/outcome-decision";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { CallStatus } from "@/types/call";
+import type { CallOutcome, CallStatus } from "@/types/call";
 import type { CampaignRetryTrigger } from "@/types/campaign";
-
-const RETRY_ELIGIBLE: ReadonlySet<CallStatus> = new Set<CallStatus>([
-  "no_answer",
-  "busy",
-  "failed",
-  "canceled",
-]);
-
-const TERMINAL_STATUSES: ReadonlySet<CallStatus> = new Set<CallStatus>([
-  "completed",
-  "no_answer",
-  "busy",
-  "failed",
-  "canceled",
-]);
 
 interface ApplyOutcomeInput {
   contactId: string;
   callId: string;
   callStatus: CallStatus;
+  // Semantic disposition + requested callback time, available only on the final
+  // (extracted_data) webhook. Omitted on the status-only path — a `completed`
+  // call with no disposition falls back to "succeeded".
+  callOutcome?: CallOutcome | null;
+  requestedCallbackAt?: string | null;
+}
+
+interface ContactRow {
+  id: string;
+  campaign_id: string;
+  organisation_id: string;
+  phone: string;
+  name: string | null;
+  attempt: number;
+  callback_count: number;
+  status: string;
+  lead_id: string | null;
+  last_call_id: string | null;
+  campaign: {
+    id: string;
+    max_attempts: number;
+    max_callbacks: number;
+    retry_interval_seconds: number;
+    retry_on: CampaignRetryTrigger[];
+    organisation_id: string;
+  } | null;
 }
 
 /**
- * Run after the Bolna webhook updates a call row. Decides what to do with
- * the parent campaign_contact:
- *   - completed                                  → succeeded (+ lead upsert)
- *   - retry-eligible AND attempt < max_attempts  → re-arm pending
- *   - retry-eligible AND cap hit                 → failed
- *   - non-terminal status (ringing, in_progress) → no-op
+ * Run after a Bolna webhook updates a call row. Loads the contact, asks the
+ * pure {@link decideOutcome} core what to do, then applies it (the only I/O
+ * here: the contact load, the lead conversion on success, and the write).
  *
- * Idempotent: status transitions out of in_flight are guarded by a
- * .eq('status','in_flight') predicate on the update.
+ * The decision branches on TWO axes — the technical `callStatus` and the
+ * semantic `call_outcome` disposition — see outcome-decision.ts for the table.
+ *
+ * Idempotent: every write is guarded by `.eq('status','in_flight')`, so a
+ * duplicate webhook delivery for an already-finalised contact is a no-op.
  */
 export async function applyCampaignContactOutcome({
   contactId,
   callId,
   callStatus,
+  callOutcome = null,
+  requestedCallbackAt = null,
 }: ApplyOutcomeInput): Promise<void> {
-  if (!TERMINAL_STATUSES.has(callStatus)) return;
+  // Cheap guard before the DB read — non-terminal statuses are no-ops.
+  if (!isTerminalCallStatus(callStatus)) return;
 
   const admin = createAdminClient();
 
   const { data: contact } = await admin
     .from("campaign_contacts")
     .select(
-      "id, campaign_id, organisation_id, phone, name, attempt, status, lead_id, last_call_id, campaign:campaigns!campaign_id(id, max_attempts, retry_interval_seconds, retry_on, organisation_id)",
+      "id, campaign_id, organisation_id, phone, name, attempt, callback_count, status, lead_id, last_call_id, campaign:campaigns!campaign_id(id, max_attempts, max_callbacks, retry_interval_seconds, retry_on, organisation_id)",
     )
     .eq("id", contactId)
-    .maybeSingle<{
-      id: string;
-      campaign_id: string;
-      organisation_id: string;
-      phone: string;
-      name: string | null;
-      attempt: number;
-      status: string;
-      lead_id: string | null;
-      last_call_id: string | null;
-      campaign: {
-        id: string;
-        max_attempts: number;
-        retry_interval_seconds: number;
-        retry_on: CampaignRetryTrigger[];
-        organisation_id: string;
-      } | null;
-    }>();
+    .maybeSingle<ContactRow>();
 
   if (!contact || !contact.campaign) return;
+  // Only act on a contact we currently hold the dial claim for. Guards against
+  // a duplicate/late webhook re-deciding an already-resolved contact.
+  if (contact.status !== "in_flight") return;
 
-  const basePatch: Record<string, unknown> = {
-    last_status: callStatus,
-    last_call_id: callId,
-  };
+  const decision = decideOutcome({
+    callStatus,
+    callOutcome,
+    requestedCallbackAt,
+    callId,
+    attempt: contact.attempt,
+    callbackCount: contact.callback_count,
+    campaign: {
+      max_attempts: contact.campaign.max_attempts,
+      max_callbacks: contact.campaign.max_callbacks,
+      retry_interval_seconds: contact.campaign.retry_interval_seconds,
+      retry_on: contact.campaign.retry_on,
+    },
+    now: Date.now(),
+  });
 
-  if (callStatus === "completed") {
+  if (decision.kind === "noop") return;
+
+  if (decision.kind === "succeed") {
+    // Lead conversion is the one I/O the decision can't make itself.
     let leadId = contact.lead_id;
     if (!leadId) {
       leadId = await convertContactToLead({
@@ -88,44 +106,18 @@ export async function applyCampaignContactOutcome({
     }
     await admin
       .from("campaign_contacts")
-      .update({
-        ...basePatch,
-        status: "succeeded",
-        lead_id: leadId,
-        last_error: null,
-      })
-      .eq("id", contact.id);
+      .update({ ...decision.patch, lead_id: leadId })
+      .eq("id", contact.id)
+      .eq("status", "in_flight");
     return;
   }
 
-  const isRetryable =
-    contact.campaign.retry_on.includes(callStatus as CampaignRetryTrigger) &&
-    RETRY_ELIGIBLE.has(callStatus);
-
-  const capHit = contact.attempt >= contact.campaign.max_attempts;
-
-  if (isRetryable && !capHit) {
-    const next = new Date(
-      Date.now() + contact.campaign.retry_interval_seconds * 1000,
-    ).toISOString();
-    await admin
-      .from("campaign_contacts")
-      .update({
-        ...basePatch,
-        status: "pending",
-        next_attempt_at: next,
-      })
-      .eq("id", contact.id);
-    return;
-  }
-
+  // fail / rearm — the patch is complete as decided.
   await admin
     .from("campaign_contacts")
-    .update({
-      ...basePatch,
-      status: "failed",
-    })
-    .eq("id", contact.id);
+    .update(decision.patch)
+    .eq("id", contact.id)
+    .eq("status", "in_flight");
 }
 
 /**

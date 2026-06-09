@@ -503,6 +503,8 @@ Each tenant has its own provider account, agent, and API key. Storing one row pe
 
 The public `BolnaIntegration` type exposes `api_key_last4` for display; the full key is only visible server-side when invoking the provider API.
 
+`daily_calls_per_number` (default 200) is the spam-avoidance cap the campaign dispatcher enforces per caller-ID — see *Campaigns → Caller-ID rotation & daily number cap*. It's tuned per org on the voice-agent admin page.
+
 ### `getBolnaIntegration(organisationId)`
 
 **Input** `string` (uuid) — must belong to the caller's owned org.
@@ -514,10 +516,11 @@ The public `BolnaIntegration` type exposes `api_key_last4` for display; the full
 ```ts
 {
   organisation_id: string;
-  agent_id: string;                 // 1–200 chars, from Bolna dashboard
-  api_key: string;                  // 1–500 chars, stored server-only
-  from_phone_number?: string | null;// optional caller ID, 5–32 chars
-  enabled?: boolean;                // default true
+  agent_id: string;                  // 1–200 chars, from Bolna dashboard
+  api_key: string;                   // 1–500 chars, stored server-only
+  from_phone_number?: string | null; // optional default caller ID, 5–32 chars
+  daily_calls_per_number?: number;   // spam-cap, 1..10000, default 200
+  enabled?: boolean;                 // default true
 }
 ```
 
@@ -806,6 +809,7 @@ The same payload schema covers both inbound and outbound — they only differ in
 - `lead_data.actionable.subjective` → `leads.actionable` (free-form string the agent extracts describing the next step).
 - `connect_on_whatsapp` is coerced via `toBoolean()` (accepts `true|false|yes|no|1|0`).
 - `date_and_time_of_visit` is coerced via `toTimestamp()` (parseable ISO → UTC ISO; otherwise null).
+- `call_outcome` → `calls.call_outcome` via `coerceCallOutcome()` (normalises onto the closed vocabulary `interested | meeting_booked | not_interested | callback_requested | do_not_call | wrong_number | no_decision`; unknown → `no_decision`). `callback_at` → `calls.requested_callback_at` via `toTimestamp()`. These drive disposition-based campaign retry (see *Campaign post-step*).
 - `lead_intent` is lowercased and matched against the `LeadIntent` enum.
 - A per-field `confidence` map is captured.
 - **Summary**: `buildSummary()` concatenates each field's `reasoning_subjective` as `<Humanised Field>: <reasoning>` paragraphs into `leads.summary`. On idempotent retry the upsert overwrites — manual edits to `summary` will be replaced.
@@ -956,7 +960,9 @@ Files:
 - Webhook post-step: [src/lib/campaigns/outcome.ts](../src/lib/campaigns/outcome.ts)
 - Cron drainer: [src/app/api/cron/campaigns/tick/route.ts](../src/app/api/cron/campaigns/tick/route.ts)
 - Results CSV export: [src/app/api/campaigns/[id]/export/route.ts](../src/app/api/campaigns/[id]/export/route.ts)
-- UI: [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx), [src/components/app/campaign-upload-dialog.tsx](../src/components/app/campaign-upload-dialog.tsx), [src/components/app/campaigns-table.tsx](../src/components/app/campaigns-table.tsx), [src/components/app/campaign-call-log-sheet.tsx](../src/components/app/campaign-call-log-sheet.tsx)
+- Dispatcher (rotation + caps): [src/lib/campaigns/dispatch.ts](../src/lib/campaigns/dispatch.ts)
+- UI: [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx), [src/components/app/campaign-upload-dialog.tsx](../src/components/app/campaign-upload-dialog.tsx), [src/components/app/campaigns-table.tsx](../src/components/app/campaigns-table.tsx)
+- Per-campaign detail (Performance + Calls tabs): [src/app/(app)/campaigns/[id]/page.tsx](../src/app/(app)/campaigns/[id]/page.tsx), [src/components/app/campaign-performance.tsx](../src/components/app/campaign-performance.tsx)
 
 A campaign is a CSV upload of phone numbers + a retry config. Skelo dials each contact through the org's existing voice agent (the same `initiateBolnaCall` primitive used by single-lead dials), and re-arms failures up to a user-set cap.
 
@@ -974,9 +980,11 @@ scheduled_at,                            -- when "Schedule" was picked; null = r
 started_at, completed_at,
 
 -- Retry config (snapshot at upload, immutable for the batch):
-max_attempts (smallint, 1..6),           -- 1 initial + up to 5 retries
+max_attempts (smallint, 1..6),           -- 1 initial + up to 5 retries (technical)
+max_callbacks (smallint, 0..5, default 2),-- customer-requested callbacks honored
+                                          --   per contact, SEPARATE from max_attempts
 retry_interval_seconds (int, 60..86400),
-retry_on (text[], subset of { no_answer, busy, failed, canceled }),
+retry_on (text[], subset of { no_answer, busy, failed, canceled }),  -- TECHNICAL triggers only
 
 -- Denormalized counters maintained by AFTER trigger on campaign_contacts:
 total_contacts, valid_contacts,
@@ -994,13 +1002,18 @@ phone,                                   -- digits only, dedupe key (5..32)
 name, metadata (jsonb),                  -- extra CSV columns → passed to Bolna user_data
 status (text check:
   pending | in_flight | succeeded | failed | skipped),
-attempt (smallint, default 0),
+attempt (smallint, default 0),          -- every dial; gated by max_attempts + callback_count
+callback_count (smallint, default 0),   -- honored callbacks; each grants one extra dial
 next_attempt_at,
 last_call_id (uuid → calls.id),
-last_status, last_error,
-lead_id,                                 -- filled in by webhook post-step on first 'completed' call
+last_status,                             -- TECHNICAL status of the last call
+last_outcome,                           -- SEMANTIC disposition of the last call (mirrors calls.call_outcome)
+last_error,
+lead_id,                                 -- filled in by webhook post-step on first successful call
 created_at, updated_at
 ```
+
+`public.calls.call_outcome` (text, nullable, vocab-checked) + `public.calls.requested_callback_at` (timestamptz, nullable) — the per-conversation **disposition** the voice agent extracted (what the customer wanted) and the time they asked to be re-called. These drive disposition-based retry; see *Campaign post-step* below.
 
 `public.calls.campaign_contact_id` (uuid, nullable, FK to `campaign_contacts.id` on delete set null) — the seam between the existing dial pipeline and a campaign run. The Bolna webhook reads it after every status update to drive the campaign-contact state machine.
 
@@ -1045,6 +1058,9 @@ In the second sample, `vehicle`, `city`, and `last_visit` are merged into `campa
   file_name?: string | null;
   schedule_mode: "now" | "later";
   scheduled_at?: string | null;                     // ISO datetime, required when schedule_mode === "later"
+  agent_id?: string | null;                         // optional per-campaign agent; falls back to org default
+  from_phone_number?: string | null;                // single caller-ID override (set when exactly one number is chosen)
+  from_phone_numbers?: string[];                    // caller-ID rotation pool (0..50); each must be a saved workspace number
   max_attempts: number;                             // 1..6 (slider 0..5 retries → +1)
   retry_interval_seconds: number;                   // 60..86400
   retry_on: ("no_answer" | "busy" | "failed" | "canceled")[];
@@ -1114,29 +1130,63 @@ The drainer. Called every minute by `pg_cron` via `pg_net.http_post` (see [the c
 **Auth:** header `x-cron-secret` must equal `process.env.CRON_SECRET`. The Postgres function reads the same secret from Supabase Vault.
 
 **Per tick:**
+0. **Self-heal** (`reconcileStuckCampaigns`): time out contacts stuck `in_flight` past 30 min with no result webhook (→ `failed`), and close out any `in_progress` campaign that has no `pending`/`in_flight` contacts left (→ `completed`). This keeps status/progress truthful even when a result webhook is lost.
 1. Promote any `scheduled` campaigns whose `scheduled_at` has passed → `in_progress`.
 2. Select up to **25** due contacts globally, capped at **10 per campaign** so a 1000-row campaign can't starve smaller batches behind it.
-3. For each: optimistic CAS (`update ... where status='pending'`) to claim → fire `initiateBolnaCall` → insert a `calls` row with `campaign_contact_id` set → patch the contact (`attempt++`, `last_call_id`, leave `status` at `in_flight`).
-4. Bolna failures get a `calls` row inserted with `status='failed'` for visibility, and the contact is either re-armed for another attempt or marked `failed` if the cap is hit.
+3. **Pick a caller-ID** for each dial (see *Caller-ID rotation* below). If every number in the campaign's pool is at its daily cap, the contact is **deferred** (next attempt pushed out ~1h) instead of dialed.
+4. Optimistic CAS (`update ... where status='pending'`) to claim → fire `initiateBolnaCall` from the chosen number → insert a `calls` row with `campaign_contact_id` + `from_phone` set → patch the contact (`attempt++`, `last_call_id`, leave `status` at `in_flight`).
+5. Bolna failures get a `calls` row inserted with `status='failed'` for visibility, and the contact is either re-armed for another attempt or marked `failed` if the cap is hit.
 
 The Bolna webhook ([src/app/api/webhooks/bolna/calls/route.ts](../src/app/api/webhooks/bolna/calls/route.ts)) handles the rest — see the **Campaign post-step** subsection below.
 
+### Caller-ID rotation & daily number cap
+
+Carriers flag a phone number that places too many calls in a day as "spam likely". To avoid this, a campaign dials from a **pool** of caller-IDs and the dispatcher rotates across them under a per-number daily cap.
+
+- **Pool source** (`pickFromNumber` in [src/lib/campaigns/dispatch.ts](../src/lib/campaigns/dispatch.ts)), in precedence order:
+  1. `campaigns.from_phone_numbers[]` — the rotation pool. Picks the **least-used** number that's still under the cap (ties keep pool order).
+  2. `campaigns.from_phone_number` — single-number override (back-compat / "one consistent caller ID").
+  3. `bolna_integrations.from_phone_number` — the org default.
+  4. None configured → omit `from_phone_number` so Bolna dials from its own pool (uncapped, untracked).
+- **Daily cap** = `bolna_integrations.daily_calls_per_number` (default **200**, admin-tunable per org, range 1..10000). Counted over a rolling 24h window from the `calls` table (seeded once per tick via `loadNumberUsage`, then incremented in-memory as the batch dials so concurrent workers stay within the cap).
+- **When every pool number is capped**, the contact is deferred (`next_attempt_at = now() + 1h`, `last_error` noting the cap) rather than dialed from an over-used number.
+- The same cap drives the **campaign-create capacity warning** (UI) and the **per-number dashboard stats** (`getCampaignStats`), so the operator sees one consistent ceiling.
+
+Numbers are added/managed per org in **Manage agents & numbers** ([voice-config.ts](../src/actions/voice-config.ts) → `bolna_integrations.from_phone_numbers[]` + `from_phone_labels`). They're trusted as entered — Bolna only honors a `from_phone_number` that's a Bolna dedicated number or one on a connected Twilio/Plivo/SIP account; an unrecognized number surfaces Bolna's error on the failed dial. (Bolna's `GET /phone-numbers/all` could later auto-verify these.)
+
 ### Campaign post-step (in the Bolna webhook)
 
-After the existing call update, when `calls.campaign_contact_id` is non-null, [src/lib/campaigns/outcome.ts](../src/lib/campaigns/outcome.ts) runs in `after()`:
+When `calls.campaign_contact_id` is non-null, [src/lib/campaigns/outcome.ts](../src/lib/campaigns/outcome.ts) (`applyCampaignContactOutcome`) advances the contact. It decides on **two axes**: the *technical* `callStatus` and the *semantic* `call_outcome` (disposition). Every transition is guarded by `.eq('status','in_flight')`, so a duplicate webhook is a no-op.
 
-- `completed` → contact `succeeded`. **Lead conversion happens here**: look up an existing lead in the org by exact `phone`; if absent, insert a new `leads` row (`source = 'manual'`, `status = 'contacted'`, name carried from the CSV). Cache the resulting `lead_id` on the contact.
-- Status in `retry_on` AND `attempt < max_attempts` → contact `pending`, `next_attempt_at = now() + retry_interval_seconds`.
-- Status in `retry_on` but cap hit, OR a non-retry final status → contact `failed`.
+**Technical tier** — connection-level statuses (`no_answer` / `busy` / `failed` / `canceled`), resolved from the status-only webhook path:
+
+- Status in `retry_on` AND `attempt < max_attempts + callback_count` → contact `pending`, `next_attempt_at = now() + retry_interval_seconds`.
+- Status in `retry_on` but dial cap hit, OR a status not in `retry_on` → contact `failed`.
 - Non-terminal status (`ringing`, `in_progress`) → no-op.
+
+**Disposition tier** — applies to `completed` calls only. The disposition lives **only in the extracted_data payload**, so the status-only path *defers* `completed` to `recordOutboundResult` (the final extracted webhook), which calls the engine with `call_outcome` + `requested_callback_at`. (If that final event never lands, the 30-min in-flight reconcile sweeps the contact to `failed`.) Mapping:
+
+| `call_outcome` | action |
+| --- | --- |
+| `interested` / `meeting_booked` / `no_decision` (or none) | contact `succeeded` (+ lead conversion) |
+| `not_interested` / `wrong_number` | contact `failed`, no retry (`last_error` = reason) |
+| `do_not_call` | contact `failed`, no retry — **this campaign only** (no global DNC flag) |
+| `callback_requested`, `callback_count < max_callbacks` | contact `pending`, `next_attempt_at = requested_callback_at` (falls back to `retry_interval` if missing/past), `callback_count++` |
+| `callback_requested`, callback budget exhausted | contact `succeeded` (+ lead conversion) |
+
+**Lead conversion** (on any `succeeded`): look up an existing lead in the org by exact `phone`; if absent, insert a new `leads` row (`source = 'manual'`, `status = 'contacted'`, name carried from the CSV). Cache the resulting `lead_id` on the contact.
+
+**Budgets are independent.** `attempt` (every dial) is capped by `max_attempts`; honored callbacks spend `callback_count` (capped by `max_callbacks`) and each grants **one extra dial** (the dispatch gate is `attempt < max_attempts + callback_count`), so a genuine "call me next week" is never starved by earlier no-answers.
+
+The `call_outcome` value is produced by the **voice agent's extraction config**: the agent must emit a `call_outcome` field (closed vocabulary: `interested`, `meeting_booked`, `not_interested`, `callback_requested`, `do_not_call`, `wrong_number`, `no_decision`) and, for callbacks, a `callback_at` time. `coerceCallOutcome()` normalises common variants; anything unrecognised collapses to `no_decision` (treated as a connected success). The action→outcome mapping is a fixed table in code (no per-campaign UI yet).
 
 The campaign trigger keeps the parent counters in sync and auto-flips the campaign to `completed` once nothing remains pending or in-flight.
 
 ### `GET /api/campaigns/[id]/export`
 
-Session-authed. Generates a CSV from `campaign_contacts` on demand — no original file is stored. Verifies the campaign belongs to the caller's org before returning.
+Session-authed. Generates a **per-call** CSV on demand (one row per dial across all attempts, joined from `calls` → `campaign_contacts`) — no original file is stored. Verifies the campaign belongs to the caller's org before returning.
 
-**Columns:** Phone, Name, Status, Attempts, Next Attempt At, Last Call Status, Last Error, Started At, Ended At, Duration (s), Recording.
+**Columns:** Phone, Name, Attempt, Outcome, Direction, Started At, Answered At, Ended At, Duration (s), Error. Recording URLs are deliberately omitted (signed links that need no login — same omission as `/api/leads/export`).
 
 Reuses the shared CSV helper at [src/lib/csv.ts](../src/lib/csv.ts) (`csvEscape` + `toCsv` + `withBom`).
 
@@ -1259,9 +1309,9 @@ Mirrors the per-org integration shape but gated by `requireAdmin()` (not `userOw
 
 | Action | Input | Effect |
 | --- | --- | --- |
-| `getVoiceAgentAdmin` | `organisationId` (uuid) | returns `BolnaIntegration` (with `api_key_last4`) or null |
-| `upsertVoiceAgentAdmin` | `{ organisation_id, agent_id, api_key, from_phone_number?, enabled }` | creates or replaces the integration |
-| `updateVoiceAgentAdmin` | partial upsert shape | patches agent id / key / caller id / enabled |
+| `getVoiceAgentAdmin` | `organisationId` (uuid) | returns `BolnaIntegration` (with `api_key_last4`, `daily_calls_per_number`) or null |
+| `upsertVoiceAgentAdmin` | `{ organisation_id, agent_id, api_key, from_phone_number?, daily_calls_per_number?, enabled }` | creates or replaces the integration |
+| `updateVoiceAgentAdmin` | partial upsert shape | patches agent id / key / caller id / **daily call cap** / enabled |
 | `disconnectVoiceAgentAdmin` | `organisationId` | deletes the integration row — outbound calls fail with "Voice agent not configured" until re-added |
 
 Each mutation revalidates `/admin/organisations`, `/admin/organisations/[id]`, `/settings`, `/dashboard`, and `/pulse` so owner-visible state updates immediately.

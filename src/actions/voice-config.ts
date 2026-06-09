@@ -30,7 +30,12 @@ interface IntegrationRow {
   from_phone_numbers: string[];
   from_phone_labels: Record<string, unknown>;
   enabled: boolean;
+  daily_calls_per_number: number | null;
 }
+
+// Fallback when a row predates the configurable cap column. Mirrors
+// DEFAULT_DAILY_CALLS_PER_NUMBER in lib/campaigns/dispatch.ts.
+const DEFAULT_DAILY_CALLS_PER_NUMBER = 200;
 
 interface VoiceAgentRow {
   agent_id: string;
@@ -126,7 +131,7 @@ function buildDialNumbers(row: IntegrationRow): DialNumberEntry[] {
 }
 
 const INTEGRATION_COLUMNS =
-  "agent_id, from_phone_number, from_phone_numbers, from_phone_labels, enabled";
+  "agent_id, from_phone_number, from_phone_numbers, from_phone_labels, enabled, daily_calls_per_number";
 
 async function loadIntegration(
   organisationId: string,
@@ -181,12 +186,19 @@ export async function getVoiceConfig(
     loadVoiceAgents(parsed.data.organisation_id),
   ]);
   if (!integration) {
-    return ok({ enabled: false, agents: [], dial_numbers: [] });
+    return ok({
+      enabled: false,
+      agents: [],
+      dial_numbers: [],
+      daily_calls_per_number: DEFAULT_DAILY_CALLS_PER_NUMBER,
+    });
   }
   return ok({
     enabled: integration.enabled,
     agents: buildAgents(integration, registered),
     dial_numbers: buildDialNumbers(integration),
+    daily_calls_per_number:
+      integration.daily_calls_per_number ?? DEFAULT_DAILY_CALLS_PER_NUMBER,
   });
 }
 

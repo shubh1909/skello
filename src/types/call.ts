@@ -12,6 +12,19 @@ export type CallStatus =
 
 export type CallDirection = "inbound" | "outbound";
 
+// Semantic disposition of the conversation — what the customer actually wanted,
+// distinct from the technical CallStatus. Extracted by the voice agent and used
+// to drive disposition-based campaign retry. `no_decision` is the fallback when
+// the agent reached no actionable conclusion.
+export type CallOutcome =
+  | "interested"
+  | "meeting_booked"
+  | "not_interested"
+  | "callback_requested"
+  | "do_not_call"
+  | "wrong_number"
+  | "no_decision";
+
 export type CallTranscriptStatus =
   | "pending"
   | "processing"
@@ -51,6 +64,11 @@ export interface Call {
   customer_status: string | null;
   visit_scheduled_at: string | null;
   connect_on_whatsapp: boolean | null;
+  // Semantic disposition extracted from this conversation, and the time the
+  // customer asked to be re-called (only set when call_outcome is
+  // callback_requested). Both drive disposition-based campaign retry.
+  call_outcome: CallOutcome | null;
+  requested_callback_at: string | null;
   lead_data: Record<string, unknown>;
   custom_data: Record<string, Record<string, unknown>>;
   // True when the row came from the Campaigns > Test Call dialog. The

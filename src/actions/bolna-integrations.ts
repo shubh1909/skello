@@ -19,12 +19,15 @@ interface IntegrationRow {
   api_key: string;
   from_phone_number: string | null;
   enabled: boolean;
+  daily_calls_per_number: number | null;
   created_at: string;
   updated_at: string;
 }
 
+const DEFAULT_DAILY_CALLS_PER_NUMBER = 200;
+
 const INTEGRATION_COLUMNS =
-  "organisation_id, agent_id, api_key, from_phone_number, enabled, created_at, updated_at";
+  "organisation_id, agent_id, api_key, from_phone_number, enabled, daily_calls_per_number, created_at, updated_at";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -54,6 +57,8 @@ function toPublic(row: IntegrationRow): BolnaIntegration {
     agent_id: row.agent_id,
     from_phone_number: row.from_phone_number,
     enabled: row.enabled,
+    daily_calls_per_number:
+      row.daily_calls_per_number ?? DEFAULT_DAILY_CALLS_PER_NUMBER,
     created_at: row.created_at,
     updated_at: row.updated_at,
     api_key_last4: row.api_key.slice(-4),

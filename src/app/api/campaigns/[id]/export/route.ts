@@ -7,37 +7,36 @@ import { createAdminClient } from "@/lib/supabase/admin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Note: the campaign CSV deliberately omits the call's recording URL.
-// Bolna serves recordings via signed URLs that need no Skelo login to
-// play, and the URLs live for hours. A CSV with the link inside leaks
-// the audio wherever the file gets forwarded (email, shared drives,
-// support tickets). Operators who need playback open the campaign in
-// Skelo and play from the UI, where org membership is enforced.
-// Matches the same omission in /api/leads/export and /api/calls/export.
+// Per-call export: one row per dial (every attempt), matching the campaign
+// detail page's Calls tab. Recording URLs are deliberately omitted — Bolna
+// serves them via signed links that need no Skelo login and live for hours,
+// so a CSV with the link inside leaks the audio wherever the file is
+// forwarded. Operators play recordings from the UI, where org membership is
+// enforced. Matches /api/leads/export and /api/calls/export.
 interface ExportRow {
-  phone: string;
+  phone: string | null;
   name: string | null;
+  attempt: number | null;
   status: string;
-  attempt: number;
-  next_attempt_at: string | null;
-  last_status: string | null;
-  last_error: string | null;
-  last_call_started_at: string | null;
-  last_call_ended_at: string | null;
-  last_call_duration_seconds: number | null;
+  direction: string;
+  started_at: string | null;
+  answered_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  error_message: string | null;
 }
 
 const COLUMNS: CsvColumn<ExportRow>[] = [
   { header: "Phone", value: (r) => r.phone },
   { header: "Name", value: (r) => r.name },
-  { header: "Status", value: (r) => r.status },
-  { header: "Attempts", value: (r) => r.attempt },
-  { header: "Next Attempt At", value: (r) => r.next_attempt_at },
-  { header: "Last Call Status", value: (r) => r.last_status },
-  { header: "Last Error", value: (r) => r.last_error },
-  { header: "Started At", value: (r) => r.last_call_started_at },
-  { header: "Ended At", value: (r) => r.last_call_ended_at },
-  { header: "Duration (s)", value: (r) => r.last_call_duration_seconds },
+  { header: "Attempt", value: (r) => r.attempt },
+  { header: "Outcome", value: (r) => r.status },
+  { header: "Direction", value: (r) => r.direction },
+  { header: "Started At", value: (r) => r.started_at },
+  { header: "Answered At", value: (r) => r.answered_at },
+  { header: "Ended At", value: (r) => r.ended_at },
+  { header: "Duration (s)", value: (r) => r.duration_seconds },
+  { header: "Error", value: (r) => r.error_message },
 ];
 
 export async function GET(
@@ -69,46 +68,57 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const { data, error } = await admin
+  // Resolve the campaign's contacts, then every call placed for them.
+  const { data: contacts, error: contactsErr } = await admin
     .from("campaign_contacts")
-    .select(
-      "phone, name, status, attempt, next_attempt_at, last_status, last_error, call:calls!last_call_id(started_at, ended_at, duration_seconds)",
-    )
+    .select("id")
     .eq("campaign_id", campaign.id)
-    .order("phone", { ascending: true })
-    .returns<
-      Array<{
-        phone: string;
-        name: string | null;
-        status: string;
-        attempt: number;
-        next_attempt_at: string | null;
-        last_status: string | null;
-        last_error: string | null;
-        call: {
+    .returns<{ id: string }[]>();
+  if (contactsErr) {
+    return NextResponse.json({ error: contactsErr.message }, { status: 500 });
+  }
+  const contactIds = (contacts ?? []).map((c) => c.id);
+
+  let rows: ExportRow[] = [];
+  if (contactIds.length > 0) {
+    const { data, error } = await admin
+      .from("calls")
+      .select(
+        "to_phone, status, direction, started_at, answered_at, ended_at, duration_seconds, error_message, contact:campaign_contacts!campaign_contact_id(name, attempt)",
+      )
+      .in("campaign_contact_id", contactIds)
+      .order("started_at", { ascending: false })
+      .returns<
+        Array<{
+          to_phone: string | null;
+          status: string;
+          direction: string;
           started_at: string | null;
+          answered_at: string | null;
           ended_at: string | null;
           duration_seconds: number | null;
-        } | null;
-      }>
-    >();
+          error_message: string | null;
+          contact: { name: string | null; attempt: number } | null;
+        }>
+      >();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    rows = (data ?? []).map((r) => ({
+      phone: r.to_phone,
+      name: r.contact?.name ?? null,
+      attempt: r.contact?.attempt ?? null,
+      status: r.status,
+      direction: r.direction,
+      started_at: r.started_at,
+      answered_at: r.answered_at,
+      ended_at: r.ended_at,
+      duration_seconds: r.duration_seconds,
+      error_message: r.error_message,
+    }));
   }
-
-  const rows: ExportRow[] = (data ?? []).map((r) => ({
-    phone: r.phone,
-    name: r.name,
-    status: r.status,
-    attempt: r.attempt,
-    next_attempt_at: r.next_attempt_at,
-    last_status: r.last_status,
-    last_error: r.last_error,
-    last_call_started_at: r.call?.started_at ?? null,
-    last_call_ended_at: r.call?.ended_at ?? null,
-    last_call_duration_seconds: r.call?.duration_seconds ?? null,
-  }));
 
   const body = withBom(toCsv(rows, COLUMNS));
 

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { CallOutcome } from "@/types/call";
+
 // Per-field caps bound the work the webhook does on a single payload. Bolna's
 // real-world values are well under these; the limits exist so a leaked webhook
 // secret or a buggy provider payload can't push multi-MB strings into the DB.
@@ -93,6 +95,57 @@ export function toTimestamp(v: string | null): string | null {
   return d.toISOString();
 }
 
+const VALID_OUTCOMES: readonly CallOutcome[] = [
+  "interested",
+  "meeting_booked",
+  "not_interested",
+  "callback_requested",
+  "do_not_call",
+  "wrong_number",
+  "no_decision",
+];
+
+// Normalise the agent's free-ish `call_outcome` string onto our closed
+// vocabulary. The agent is prompted to emit one of the canonical values, but
+// real LLM output drifts (spacing, casing, near-synonyms), so we map the common
+// variants. Anything unrecognised collapses to `no_decision` — a connected call
+// with no actionable disposition, which the state machine treats as a success.
+const OUTCOME_ALIASES: Record<string, CallOutcome> = {
+  interested: "interested",
+  not_interested: "not_interested",
+  "not interested": "not_interested",
+  uninterested: "not_interested",
+  callback_requested: "callback_requested",
+  "callback requested": "callback_requested",
+  callback: "callback_requested",
+  call_back: "callback_requested",
+  call_later: "callback_requested",
+  "call me later": "callback_requested",
+  do_not_call: "do_not_call",
+  "do not call": "do_not_call",
+  dnc: "do_not_call",
+  "remove me": "do_not_call",
+  wrong_number: "wrong_number",
+  "wrong number": "wrong_number",
+  meeting_booked: "meeting_booked",
+  "meeting booked": "meeting_booked",
+  meeting_scheduled: "meeting_booked",
+  appointment_booked: "meeting_booked",
+  booked: "meeting_booked",
+  no_decision: "no_decision",
+  "no decision": "no_decision",
+  undecided: "no_decision",
+};
+
+export function coerceCallOutcome(raw: string | null): CallOutcome | null {
+  if (!raw) return null;
+  const key = raw.trim().toLowerCase();
+  if (!key) return null;
+  const canonical = VALID_OUTCOMES.find((v) => v === key);
+  if (canonical) return canonical;
+  return OUTCOME_ALIASES[key] ?? "no_decision";
+}
+
 export interface ExtractedLead {
   business_slug: string | null;
   name: string | null;
@@ -102,6 +155,8 @@ export interface ExtractedLead {
   actionable: string | null;
   connect_on_whatsapp: boolean | null;
   visit_scheduled_at: string | null;
+  call_outcome: CallOutcome | null;
+  requested_callback_at: string | null;
   confidence: Record<string, number>;
   summary: string | null;
 }
@@ -116,17 +171,22 @@ export function extractLead(
     if (typeof field?.confidence === "number") confidence[key] = field.confidence;
   }
 
-  // Accept either `interest` (current agent schema) or `product` (legacy
-  // agents) as the source field — we map both onto the `interest` column.
+  // `interest` is read straight from the agent's `interest` key. We no
+  // longer alias the legacy `product` key onto it — every key is captured
+  // as-is (a stray `product` flows through to custom_data via the generic
+  // path), so consolidating two keys into one column here only hid where
+  // the data actually came from. Keep keys separate; let admins promote.
   return {
     business_slug: pickValue(ld.business_slug),
     name: pickValue(ld.name),
-    interest: pickValue(ld.interest) ?? pickValue(ld.product),
+    interest: pickValue(ld.interest),
     customer_status: pickValue(ld.customer_status),
     lead_intent: pickValue(ld.lead_intent),
     actionable: pickValue(ld.actionable),
     connect_on_whatsapp: toBoolean(pickValue(ld.connect_on_whatsapp)),
     visit_scheduled_at: toTimestamp(pickValue(ld.date_and_time_of_visit)),
+    call_outcome: coerceCallOutcome(pickValue(ld.call_outcome)),
+    requested_callback_at: toTimestamp(pickValue(ld.callback_at)),
     confidence,
     summary: buildSummary(ld),
   };

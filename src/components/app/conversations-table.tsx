@@ -124,6 +124,9 @@ export interface ConversationsTableFilters {
   agent?: string;
   from?: string;
   q?: string;
+  // When set, the table (and its infinite-scroll refetches) stay scoped to
+  // one campaign's calls. Used by the campaign detail page's Calls tab.
+  campaignId?: string;
 }
 
 interface ConversationsTableProps {
@@ -169,6 +172,7 @@ export function ConversationsTable({
         agent_id: filters.agent,
         from: filters.from,
         q: filters.q,
+        campaign_id: filters.campaignId,
         sort: sort?.field,
         dir: sort?.dir,
       });
@@ -185,6 +189,7 @@ export function ConversationsTable({
       filters.agent,
       filters.from,
       filters.q,
+      filters.campaignId,
       sort,
     ],
   );
