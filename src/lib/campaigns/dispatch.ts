@@ -43,6 +43,19 @@ const HEALTH_DEFER_BASE_MS = 30 * 60 * 1000;
 // minutes-scale so this is generous; a busier-than-this org would slightly
 // undercount, which only makes switching MORE conservative (safe).
 const HEALTH_ROW_LIMIT = 50000;
+// A call only informs connect rate once it has reached a TERMINAL state — only
+// then do we know whether it connected. An in-flight dial (initiated / ringing
+// / in_progress) has no verdict yet; counting it as a "dial" with zero connects
+// would read a fresh burst as ~0% connect rate and rest EVERY caller-ID,
+// throttling the whole campaign to a deferral crawl. So health is computed over
+// resolved calls only — an unresolved dial simply doesn't count until it lands.
+export const RESOLVED_CALL_STATUSES: ReadonlySet<string> = new Set([
+  "completed",
+  "no_answer",
+  "busy",
+  "failed",
+  "canceled",
+]);
 
 /**
  * Run `fn` over `items` with a fixed worker pool. Preserves
@@ -201,6 +214,9 @@ async function loadNumberCalls(
     .select("organisation_id, from_phone, status, started_at")
     .in("organisation_id", orgIds)
     .eq("direction", "outbound")
+    // Only resolved calls inform connect rate — see RESOLVED_CALL_STATUSES.
+    // Filtering here also keeps in-flight dials out of the row budget.
+    .in("status", Array.from(RESOLVED_CALL_STATUSES))
     .gte("started_at", since)
     .not("from_phone", "is", null)
     .limit(HEALTH_ROW_LIMIT)
@@ -220,6 +236,10 @@ export function computeNumberHealth(
   for (const row of rows) {
     if (!row.from_phone) continue;
     if (new Date(row.started_at).getTime() < cutoff) continue;
+    // Skip unresolved dials — they have no connect verdict yet and would
+    // otherwise tank a fresh burst's measured rate to ~0%. Defence in depth:
+    // loadNumberCalls already filters these out at the query.
+    if (!RESOLVED_CALL_STATUSES.has(row.status)) continue;
     const h = health.get(row.from_phone) ?? { dials: 0, connects: 0 };
     h.dials += 1;
     if (row.status === "completed") h.connects += 1;

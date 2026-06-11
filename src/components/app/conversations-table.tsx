@@ -113,14 +113,28 @@ const SORTABLE_HEADERS: {
 
 const COL_CALL_ID = "call_id";
 const COL_LEAD = "lead";
+const COL_DISPOSITION = "disposition";
 const COL_AUDIO = "audio";
 const DEFAULT_CALL_ID_WIDTH = 130;
 const DEFAULT_LEAD_WIDTH = 220;
+const DEFAULT_DISPOSITION_WIDTH = 180;
 const DEFAULT_AUDIO_WIDTH = 130;
+
+// The semantic disposition key is an open string (per-org configurable), so we
+// prettify it for display: "callback_requested" → "Callback requested". Known
+// and custom labels both read naturally.
+function formatOutcomeKey(key: string): string {
+  return key
+    .split("_")
+    .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
 
 export interface ConversationsTableFilters {
   direction?: CallDirection;
   status?: CallStatus;
+  // Semantic disposition key (interested / callback_requested / custom…).
+  callOutcome?: string;
   agent?: string;
   from?: string;
   q?: string;
@@ -156,6 +170,7 @@ export function ConversationsTable({
   );
   const widthCallId = widths[COL_CALL_ID] ?? DEFAULT_CALL_ID_WIDTH;
   const widthLead = widths[COL_LEAD] ?? DEFAULT_LEAD_WIDTH;
+  const widthDisposition = widths[COL_DISPOSITION] ?? DEFAULT_DISPOSITION_WIDTH;
   const widthAudio = widths[COL_AUDIO] ?? DEFAULT_AUDIO_WIDTH;
   function widthForSort(field: SortField, fallback: number): number {
     return widths[field] ?? fallback;
@@ -169,6 +184,7 @@ export function ConversationsTable({
         offset,
         direction: filters.direction,
         status: filters.status,
+        call_outcome: filters.callOutcome,
         agent_id: filters.agent,
         from: filters.from,
         q: filters.q,
@@ -186,6 +202,7 @@ export function ConversationsTable({
       organisationId,
       filters.direction,
       filters.status,
+      filters.callOutcome,
       filters.agent,
       filters.from,
       filters.q,
@@ -264,6 +281,7 @@ export function ConversationsTable({
                   }}
                 />
               ))}
+              <col style={{ width: `${widthDisposition}px` }} />
               <col style={{ width: `${widthAudio}px` }} />
             </colgroup>
             <thead className="border-b border-border/60 bg-muted/30">
@@ -299,6 +317,18 @@ export function ConversationsTable({
                     )}
                   />
                 ))}
+                <th
+                  scope="col"
+                  className="relative px-4 py-3 font-medium"
+                >
+                  Disposition
+                  <ColumnResizeHandle
+                    onStart={makeResizeStarter(
+                      COL_DISPOSITION,
+                      widthDisposition,
+                    )}
+                  />
+                </th>
                 <th
                   scope="col"
                   className="relative px-4 py-3 font-medium"
@@ -374,6 +404,22 @@ export function ConversationsTable({
                       <Badge variant={OUTCOME_VARIANT[call.status]}>
                         {OUTCOME_LABEL[call.status]}
                       </Badge>
+                    </td>
+                    <td className="px-4 py-3">
+                      {call.call_outcome ? (
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                          <Badge variant="secondary" className="w-fit">
+                            {formatOutcomeKey(call.call_outcome)}
+                          </Badge>
+                          {call.requested_callback_at ? (
+                            <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                              ↩ {formatDateTime(call.requested_callback_at)}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
                     </td>
                     <td
                       className="px-4 py-3"

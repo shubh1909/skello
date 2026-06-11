@@ -7,6 +7,8 @@ export interface CallFilterInput {
   lead_id?: string;
   status?: CallStatus;
   direction?: CallDirection;
+  // Semantic disposition key (interested / callback_requested / custom…).
+  call_outcome?: string;
   agent_id?: string;
   from?: string;
   to?: string;
@@ -49,6 +51,7 @@ export function applyCallFilters<
   }
   if (f.status) q = q.eq("status", f.status);
   if (f.direction) q = q.eq("direction", f.direction);
+  if (f.call_outcome) q = q.eq("call_outcome", f.call_outcome);
   if (f.agent_id) q = q.eq("agent_id", f.agent_id);
   if (f.from) q = q.gte("started_at", f.from);
   if (f.to) q = q.lte("started_at", f.to);

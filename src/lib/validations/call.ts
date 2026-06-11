@@ -37,6 +37,9 @@ export const callListSchema = z.object({
   campaign_id: z.string().uuid().optional(),
   status: callStatusSchema.optional(),
   direction: callDirectionSchema.optional(),
+  // Semantic disposition key (per-org configurable — see org_outcome_policies),
+  // so it's an open string rather than an enum.
+  call_outcome: z.string().trim().min(1).max(100).optional(),
   agent_id: z.string().min(1).max(200).optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
