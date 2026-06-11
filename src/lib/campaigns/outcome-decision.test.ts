@@ -6,13 +6,28 @@ import {
   isTerminalCallStatus,
   type DecideOutcomeInput,
 } from "@/lib/campaigns/outcome-decision";
-import type { CallOutcome, CallStatus } from "@/types/call";
+import type { CallStatus } from "@/types/call";
 import type { CampaignRetryTrigger } from "@/types/campaign";
+import type { ResolvedOutcomePolicy } from "@/types/outcome-policy";
 
 // Fixed clock so next_attempt_at is deterministic.
 const NOW = 1_700_000_000_000;
 const INTERVAL = 900; // seconds
 const NOW_PLUS_INTERVAL = new Date(NOW + INTERVAL * 1000).toISOString();
+
+// Mirrors the seeded default policy (the pre-config hardcoded behaviour).
+const DEFAULT_POLICY: ResolvedOutcomePolicy = {
+  actions: {
+    interested: "succeed",
+    meeting_booked: "succeed",
+    callback_requested: "callback",
+    not_interested: "fail",
+    wrong_number: "fail",
+    do_not_call: "fail",
+    no_decision: "succeed",
+  },
+  fallbackAction: "succeed",
+};
 
 function make(overrides: Partial<DecideOutcomeInput> = {}): DecideOutcomeInput {
   return {
@@ -28,6 +43,7 @@ function make(overrides: Partial<DecideOutcomeInput> = {}): DecideOutcomeInput {
       retry_interval_seconds: INTERVAL,
       retry_on: ["no_answer", "busy", "failed", "canceled"],
     },
+    policy: DEFAULT_POLICY,
     now: NOW,
     ...overrides,
   };
@@ -62,12 +78,11 @@ describe("decideOutcome — non-terminal", () => {
   );
 });
 
-describe("decideOutcome — disposition tier (completed)", () => {
-  it.each(["interested", "meeting_booked", "no_decision"] as CallOutcome[])(
+describe("decideOutcome — disposition tier (default policy)", () => {
+  it.each(["interested", "meeting_booked", "no_decision"])(
     "%s → succeed",
     (callOutcome) => {
       const d = decideOutcome(make({ callOutcome }));
-      expect(d.kind).toBe("succeed");
       expect(d).toEqual({
         kind: "succeed",
         patch: {
@@ -81,7 +96,7 @@ describe("decideOutcome — disposition tier (completed)", () => {
     },
   );
 
-  it("null outcome defaults to no_decision → succeed", () => {
+  it("null outcome resolves to the reserved fallback key (no_decision) → succeed", () => {
     const d = decideOutcome(make({ callOutcome: null }));
     expect(d.kind).toBe("succeed");
     if (d.kind === "succeed") {
@@ -89,20 +104,9 @@ describe("decideOutcome — disposition tier (completed)", () => {
     }
   });
 
-  it("unrecognised outcome is defensively treated as success", () => {
-    const d = decideOutcome(
-      make({ callOutcome: "totally_unknown" as CallOutcome }),
-    );
-    expect(d.kind).toBe("succeed");
-  });
-
-  it.each([
-    ["not_interested", "Customer not interested"],
-    ["do_not_call", "Customer requested no further calls"],
-    ["wrong_number", "Wrong number"],
-  ] as [CallOutcome, string][])(
+  it.each(["not_interested", "do_not_call", "wrong_number"])(
     "%s → fail with reason (no retry)",
-    (callOutcome, reason) => {
+    (callOutcome) => {
       const d = decideOutcome(make({ callOutcome }));
       expect(d).toEqual({
         kind: "fail",
@@ -110,32 +114,93 @@ describe("decideOutcome — disposition tier (completed)", () => {
           last_status: "completed",
           last_call_id: "call-1",
           status: "failed",
-          last_error: reason,
+          last_error: `Outcome: ${callOutcome}`,
           last_outcome: callOutcome,
         },
       });
     },
   );
 
-  it("do_not_call does NOT touch any global flag — it just fails this contact", () => {
+  it("do_not_call carries no global/cross-campaign field — just fails this contact", () => {
     const d = decideOutcome(make({ callOutcome: "do_not_call" }));
+    if (d.kind !== "fail") throw new Error("expected fail");
+    expect(Object.keys(d.patch).sort()).toEqual([
+      "last_call_id",
+      "last_error",
+      "last_outcome",
+      "last_status",
+      "status",
+    ]);
+  });
+});
+
+describe("decideOutcome — custom policy", () => {
+  const CUSTOM: ResolvedOutcomePolicy = {
+    actions: {
+      demo_scheduled: "succeed",
+      send_brochure: "retry",
+      hard_no: "fail",
+      no_decision: "fail", // org made the fallback terminal-fail
+    },
+    fallbackAction: "fail",
+  };
+
+  it("honours a custom succeed outcome", () => {
+    const d = decideOutcome(
+      make({ callOutcome: "demo_scheduled", policy: CUSTOM }),
+    );
+    expect(d.kind).toBe("succeed");
+    if (d.kind === "succeed") expect(d.patch.last_outcome).toBe("demo_scheduled");
+  });
+
+  it("a 'retry' action re-arms at the interval when under cap", () => {
+    const d = decideOutcome(
+      make({ callOutcome: "send_brochure", policy: CUSTOM, attempt: 1 }),
+    );
+    expect(d).toEqual({
+      kind: "rearm",
+      patch: {
+        last_status: "completed",
+        last_call_id: "call-1",
+        status: "pending",
+        next_attempt_at: NOW_PLUS_INTERVAL,
+        last_error: null,
+        last_outcome: "send_brochure",
+      },
+    });
+  });
+
+  it("a 'retry' action becomes terminal fail once the dial cap is hit", () => {
+    const d = decideOutcome(
+      make({ callOutcome: "send_brochure", policy: CUSTOM, attempt: 3 }),
+    );
     expect(d.kind).toBe("fail");
-    // No lead-level / cross-campaign field in the patch.
     if (d.kind === "fail") {
-      expect(Object.keys(d.patch).sort()).toEqual([
-        "last_call_id",
-        "last_error",
-        "last_outcome",
-        "last_status",
-        "status",
-      ]);
+      expect(d.patch.last_error).toBe("Retries exhausted (send_brochure)");
     }
+  });
+
+  it("an unconfigured label falls back to the org's fallback action", () => {
+    // CUSTOM fallbackAction is 'fail' — an unknown label should fail, not succeed.
+    const d = decideOutcome(
+      make({ callOutcome: "totally_unseen", policy: CUSTOM }),
+    );
+    expect(d.kind).toBe("fail");
+    if (d.kind === "fail") expect(d.patch.last_outcome).toBe("totally_unseen");
+  });
+
+  it("null outcome under a fail-fallback policy fails (records no_decision)", () => {
+    const d = decideOutcome(make({ callOutcome: null, policy: CUSTOM }));
+    expect(d.kind).toBe("fail");
+    if (d.kind === "fail") expect(d.patch.last_outcome).toBe("no_decision");
   });
 });
 
 describe("decideOutcome — callback budget", () => {
   it("callback_requested with budget left → rearm at requested time, callback_count++", () => {
-    const requestedCallbackAt = new Date(NOW + 7 * 24 * 3600 * 1000).toISOString();
+    const requestedCallbackAt = new Date(
+      NOW + 7 * 24 * 3600 * 1000,
+    ).toISOString();
     const d = decideOutcome(
       make({
         callOutcome: "callback_requested",
@@ -157,46 +222,19 @@ describe("decideOutcome — callback budget", () => {
     });
   });
 
-  it("callback_requested with no time → falls back to retry interval", () => {
-    const d = decideOutcome(
-      make({ callOutcome: "callback_requested", requestedCallbackAt: null }),
-    );
-    if (d.kind !== "rearm") throw new Error("expected rearm");
-    expect(d.patch.next_attempt_at).toBe(NOW_PLUS_INTERVAL);
-  });
-
-  it("callback_requested with a PAST time → falls back to retry interval", () => {
-    const past = new Date(NOW - 1000).toISOString();
-    const d = decideOutcome(
-      make({ callOutcome: "callback_requested", requestedCallbackAt: past }),
-    );
-    if (d.kind !== "rearm") throw new Error("expected rearm");
-    expect(d.patch.next_attempt_at).toBe(NOW_PLUS_INTERVAL);
-  });
-
-  it("callback_requested with a garbage time → falls back to retry interval", () => {
-    const d = decideOutcome(
-      make({
-        callOutcome: "callback_requested",
-        requestedCallbackAt: "not-a-date",
-      }),
-    );
-    if (d.kind !== "rearm") throw new Error("expected rearm");
-    expect(d.patch.next_attempt_at).toBe(NOW_PLUS_INTERVAL);
+  it("callback with no time / past / garbage → falls back to retry interval", () => {
+    for (const t of [null, new Date(NOW - 1000).toISOString(), "not-a-date"]) {
+      const d = decideOutcome(
+        make({ callOutcome: "callback_requested", requestedCallbackAt: t }),
+      );
+      if (d.kind !== "rearm") throw new Error("expected rearm");
+      expect(d.patch.next_attempt_at).toBe(NOW_PLUS_INTERVAL);
+    }
   });
 
   it("callback budget exhausted (count == max) → succeed, not rearm", () => {
     const d = decideOutcome(
-      make({
-        callOutcome: "callback_requested",
-        callbackCount: 2,
-        campaign: {
-          max_attempts: 3,
-          max_callbacks: 2,
-          retry_interval_seconds: INTERVAL,
-          retry_on: [],
-        },
-      }),
+      make({ callOutcome: "callback_requested", callbackCount: 2 }),
     );
     expect(d.kind).toBe("succeed");
   });
@@ -267,15 +305,11 @@ describe("decideOutcome — technical tier", () => {
   });
 
   it("retryable but cap hit (attempt >= max_attempts) → fail", () => {
-    const d = decideOutcome(
-      make({ callStatus: "no_answer", attempt: 3 }), // 3 >= 3 + 0
-    );
+    const d = decideOutcome(make({ callStatus: "no_answer", attempt: 3 }));
     expect(d.kind).toBe("fail");
   });
 
   it("honored callbacks extend the dial cap (attempt < max_attempts + callback_count)", () => {
-    // attempt 3, max_attempts 3 → would be capped, but callback_count 1 lifts
-    // the cap to 4, so this is still retryable.
     const d = decideOutcome(
       make({ callStatus: "no_answer", attempt: 3, callbackCount: 1 }),
     );
@@ -308,7 +342,7 @@ describe("callbackTime", () => {
   });
 });
 
-// Type-only guard: keep the retry-trigger union and the test list in sync.
+// Keep the retry-trigger union and the test list in sync.
 const _allTriggers: CampaignRetryTrigger[] = [
   "no_answer",
   "busy",

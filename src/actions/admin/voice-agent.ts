@@ -47,14 +47,11 @@ const fromPhone = z
   .nullish()
   .transform((v) => (v && v.length > 0 ? v : null));
 
-const dailyCap = z.number().int().min(1).max(10000);
-
 const upsertSchema = z.object({
   organisation_id: z.string().uuid(),
   agent_id: z.string().trim().min(1).max(200),
   api_key: z.string().trim().min(1).max(500),
   from_phone_number: fromPhone,
-  daily_calls_per_number: dailyCap.default(200),
   enabled: z.boolean().default(true),
 });
 
@@ -63,7 +60,6 @@ const updateSchema = z.object({
   agent_id: z.string().trim().min(1).max(200).optional(),
   api_key: z.string().trim().min(1).max(500).optional(),
   from_phone_number: fromPhone.optional(),
-  daily_calls_per_number: dailyCap.optional(),
   enabled: z.boolean().optional(),
 });
 
@@ -103,7 +99,6 @@ export async function upsertVoiceAgentAdmin(
       agent_id: parsed.data.agent_id,
       api_key: parsed.data.api_key,
       from_phone_number: parsed.data.from_phone_number,
-      daily_calls_per_number: parsed.data.daily_calls_per_number,
       enabled: parsed.data.enabled,
     })
     .select(INTEGRATION_COLUMNS)

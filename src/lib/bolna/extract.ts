@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { CallOutcome } from "@/types/call";
+import { type CallOutcome, KNOWN_CALL_OUTCOMES } from "@/types/call";
 
 // Per-field caps bound the work the webhook does on a single payload. Bolna's
 // real-world values are well under these; the limits exist so a leaked webhook
@@ -95,55 +95,49 @@ export function toTimestamp(v: string | null): string | null {
   return d.toISOString();
 }
 
-const VALID_OUTCOMES: readonly CallOutcome[] = [
-  "interested",
-  "meeting_booked",
-  "not_interested",
-  "callback_requested",
-  "do_not_call",
-  "wrong_number",
-  "no_decision",
-];
+// Normalise any outcome-ish string to a stable key: trim, lowercase, and
+// collapse runs of non-alphanumeric characters to a single underscore. The
+// admin UI stores outcome keys through the SAME function, so the label the
+// voice agent emits and the org's configured key match. Examples:
+//   "Call me later!" → "call_me_later"
+//   "Not Interested" → "not_interested"
+export function normalizeOutcomeKey(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
 
-// Normalise the agent's free-ish `call_outcome` string onto our closed
-// vocabulary. The agent is prompted to emit one of the canonical values, but
-// real LLM output drifts (spacing, casing, near-synonyms), so we map the common
-// variants. Anything unrecognised collapses to `no_decision` — a connected call
-// with no actionable disposition, which the state machine treats as a success.
+// Common spoken/spacey variants of the SEVEN seeded defaults → their canonical
+// key, so an out-of-the-box org works even when the agent says "call me later"
+// instead of "callback_requested". Keyed by the NORMALISED form. Custom outcome
+// keys an org defines are matched verbatim against its policy, so they pass
+// through untouched here.
 const OUTCOME_ALIASES: Record<string, CallOutcome> = {
-  interested: "interested",
-  not_interested: "not_interested",
-  "not interested": "not_interested",
   uninterested: "not_interested",
-  callback_requested: "callback_requested",
-  "callback requested": "callback_requested",
   callback: "callback_requested",
   call_back: "callback_requested",
   call_later: "callback_requested",
-  "call me later": "callback_requested",
-  do_not_call: "do_not_call",
-  "do not call": "do_not_call",
+  call_me_later: "callback_requested",
   dnc: "do_not_call",
-  "remove me": "do_not_call",
-  wrong_number: "wrong_number",
-  "wrong number": "wrong_number",
-  meeting_booked: "meeting_booked",
-  "meeting booked": "meeting_booked",
+  remove_me: "do_not_call",
   meeting_scheduled: "meeting_booked",
   appointment_booked: "meeting_booked",
   booked: "meeting_booked",
-  no_decision: "no_decision",
-  "no decision": "no_decision",
   undecided: "no_decision",
 };
 
+// Resolve the agent's raw `call_outcome` string to a stable outcome key. Known
+// defaults (and their aliases) map to canonical keys; any other value passes
+// through as a normalised custom key. The PER-ORG policy decides what an
+// unconfigured key does at decision time (it resolves to the org's fallback).
 export function coerceCallOutcome(raw: string | null): CallOutcome | null {
   if (!raw) return null;
-  const key = raw.trim().toLowerCase();
+  const key = normalizeOutcomeKey(raw);
   if (!key) return null;
-  const canonical = VALID_OUTCOMES.find((v) => v === key);
-  if (canonical) return canonical;
-  return OUTCOME_ALIASES[key] ?? "no_decision";
+  if ((KNOWN_CALL_OUTCOMES as readonly string[]).includes(key)) return key;
+  return OUTCOME_ALIASES[key] ?? key;
 }
 
 export interface ExtractedLead {

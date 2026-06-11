@@ -15,11 +15,12 @@ import {
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { CallStatus, CallDirection } from "@/types/call";
 import type { Campaign, CampaignContact } from "@/types/campaign";
+import { FALLBACK_OUTCOME_KEY } from "@/types/outcome-policy";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const CAMPAIGN_COLUMNS =
-  "id, organisation_id, created_by, name, file_name, agent_id, from_phone_number, from_phone_numbers, status, scheduled_at, started_at, completed_at, max_attempts, max_callbacks, retry_interval_seconds, retry_on, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
+  "id, organisation_id, created_by, name, file_name, agent_id, from_phone_number, from_phone_numbers, status, scheduled_at, started_at, completed_at, max_attempts, max_callbacks, retry_interval_seconds, retry_on, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -154,6 +155,9 @@ export async function createCampaign(
       max_attempts: parsed.data.max_attempts,
       retry_interval_seconds: parsed.data.retry_interval_seconds,
       retry_on: parsed.data.retry_on,
+      switch_connect_rate_floor: parsed.data.switch_connect_rate_floor,
+      switch_window_minutes: parsed.data.switch_window_minutes,
+      switch_min_samples: parsed.data.switch_min_samples,
     })
     .select(CAMPAIGN_COLUMNS)
     .single<Campaign>();
@@ -480,23 +484,26 @@ export interface CampaignStats {
   longestTalkSeconds: number;
   // Dials per day across the run (YYYY-MM-DD → count), ascending.
   callsPerDay: Array<{ date: string; count: number }>;
-  // Per caller-ID breakdown so operators can see how rotation spread the load
-  // and which numbers connect best. `dailyCap` is the same per-number/day
-  // ceiling the dispatcher enforces.
-  dailyCap: number;
+  // Per caller-ID breakdown so operators can see how switching spread the load
+  // and which numbers are healthy. `recentConnectRatePct` is measured over the
+  // campaign's switch window; `isResting` means it's below the floor (with
+  // enough samples) — i.e. the dispatcher is steering away from it.
+  switchFloorPct: number;
+  switchWindowMinutes: number;
+  // True when every number with enough recent samples is resting — the run is
+  // dialing from degraded numbers (least-bad fallback).
+  degraded: boolean;
   byNumber: Array<{
     phone: string;
     label: string;
     totalCalls: number;
     connected: number;
-    connectRatePct: number;
-    callsToday: number; // dials in the last 24h (against the cap)
+    connectRatePct: number; // lifetime
+    recentDials: number; // dials within the switch window
+    recentConnectRatePct: number | null; // null until enough samples
+    isResting: boolean;
   }>;
 }
-
-// Fallback when an integration row predates the configurable cap column.
-// Matches DEFAULT_DAILY_CALLS_PER_NUMBER in lib/campaigns/dispatch.ts.
-const DEFAULT_DAILY_CALLS_PER_NUMBER = 200;
 
 const ALL_CALL_STATUSES: CallStatus[] = [
   "completed",
@@ -521,31 +528,57 @@ export async function getCampaignStats(
   const admin = createAdminClient();
   const { data: campaign } = await admin
     .from("campaigns")
-    .select("id, organisation_id")
+    .select(
+      "id, organisation_id, switch_connect_rate_floor, switch_window_minutes, switch_min_samples",
+    )
     .eq("id", parsed.data.id)
-    .maybeSingle<{ id: string; organisation_id: string }>();
+    .maybeSingle<{
+      id: string;
+      organisation_id: string;
+      switch_connect_rate_floor: number;
+      switch_window_minutes: number;
+      switch_min_samples: number;
+    }>();
   if (!campaign) return fail("Campaign not found");
   if (!(await userOwnsOrg(supabase, user.id, campaign.organisation_id))) {
     return fail("Forbidden");
   }
 
-  // Caller-ID labels + the org's daily cap for the per-number breakdown.
+  // Caller-ID labels for the per-number breakdown.
   const { data: integration } = await admin
     .from("bolna_integrations")
-    .select("from_phone_labels, daily_calls_per_number")
+    .select("from_phone_labels")
     .eq("organisation_id", campaign.organisation_id)
     .maybeSingle<{
       from_phone_labels: Record<string, unknown> | null;
-      daily_calls_per_number: number | null;
     }>();
   const numberLabels = integration?.from_phone_labels ?? {};
-  const dailyCap =
-    integration?.daily_calls_per_number ?? DEFAULT_DAILY_CALLS_PER_NUMBER;
+  const switchFloorPct = campaign.switch_connect_rate_floor;
+  const switchWindowMinutes = campaign.switch_window_minutes;
+  const switchMinSamples = campaign.switch_min_samples;
+
+  // Org outcome policy → which outcomes count toward the success rate. The
+  // metric is decoupled from the contact's terminal state: an org may mark a
+  // fail-action outcome as "counts". Fallback covers any key not in the policy.
+  const { data: policyRows } = await admin
+    .from("org_outcome_policies")
+    .select("outcome_key, counts_as_success, is_fallback")
+    .eq("organisation_id", campaign.organisation_id)
+    .returns<
+      { outcome_key: string; counts_as_success: boolean; is_fallback: boolean }[]
+    >();
+  const successByKey = new Map<string, boolean>();
+  // Pre-config default: a connected call with no disposition was a success.
+  let fallbackSuccess = true;
+  for (const r of policyRows ?? []) {
+    successByKey.set(r.outcome_key, r.counts_as_success);
+    if (r.is_fallback) fallbackSuccess = r.counts_as_success;
+  }
 
   // Contacts (small per campaign — bounded by CSV upload).
   const { data: contacts, error: cErr } = await admin
     .from("campaign_contacts")
-    .select("id, status, attempt, last_status")
+    .select("id, status, attempt, last_status, last_outcome")
     .eq("campaign_id", campaign.id)
     .returns<
       Array<{
@@ -553,6 +586,7 @@ export async function getCampaignStats(
         status: string;
         attempt: number;
         last_status: string | null;
+        last_outcome: string | null;
       }>
     >();
   if (cErr) return fail(cErr.message);
@@ -567,9 +601,15 @@ export async function getCampaignStats(
   for (const c of contacts ?? []) {
     attemptSum += c.attempt;
     if (c.attempt > 0) attemptedContacts += 1;
-    if (c.last_status === "completed") connectedContacts += 1;
-    if (c.status === "succeeded") succeededContacts += 1;
-    else if (c.status === "failed") failedContacts += 1;
+    // "Success" is policy-driven but GATED on the call having connected, so a
+    // never-connected contact can't count as a success via the fallback, and
+    // the funnel stays monotonic (succeeded ⊆ connected).
+    if (c.last_status === "completed") {
+      connectedContacts += 1;
+      const key = c.last_outcome ?? FALLBACK_OUTCOME_KEY;
+      if (successByKey.get(key) ?? fallbackSuccess) succeededContacts += 1;
+    }
+    if (c.status === "failed") failedContacts += 1;
     else if (c.status === "pending" || c.status === "in_flight")
       pendingContacts += 1;
   }
@@ -597,12 +637,13 @@ export async function getCampaignStats(
 
   const outcomeCounts = new Map<CallStatus, number>();
   const perDay = new Map<string, number>();
-  // Per caller-ID tallies.
+  // Per caller-ID tallies: lifetime (total/connected) + recent window
+  // (recentDials/recentConnects) for the health/switching view.
   const numberAgg = new Map<
     string,
-    { total: number; connected: number; today: number }
+    { total: number; connected: number; recentDials: number; recentConnects: number }
   >();
-  const since24h = Date.now() - 24 * 60 * 60 * 1000;
+  const windowCutoff = Date.now() - switchWindowMinutes * 60 * 1000;
   let totalTalkSeconds = 0;
   let connectedCalls = 0;
   let longestTalkSeconds = 0;
@@ -614,11 +655,15 @@ export async function getCampaignStats(
       const agg = numberAgg.get(call.from_phone) ?? {
         total: 0,
         connected: 0,
-        today: 0,
+        recentDials: 0,
+        recentConnects: 0,
       };
       agg.total += 1;
       if (call.status === "completed") agg.connected += 1;
-      if (new Date(call.started_at).getTime() >= since24h) agg.today += 1;
+      if (new Date(call.started_at).getTime() >= windowCutoff) {
+        agg.recentDials += 1;
+        if (call.status === "completed") agg.recentConnects += 1;
+      }
       numberAgg.set(call.from_phone, agg);
     }
     if (call.status === "completed") {
@@ -646,15 +691,31 @@ export async function getCampaignStats(
     return typeof raw === "string" && raw.trim() ? raw : phone;
   };
   const byNumber = Array.from(numberAgg.entries())
-    .map(([phone, agg]) => ({
-      phone,
-      label: labelFor(phone),
-      totalCalls: agg.total,
-      connected: agg.connected,
-      connectRatePct: pct(agg.connected, agg.total),
-      callsToday: agg.today,
-    }))
+    .map(([phone, agg]) => {
+      // Recent connect rate is only trustworthy with enough samples in the
+      // window — below that we show null and never mark the number resting
+      // (mirrors the dispatcher's min-samples gate).
+      const enoughSamples = agg.recentDials >= switchMinSamples;
+      const recentRate = enoughSamples
+        ? pct(agg.recentConnects, agg.recentDials)
+        : null;
+      return {
+        phone,
+        label: labelFor(phone),
+        totalCalls: agg.total,
+        connected: agg.connected,
+        connectRatePct: pct(agg.connected, agg.total),
+        recentDials: agg.recentDials,
+        recentConnectRatePct: recentRate,
+        isResting: recentRate !== null && recentRate < switchFloorPct,
+      };
+    })
     .sort((a, b) => b.totalCalls - a.totalCalls);
+
+  // Degraded = at least one number has enough recent samples to judge and ALL
+  // such numbers are resting (the dispatcher is in least-bad fallback).
+  const judged = byNumber.filter((n) => n.recentConnectRatePct !== null);
+  const degraded = judged.length > 0 && judged.every((n) => n.isResting);
 
   return ok({
     totalContacts,
@@ -676,7 +737,9 @@ export async function getCampaignStats(
       connectedCalls > 0 ? Math.round(totalTalkSeconds / connectedCalls) : 0,
     longestTalkSeconds,
     callsPerDay,
-    dailyCap,
+    switchFloorPct,
+    switchWindowMinutes,
+    degraded,
     byNumber,
   });
 }

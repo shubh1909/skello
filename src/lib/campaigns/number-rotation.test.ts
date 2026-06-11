@@ -2,124 +2,165 @@ import { describe, expect, it } from "vitest";
 
 import {
   FALLBACK_NO_NUMBER,
-  pickFromNumber,
-  type DueContact,
-  type IntegrationRow,
+  computeNumberHealth,
+  pickHealthyNumber,
+  type NumberHealth,
+  type PickNumberInput,
 } from "@/lib/campaigns/dispatch";
 
-// pickFromNumber only reads the caller-ID fields off these shapes, so we build
-// minimal stand-ins and cast. Keeps the rotation/cap logic test focused.
-function contact(campaign: {
-  from_phone_number?: string | null;
-  from_phone_numbers?: string[] | null;
-} | null): DueContact {
+const FLOOR = 40;
+const MIN_SAMPLES = 20;
+
+function base(overrides: Partial<PickNumberInput> = {}): PickNumberInput {
   return {
-    campaign:
-      campaign === null
-        ? null
-        : {
-            from_phone_number: campaign.from_phone_number ?? null,
-            from_phone_numbers: campaign.from_phone_numbers ?? null,
-          },
-  } as unknown as DueContact;
+    pool: [],
+    singleOverride: null,
+    health: new Map(),
+    batchUsage: new Map(),
+    floorPct: FLOOR,
+    minSamples: MIN_SAMPLES,
+    allowLeastBad: false,
+    ...overrides,
+  };
 }
 
-function integration(o: Partial<IntegrationRow> = {}): IntegrationRow {
-  return {
-    organisation_id: "org-1",
-    agent_id: "agent-1",
-    api_key: "key",
-    enabled: true,
-    from_phone_number: null,
-    daily_calls_per_number: 200,
-    ...o,
-  } as IntegrationRow;
+function h(dials: number, connects: number): NumberHealth {
+  return { dials, connects };
 }
 
-describe("pickFromNumber — rotation pool", () => {
-  it("picks the least-used number under the cap", () => {
-    const c = contact({ from_phone_numbers: ["+A", "+B"] });
-    const usage = new Map([
-      ["+A", 5],
-      ["+B", 2],
-    ]);
-    expect(pickFromNumber(c, integration(), usage)).toBe("+B");
-  });
-
-  it("breaks ties by pool order (stable)", () => {
-    const c = contact({ from_phone_numbers: ["+A", "+B"] });
-    expect(pickFromNumber(c, integration(), new Map())).toBe("+A");
-  });
-
-  it("skips numbers at the cap and uses the one with budget left", () => {
-    const c = contact({ from_phone_numbers: ["+A", "+B"] });
-    const usage = new Map([
-      ["+A", 200],
-      ["+B", 10],
-    ]);
-    expect(pickFromNumber(c, integration({ daily_calls_per_number: 200 }), usage)).toBe(
-      "+B",
+describe("pickHealthyNumber — healthy selection", () => {
+  it("picks a healthy number and spreads by least load (window dials + batch)", () => {
+    const r = pickHealthyNumber(
+      base({
+        pool: ["+A", "+B"],
+        health: new Map([
+          ["+A", h(50, 30)], // 60% healthy, 50 dials
+          ["+B", h(30, 21)], // 70% healthy, 30 dials → less loaded
+        ]),
+      }),
     );
+    expect(r).toEqual({ kind: "dial", number: "+B", degraded: false });
   });
 
-  it("returns null (defer) when every pool number is capped", () => {
-    const c = contact({ from_phone_numbers: ["+A", "+B"] });
-    const usage = new Map([
-      ["+A", 200],
-      ["+B", 200],
-    ]);
-    expect(pickFromNumber(c, integration(), usage)).toBeNull();
+  it("treats a number with too few samples as healthy (gives it a chance)", () => {
+    const r = pickHealthyNumber(
+      base({
+        pool: ["+A"],
+        health: new Map([["+A", h(5, 0)]]), // 0% but only 5 samples → unknown
+      }),
+    );
+    expect(r).toEqual({ kind: "dial", number: "+A", degraded: false });
   });
 
-  it("honours the per-org daily cap value", () => {
-    const c = contact({ from_phone_numbers: ["+A"] });
-    const intg = integration({ daily_calls_per_number: 3 });
-    expect(pickFromNumber(c, intg, new Map([["+A", 2]]))).toBe("+A"); // 2 < 3
-    expect(pickFromNumber(c, intg, new Map([["+A", 3]]))).toBeNull(); // 3 >= 3
+  it("skips a resting number and uses the healthy one", () => {
+    const r = pickHealthyNumber(
+      base({
+        pool: ["+A", "+B"],
+        health: new Map([
+          ["+A", h(50, 10)], // 20% < floor → resting
+          ["+B", h(50, 30)], // 60% healthy
+        ]),
+      }),
+    );
+    expect(r).toEqual({ kind: "dial", number: "+B", degraded: false });
   });
 
-  it("falls back to the default cap (200) when the column is null", () => {
-    const c = contact({ from_phone_numbers: ["+A"] });
-    const intg = integration({ daily_calls_per_number: null });
-    expect(pickFromNumber(c, intg, new Map([["+A", 199]]))).toBe("+A");
-    expect(pickFromNumber(c, intg, new Map([["+A", 200]]))).toBeNull();
+  it("breaks load ties with in-batch usage", () => {
+    const r = pickHealthyNumber(
+      base({
+        pool: ["+A", "+B"],
+        health: new Map([
+          ["+A", h(30, 20)],
+          ["+B", h(30, 20)],
+        ]),
+        batchUsage: new Map([["+A", 3]]), // A already dialed more this tick
+      }),
+    );
+    expect(r).toEqual({ kind: "dial", number: "+B", degraded: false });
   });
 });
 
-describe("pickFromNumber — single-number precedence", () => {
-  it("uses the campaign single override when no pool is set", () => {
-    const c = contact({ from_phone_number: "+SINGLE" });
-    expect(pickFromNumber(c, integration(), new Map())).toBe("+SINGLE");
+describe("pickHealthyNumber — all resting", () => {
+  const allResting = {
+    pool: ["+A", "+B"],
+    health: new Map([
+      ["+A", h(50, 10)], // 20%
+      ["+B", h(50, 5)], // 10%
+    ]),
+  };
+
+  it("defers when backoff is not yet exhausted", () => {
+    const r = pickHealthyNumber(base({ ...allResting, allowLeastBad: false }));
+    expect(r).toEqual({ kind: "defer" });
   });
 
-  it("returns null when the single override is at its cap", () => {
-    const c = contact({ from_phone_number: "+SINGLE" });
-    const usage = new Map([["+SINGLE", 200]]);
-    expect(pickFromNumber(c, integration(), usage)).toBeNull();
-  });
-
-  it("falls back to the org default when neither pool nor campaign number is set", () => {
-    const c = contact({});
-    const intg = integration({ from_phone_number: "+ORGDEFAULT" });
-    expect(pickFromNumber(c, intg, new Map())).toBe("+ORGDEFAULT");
-  });
-
-  it("campaign single override wins over the org default", () => {
-    const c = contact({ from_phone_number: "+SINGLE" });
-    const intg = integration({ from_phone_number: "+ORGDEFAULT" });
-    expect(pickFromNumber(c, intg, new Map())).toBe("+SINGLE");
+  it("dials the least-bad (highest connect rate) once backoff is exhausted", () => {
+    const r = pickHealthyNumber(base({ ...allResting, allowLeastBad: true }));
+    expect(r).toEqual({ kind: "dial", number: "+A", degraded: true });
   });
 });
 
-describe("pickFromNumber — nothing configured", () => {
-  it("returns the empty-string sentinel so Bolna dials from its own pool", () => {
-    const c = contact({});
-    expect(pickFromNumber(c, integration(), new Map())).toBe(FALLBACK_NO_NUMBER);
+describe("pickHealthyNumber — single-number precedence", () => {
+  it("uses the single override when no pool is set", () => {
+    const r = pickHealthyNumber(base({ singleOverride: "+S" }));
+    expect(r).toEqual({ kind: "dial", number: "+S", degraded: false });
   });
 
-  it("returns the sentinel even when contact has no campaign at all", () => {
-    expect(pickFromNumber(contact(null), integration(), new Map())).toBe(
-      FALLBACK_NO_NUMBER,
+  it("defers a resting single override (no backoff yet)", () => {
+    const r = pickHealthyNumber(
+      base({
+        singleOverride: "+S",
+        health: new Map([["+S", h(50, 5)]]), // 10% resting
+      }),
     );
+    expect(r).toEqual({ kind: "defer" });
+  });
+
+  it("least-bad dials the resting single override once backoff is exhausted", () => {
+    const r = pickHealthyNumber(
+      base({
+        singleOverride: "+S",
+        health: new Map([["+S", h(50, 5)]]),
+        allowLeastBad: true,
+      }),
+    );
+    expect(r).toEqual({ kind: "dial", number: "+S", degraded: true });
+  });
+});
+
+describe("pickHealthyNumber — nothing configured", () => {
+  it("dials with the empty-string sentinel (provider picks)", () => {
+    const r = pickHealthyNumber(base({}));
+    expect(r).toEqual({
+      kind: "dial",
+      number: FALLBACK_NO_NUMBER,
+      degraded: false,
+    });
+  });
+});
+
+describe("computeNumberHealth", () => {
+  const NOW = 1_700_000_000_000;
+  const within = new Date(NOW - 5 * 60 * 1000).toISOString(); // 5 min ago
+  const old = new Date(NOW - 120 * 60 * 1000).toISOString(); // 2 h ago
+  const windowMs = 60 * 60 * 1000; // 1 h
+
+  it("counts dials + connects within the window only", () => {
+    const rows = [
+      { organisation_id: "o", from_phone: "+A", status: "completed", started_at: within },
+      { organisation_id: "o", from_phone: "+A", status: "no_answer", started_at: within },
+      { organisation_id: "o", from_phone: "+A", status: "completed", started_at: old }, // excluded
+      { organisation_id: "o", from_phone: "+B", status: "completed", started_at: within },
+    ];
+    const health = computeNumberHealth(rows, windowMs, NOW);
+    expect(health.get("+A")).toEqual({ dials: 2, connects: 1 });
+    expect(health.get("+B")).toEqual({ dials: 1, connects: 1 });
+  });
+
+  it("ignores rows with no caller-ID", () => {
+    const rows = [
+      { organisation_id: "o", from_phone: null, status: "completed", started_at: within },
+    ];
+    expect(computeNumberHealth(rows, windowMs, NOW).size).toBe(0);
   });
 });

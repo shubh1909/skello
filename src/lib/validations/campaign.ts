@@ -59,9 +59,14 @@ export const createCampaignSchema = z.object({
     .array(z.string().trim().min(5).max(32))
     .max(50)
     .default([]),
-  max_attempts: z.number().int().min(1).max(6),
+  max_attempts: z.number().int().min(1).max(10),
   retry_interval_seconds: z.number().int().min(60).max(86400),
   retry_on: z.array(campaignRetryTriggerSchema).max(4),
+  // Caller-ID switching (connect-rate based). Defaults match the DB so older
+  // callers that omit them keep working.
+  switch_connect_rate_floor: z.number().int().min(0).max(100).default(30),
+  switch_window_minutes: z.number().int().min(5).max(1440).default(60),
+  switch_min_samples: z.number().int().min(1).max(1000).default(20),
   contacts: z.array(campaignContactInputSchema).min(1).max(10000),
 });
 

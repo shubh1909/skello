@@ -3,15 +3,24 @@ import "server-only";
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-// Drained per call to dispatchDueCampaignContacts(). Bolna API throughput is
-// the binding constraint, not Postgres — keep batches small so one big
-// campaign can't starve others.
-const BATCH_LIMIT = 25;
-const PER_CAMPAIGN_LIMIT = 10;
-// Max simultaneous Bolna /call requests in flight. Stays well under any
-// telephony provider's concurrent-call ceiling and avoids stampeding their
-// rate limit. 5 workers × ~1s/call = 25 contacts processed in ~5 seconds.
-const CONCURRENCY = 5;
+// Throughput per tick. The cron fires every minute (createCampaign also kicks
+// off a dispatch immediately), so these are effectively per-minute ceilings.
+// The provider queues calls with no rate limit of its own, and we run on a
+// self-hosted VM (no serverless function timeout), so the real governors are:
+//   1. finishing a tick before any reverse-proxy / pg_net read timeout,
+//   2. the per-number daily spam cap × caller-ID pool size — this bounds
+//      SUSTAINED volume regardless of the numbers here (you can't out-dial the
+//      pool; excess contacts just defer), and
+//   3. the webhook ingest rate limit (~2000 events/min).
+// PER_CAMPAIGN_LIMIT keeps one big campaign from starving others while still
+// letting it move fast.
+const BATCH_LIMIT = 250; // total dials per tick across all campaigns
+const PER_CAMPAIGN_LIMIT = 100; // dials per tick for any single campaign
+// Max simultaneous provider /call requests in flight. The provider imposes no
+// concurrency ceiling; we cap it so the VM's event loop + Supabase round-trips
+// stay healthy and a tick drains quickly. ~25 workers × ~1.5s/call drains a
+// 250-dial batch in ~15s — well under a typical 60s proxy timeout.
+const CONCURRENCY = 25;
 // A contact is claimed (status='in_flight') the instant we dial it, and only
 // leaves that state when the provider's result webhook lands. If that webhook
 // is lost, delayed, or arrives unmatched, the contact — and therefore the
@@ -20,18 +29,20 @@ const CONCURRENCY = 5;
 // finish. Generous on purpose: a real call + its webhook resolve well inside
 // this window.
 const STUCK_IN_FLIGHT_MS = 30 * 60 * 1000;
-// Spam avoidance: carriers flag a number that places too many calls in a day.
-// We rotate across a campaign's caller-ID pool and never let any single number
-// exceed the org's daily cap in a rolling 24h window. When every number in the
-// pool is capped, the contact is deferred (re-armed for later) rather than
-// dialed from an over-used number. The cap is configurable per org on the
-// voice-agent admin page (bolna_integrations.daily_calls_per_number); this is
-// the fallback when a row somehow lacks it.
-const DEFAULT_DAILY_CALLS_PER_NUMBER = 200;
-const NUMBER_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
-// When a contact can't be dialed because every pool number is capped, push its
-// next attempt out by this long so the tick stops re-checking it immediately.
-const NUMBER_CAP_DEFER_MS = 60 * 60 * 1000;
+// Spam avoidance via CONNECT-RATE switching (replaces the old fixed daily cap).
+// Per campaign, we watch each caller-ID's connect rate over a rolling window and
+// rest any number whose rate falls below the campaign's floor — the direct
+// symptom of being spam-flagged. When EVERY number is resting we defer the
+// contact with escalating backoff; after a few rounds we dial from the
+// least-bad number so the run still finishes (operator's choice — completion
+// over number-preservation, surfaced as a "degraded" badge on the dashboard).
+const MAX_HEALTH_BACKOFF_ROUNDS = 3;
+// Backoff per all-resting deferral: 30m, then 60m, then 120m (base × 2^round).
+const HEALTH_DEFER_BASE_MS = 30 * 60 * 1000;
+// Upper bound on the raw call rows we pull to compute number health. Windows are
+// minutes-scale so this is generous; a busier-than-this org would slightly
+// undercount, which only makes switching MORE conservative (safe).
+const HEALTH_ROW_LIMIT = 50000;
 
 /**
  * Run `fn` over `items` with a fixed worker pool. Preserves
@@ -130,6 +141,8 @@ export interface DueContact {
   attempt: number;
   // Honored callbacks grant extra dial allowance on top of max_attempts.
   callback_count: number;
+  // All-resting deferrals so far (drives backoff → least-bad fallback).
+  health_defer_count: number;
   campaign: {
     id: string;
     organisation_id: string;
@@ -138,6 +151,9 @@ export interface DueContact {
     agent_id: string | null;
     from_phone_number: string | null;
     from_phone_numbers: string[] | null;
+    switch_connect_rate_floor: number;
+    switch_window_minutes: number;
+    switch_min_samples: number;
   } | null;
 }
 
@@ -152,74 +168,136 @@ export type IntegrationRow = {
   api_key: string;
   from_phone_number: string | null;
   enabled: boolean;
-  daily_calls_per_number: number | null;
 };
 
-// Count outbound dials per caller-ID over the last 24h so rotation respects
-// the daily cap across ticks. Keyed by the exact from_phone string we dial
-// with. Org-scoped so one tenant's volume never counts against another's.
-async function loadNumberUsage(
+// Health of one caller-ID over the measurement window: how many dials it placed
+// and how many connected. Connect rate = connects / dials.
+export interface NumberHealth {
+  dials: number;
+  connects: number;
+}
+
+// A single outbound call used to compute number health.
+interface CallRow {
+  organisation_id: string;
+  from_phone: string | null;
+  status: string;
+  started_at: string;
+}
+
+// Pull recent outbound calls (with caller-ID + status) for the given orgs over
+// the longest window any campaign in this batch needs. We compute per-campaign
+// windows from this one set in memory. Org-scoped so one tenant's volume never
+// colours another's number health.
+async function loadNumberCalls(
   admin: ReturnType<typeof createAdminClient>,
   orgIds: string[],
-): Promise<Map<string, number>> {
-  const usage = new Map<string, number>();
-  if (orgIds.length === 0) return usage;
-  const since = new Date(Date.now() - NUMBER_USAGE_WINDOW_MS).toISOString();
+  windowMs: number,
+): Promise<CallRow[]> {
+  if (orgIds.length === 0) return [];
+  const since = new Date(Date.now() - windowMs).toISOString();
   const { data } = await admin
     .from("calls")
-    .select("from_phone")
+    .select("organisation_id, from_phone, status, started_at")
     .in("organisation_id", orgIds)
     .eq("direction", "outbound")
     .gte("started_at", since)
     .not("from_phone", "is", null)
-    .limit(50000)
-    .returns<{ from_phone: string | null }[]>();
-  for (const row of data ?? []) {
-    if (!row.from_phone) continue;
-    usage.set(row.from_phone, (usage.get(row.from_phone) ?? 0) + 1);
-  }
-  return usage;
+    .limit(HEALTH_ROW_LIMIT)
+    .returns<CallRow[]>();
+  return data ?? [];
 }
 
-// Choose the caller-ID for a dial. Precedence:
-//   1. The campaign's rotation pool (from_phone_numbers) — pick the number
-//      with the most remaining daily budget (least-used), skipping any at the
-//      cap. This spreads volume and avoids spam-flagging.
-//   2. The campaign's single override (from_phone_number).
-//   3. The org default (bolna_integrations.from_phone_number).
-// For (2)/(3) the cap still applies — a lone number over its cap returns null.
-// Returns null when no eligible number remains (caller defers the contact).
-// `undefined` from the org default (no number at all) means "let Bolna pick
-// from its pool" — represented as the literal null-but-allowed case below.
-export function pickFromNumber(
-  contact: DueContact,
-  integration: IntegrationRow,
-  usage: Map<string, number>,
-): string | null {
-  const cap =
-    integration.daily_calls_per_number ?? DEFAULT_DAILY_CALLS_PER_NUMBER;
-  const pool = contact.campaign?.from_phone_numbers ?? [];
-  const underCap = (n: string) => (usage.get(n) ?? 0) < cap;
+// Build per-number health from the loaded rows, restricted to a window.
+// `completed` is our connected signal (the call answered + ran).
+export function computeNumberHealth(
+  rows: CallRow[],
+  windowMs: number,
+  now: number,
+): Map<string, NumberHealth> {
+  const cutoff = now - windowMs;
+  const health = new Map<string, NumberHealth>();
+  for (const row of rows) {
+    if (!row.from_phone) continue;
+    if (new Date(row.started_at).getTime() < cutoff) continue;
+    const h = health.get(row.from_phone) ?? { dials: 0, connects: 0 };
+    h.dials += 1;
+    if (row.status === "completed") h.connects += 1;
+    health.set(row.from_phone, h);
+  }
+  return health;
+}
 
-  if (pool.length > 0) {
-    const eligible = pool.filter(underCap);
-    if (eligible.length === 0) return null;
-    // Least-used first; ties keep pool order (stable) for predictable rotation.
-    eligible.sort((a, b) => (usage.get(a) ?? 0) - (usage.get(b) ?? 0));
-    return eligible[0];
+export interface PickNumberInput {
+  pool: string[];
+  // Single fallback (campaign override → org default) used when no pool is set.
+  singleOverride: string | null;
+  health: Map<string, NumberHealth>;
+  // In-batch dial counts so we spread across eligible numbers within a tick.
+  batchUsage: Map<string, number>;
+  floorPct: number;
+  minSamples: number;
+  // After backoff is exhausted, allow dialing the least-bad resting number.
+  allowLeastBad: boolean;
+}
+
+export type PickNumberResult =
+  | { kind: "dial"; number: string; degraded: boolean }
+  | { kind: "defer" };
+
+// Decide which caller-ID to dial from based on connect-rate health.
+//   - A number is ELIGIBLE if it has too few samples to judge (give it a
+//     chance) OR its connect rate is at/above the floor.
+//   - Among eligible numbers, pick the least-loaded (window dials + in-batch
+//     dials) so volume spreads instead of dumping on the single healthiest one.
+//   - If ALL numbers are resting: defer, unless backoff is exhausted
+//     (allowLeastBad) — then dial the highest-connect-rate number (degraded).
+//   - No numbers configured at all → dial with no caller-ID (provider's pool).
+export function pickHealthyNumber(input: PickNumberInput): PickNumberResult {
+  const { health, batchUsage, floorPct, minSamples, allowLeastBad } = input;
+  const candidates =
+    input.pool.length > 0
+      ? input.pool
+      : input.singleOverride
+        ? [input.singleOverride]
+        : [];
+
+  // Nothing configured — let the provider choose from its own pool.
+  if (candidates.length === 0) {
+    return { kind: "dial", number: FALLBACK_NO_NUMBER, degraded: false };
   }
 
-  const single =
-    contact.campaign?.from_phone_number ?? integration.from_phone_number;
-  if (single) {
-    return underCap(single) ? single : null;
+  const load = (n: string) =>
+    (health.get(n)?.dials ?? 0) + (batchUsage.get(n) ?? 0);
+  const rate = (n: string): number | null => {
+    const h = health.get(n);
+    if (!h || h.dials < minSamples) return null; // too few samples → unknown
+    return (h.connects / h.dials) * 100;
+  };
+
+  const healthy = candidates.filter((n) => {
+    const r = rate(n);
+    return r === null || r >= floorPct;
+  });
+
+  if (healthy.length > 0) {
+    // Least-loaded first; ties keep candidate order (stable rotation).
+    const best = healthy.reduce((a, b) => (load(b) < load(a) ? b : a));
+    return { kind: "dial", number: best, degraded: false };
   }
 
-  // No configured number anywhere — fall back to Bolna's default pool by
-  // sending no from_phone. The empty-string sentinel is distinct from `null`
-  // (which means "deferred — every number is capped"); the caller maps it to
-  // "omit from_phone_number" and stores NULL on the call row.
-  return FALLBACK_NO_NUMBER;
+  // Every candidate is resting (each has >= minSamples and rate < floor).
+  if (!allowLeastBad) return { kind: "defer" };
+
+  // Least-bad: highest connect rate; ties broken by least load.
+  const leastBad = candidates.reduce((a, b) => {
+    const ra = rate(a) ?? 0;
+    const rb = rate(b) ?? 0;
+    if (rb > ra) return b;
+    if (rb === ra && load(b) < load(a)) return b;
+    return a;
+  });
+  return { kind: "dial", number: leastBad, degraded: true };
 }
 
 // Sentinel: an empty string tells the dial path to omit from_phone_number so
@@ -260,7 +338,7 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   const { data, error } = await admin
     .from("campaign_contacts")
     .select(
-      "id, campaign_id, organisation_id, phone, name, metadata, attempt, callback_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number, from_phone_numbers)",
+      "id, campaign_id, organisation_id, phone, name, metadata, attempt, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples)",
     )
     .eq("status", "pending")
     .lte("next_attempt_at", nowIso)
@@ -296,20 +374,49 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   const orgIds = Array.from(new Set(queue.map((c) => c.organisation_id)));
   const { data: integrations } = await admin
     .from("bolna_integrations")
-    .select(
-      "organisation_id, agent_id, api_key, from_phone_number, enabled, daily_calls_per_number",
-    )
+    .select("organisation_id, agent_id, api_key, from_phone_number, enabled")
     .in("organisation_id", orgIds)
     .returns<IntegrationRow[]>();
   const integrationByOrg = new Map(
     (integrations ?? []).map((i) => [i.organisation_id, i] as const),
   );
 
-  // Seed per-number dial counts from the last 24h so rotation respects the
-  // daily cap across ticks (not just within this batch). Shared, mutable map:
-  // each successful dial below increments its number's count so concurrent
-  // workers in this batch also stay within the cap.
-  const usage = await loadNumberUsage(admin, orgIds);
+  // Number health for switching. Load recent outbound calls once over the
+  // LONGEST window any campaign in this batch needs, then compute each
+  // campaign's per-number health from that set (its own window). batchUsage
+  // tracks in-tick dials so we spread across eligible numbers as we go.
+  const now = Date.now();
+  const maxWindowMin = Math.max(
+    5,
+    ...queue.map((c) => c.campaign?.switch_window_minutes ?? 60),
+  );
+  const callRows = await loadNumberCalls(
+    admin,
+    orgIds,
+    maxWindowMin * 60 * 1000,
+  );
+  // Group rows per org — a number's reputation is org-wide, and tenancy must
+  // never leak across orgs (Law #1).
+  const rowsByOrg = new Map<string, CallRow[]>();
+  for (const row of callRows) {
+    const list = rowsByOrg.get(row.organisation_id) ?? [];
+    list.push(row);
+    rowsByOrg.set(row.organisation_id, list);
+  }
+  // Per-campaign health map: that org's rows filtered to the campaign's window.
+  const healthByCampaign = new Map<string, Map<string, NumberHealth>>();
+  for (const c of queue) {
+    if (!c.campaign || healthByCampaign.has(c.campaign.id)) continue;
+    healthByCampaign.set(
+      c.campaign.id,
+      computeNumberHealth(
+        rowsByOrg.get(c.organisation_id) ?? [],
+        c.campaign.switch_window_minutes * 60 * 1000,
+        now,
+      ),
+    );
+  }
+  const batchUsage = new Map<string, number>();
 
   const fired = await pooledMap(queue, CONCURRENCY, async (contact) => {
       const integration = integrationByOrg.get(contact.organisation_id);
@@ -330,25 +437,38 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
       const resolvedAgentId =
         contact.campaign?.agent_id ?? integration.agent_id;
 
-      // Choose the caller-ID for this dial: rotate across the campaign's pool,
-      // skipping any number that's already hit its daily cap. Done BEFORE the
-      // CAS claim so a capped contact can be deferred without burning its
-      // pending state.
-      const resolvedFromPhone = pickFromNumber(contact, integration, usage);
-      if (resolvedFromPhone === null) {
-        // Every available caller-ID is at its daily cap. Defer this contact to
-        // a later tick rather than dial from an over-used (spam-risk) number.
+      // Choose the caller-ID by connect-rate health. Done BEFORE the CAS claim
+      // so a contact that must be deferred (all numbers resting) doesn't burn
+      // its pending state.
+      const cmp = contact.campaign;
+      const pick = pickHealthyNumber({
+        pool: cmp?.from_phone_numbers ?? [],
+        singleOverride: cmp?.from_phone_number ?? integration.from_phone_number,
+        health: healthByCampaign.get(contact.campaign_id) ?? new Map(),
+        batchUsage,
+        floorPct: cmp?.switch_connect_rate_floor ?? 30,
+        minSamples: cmp?.switch_min_samples ?? 20,
+        // After a few backoff rounds, allow dialing the least-bad number so the
+        // run finishes (operator chose completion over number-preservation).
+        allowLeastBad: contact.health_defer_count >= MAX_HEALTH_BACKOFF_ROUNDS,
+      });
+
+      if (pick.kind === "defer") {
+        // Every caller-ID is resting (connect rate below the floor). Defer with
+        // escalating backoff; the next round may find a recovered number, and
+        // once backoff is exhausted we'll fall back to the least-bad number.
+        const round = contact.health_defer_count;
+        const backoffMs = HEALTH_DEFER_BASE_MS * 2 ** round;
         await admin
           .from("campaign_contacts")
           .update({
-            next_attempt_at: new Date(
-              Date.now() + NUMBER_CAP_DEFER_MS,
-            ).toISOString(),
-            last_error: "All caller IDs hit their daily cap — deferred",
+            health_defer_count: round + 1,
+            next_attempt_at: new Date(Date.now() + backoffMs).toISOString(),
+            last_error: "All caller IDs resting (low connect rate) — deferred",
           })
           .eq("id", contact.id)
           .eq("status", "pending");
-        return { id: contact.id, ok: false, reason: "numbers_capped" };
+        return { id: contact.id, ok: false, reason: "numbers_resting" };
       }
 
       // CAS claim — only proceed if the row is still pending.
@@ -363,15 +483,22 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
         return { id: contact.id, ok: false, reason: "lost_claim" };
       }
 
-      // Normalise the sentinel: "" means "no caller-ID, let Bolna pick" → we
-      // store NULL on the call row and don't count it against any number's cap.
-      const fromPhoneForDial: string | null = resolvedFromPhone || null;
+      // Normalise the sentinel: "" means "no caller-ID, let the provider pick"
+      // → store NULL on the call row.
+      const fromPhoneForDial: string | null = pick.number || null;
 
-      // Count this dial against the chosen number's daily budget so concurrent
-      // workers and later contacts in this batch see the updated usage.
+      // Count this dial in-batch so concurrent workers spread across eligible
+      // numbers rather than all piling onto the single healthiest one.
       if (fromPhoneForDial) {
-        usage.set(fromPhoneForDial, (usage.get(fromPhoneForDial) ?? 0) + 1);
+        batchUsage.set(
+          fromPhoneForDial,
+          (batchUsage.get(fromPhoneForDial) ?? 0) + 1,
+        );
       }
+      // Reset the all-resting backoff counter when we dial from a HEALTHY
+      // number; a least-bad (degraded) dial leaves it high so we stay in
+      // least-bad mode until a number actually recovers.
+      const resetHealthDefer = !pick.degraded && contact.health_defer_count > 0;
 
       try {
         const result = await initiateBolnaCall({
@@ -422,6 +549,7 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
             attempt: contact.attempt + 1,
             last_call_id: callRow.id,
             last_error: null,
+            ...(resetHealthDefer ? { health_defer_count: 0 } : {}),
           })
           .eq("id", contact.id);
 
