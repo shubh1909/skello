@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   coerceCallOutcome,
   extractLead,
+  normalizeOutcomeKey,
   pickValue,
   toBoolean,
   toTimestamp,
@@ -67,8 +68,17 @@ describe("toTimestamp", () => {
   });
 });
 
+describe("normalizeOutcomeKey", () => {
+  it("trims, lowercases, and collapses non-alphanumerics to underscores", () => {
+    expect(normalizeOutcomeKey("  Call me later! ")).toBe("call_me_later");
+    expect(normalizeOutcomeKey("Demo Scheduled")).toBe("demo_scheduled");
+    expect(normalizeOutcomeKey("NOT_INTERESTED")).toBe("not_interested");
+    expect(normalizeOutcomeKey("--weird__key--")).toBe("weird_key");
+  });
+});
+
 describe("coerceCallOutcome", () => {
-  it("passes through canonical values", () => {
+  it("passes through canonical default values", () => {
     for (const v of [
       "interested",
       "meeting_booked",
@@ -87,7 +97,7 @@ describe("coerceCallOutcome", () => {
     expect(coerceCallOutcome("DO_NOT_CALL")).toBe("do_not_call");
   });
 
-  it("maps common spoken/spacey variants", () => {
+  it("maps common spoken/spacey variants of the defaults", () => {
     expect(coerceCallOutcome("call me later")).toBe("callback_requested");
     expect(coerceCallOutcome("call_back")).toBe("callback_requested");
     expect(coerceCallOutcome("not interested")).toBe("not_interested");
@@ -97,8 +107,10 @@ describe("coerceCallOutcome", () => {
     expect(coerceCallOutcome("dnc")).toBe("do_not_call");
   });
 
-  it("collapses anything unrecognised to no_decision", () => {
-    expect(coerceCallOutcome("blah blah")).toBe("no_decision");
+  it("passes CUSTOM labels through as normalised keys (org policy decides them)", () => {
+    expect(coerceCallOutcome("Demo Scheduled")).toBe("demo_scheduled");
+    expect(coerceCallOutcome("send brochure")).toBe("send_brochure");
+    expect(coerceCallOutcome("blah blah")).toBe("blah_blah");
   });
 
   it("returns null for null/empty", () => {

@@ -127,6 +127,9 @@ export function CampaignUploadDialog({
   const [retryOn, setRetryOn] = React.useState<CampaignRetryTrigger[]>(
     DEFAULT_RETRY_TRIGGERS,
   );
+  // Caller-ID switching (connect-rate based). Defaults match the DB defaults.
+  const [switchFloor, setSwitchFloor] = React.useState<string>("30");
+  const [switchWindow, setSwitchWindow] = React.useState<string>("60");
   const [submitting, setSubmitting] = React.useState(false);
 
   // Voice config (agents + dialling numbers). Fetched lazily once the dialog
@@ -176,6 +179,8 @@ export function CampaignUploadDialog({
     setRetries(2);
     setRetryInterval(15 * 60);
     setRetryOn(DEFAULT_RETRY_TRIGGERS);
+    setSwitchFloor("30");
+    setSwitchWindow("60");
     setSubmitting(false);
     setAgentChoice("");
     setFromPhoneChoices([]);
@@ -260,23 +265,11 @@ export function CampaignUploadDialog({
     );
   }
 
-  // Capacity check: how many numbers are needed to dial the whole list in a day
-  // without any single number exceeding the cap. Drives the warning banner.
-  // The cap is the org's configurable per-number/day ceiling.
-  const dailyCallsPerNumber = voiceConfig?.daily_calls_per_number ?? 200;
-  const numbersAvailable = voiceConfig?.dial_numbers.length ?? 0;
   // Effective pool = explicit choices, or (if none chosen) the workspace
-  // default = all available numbers.
+  // default = all available numbers. Drives the rotation note below.
+  const numbersAvailable = voiceConfig?.dial_numbers.length ?? 0;
   const effectiveNumberCount =
     fromPhoneChoices.length > 0 ? fromPhoneChoices.length : numbersAvailable;
-  const contactsToDial = parsed?.valid_rows ?? 0;
-  const dailyCapacity = effectiveNumberCount * dailyCallsPerNumber;
-  const overCapacity =
-    contactsToDial > 0 &&
-    effectiveNumberCount > 0 &&
-    contactsToDial > dailyCapacity;
-  // Numbers needed to cover the list comfortably within the daily cap.
-  const numbersRecommended = Math.ceil(contactsToDial / dailyCallsPerNumber);
 
   async function onConfirm() {
     if (!name.trim()) {
@@ -293,6 +286,17 @@ export function CampaignUploadDialog({
         toast.error("Pick a future date and time to schedule");
         return;
       }
+    }
+
+    const floor = Number(switchFloor);
+    if (!Number.isInteger(floor) || floor < 0 || floor > 100) {
+      toast.error("Connect-rate floor must be a whole number between 0 and 100");
+      return;
+    }
+    const windowMin = Number(switchWindow);
+    if (!Number.isInteger(windowMin) || windowMin < 5 || windowMin > 1440) {
+      toast.error("Switching window must be between 5 and 1440 minutes");
+      return;
     }
 
     setSubmitting(true);
@@ -317,6 +321,8 @@ export function CampaignUploadDialog({
         max_attempts: retries + 1,
         retry_interval_seconds: retryInterval,
         retry_on: retryOn,
+        switch_connect_rate_floor: floor,
+        switch_window_minutes: windowMin,
         contacts: parsed.contacts,
       });
       if (!result.success) {
@@ -646,33 +652,57 @@ export function CampaignUploadDialog({
               )}
             </div>
 
-            {/* Capacity warning — concrete, driven by the daily cap. Soft: the
-                user can still proceed. */}
-            {overCapacity ? (
-              <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
-                <span className="font-medium">Spam-risk warning:</span>{" "}
-                {contactsToDial.toLocaleString()} contacts across{" "}
-                {effectiveNumberCount} number
-                {effectiveNumberCount === 1 ? "" : "s"} ≈{" "}
-                {Math.ceil(
-                  contactsToDial / effectiveNumberCount,
-                ).toLocaleString()}{" "}
-                dials/number/day, over the safe limit of{" "}
-                {dailyCallsPerNumber}. Calls beyond the cap are deferred to
-                later days. Add ~
-                {Math.max(0, numbersRecommended - effectiveNumberCount)} more
-                number
-                {numbersRecommended - effectiveNumberCount === 1 ? "" : "s"} (≈
-                {numbersRecommended} total) to finish faster and reduce
-                spam-flagging.
+            {/* Switching note — numbers are rested by connect-rate health, not
+                a fixed daily count (configured below). */}
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {effectiveNumberCount > 1
+                ? `Rotating across ${effectiveNumberCount} numbers. A number is rested when its connect rate drops below the floor set below.`
+                : "Using one caller ID. Add more numbers so the dialer can switch away from one that starts getting flagged."}
+            </p>
+          </div>
+
+          <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/30 p-3.5">
+            <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+              Caller-ID switching
+            </Label>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              The dialer rests a number when its connect rate drops below the
+              floor over the window — the sign it&apos;s being spam-flagged.
+              Set the floor a little below your numbers&apos; normal connect
+              rate.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="switch-floor" className="text-xs">
+                  Min connect rate (%)
+                </Label>
+                <Input
+                  id="switch-floor"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={switchFloor}
+                  onChange={(e) => setSwitchFloor(e.target.value)}
+                  disabled={submitting}
+                />
               </div>
-            ) : (
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                {effectiveNumberCount > 1
-                  ? `Rotating across ${effectiveNumberCount} numbers, capped at ${dailyCallsPerNumber} dials/number/day.`
-                  : "Using one caller ID. Select more numbers to rotate and reduce spam-flagging on large lists."}
-              </p>
-            )}
+              <div className="grid gap-1.5">
+                <Label htmlFor="switch-window" className="text-xs">
+                  Window (minutes)
+                </Label>
+                <Input
+                  id="switch-window"
+                  type="number"
+                  min={5}
+                  max={1440}
+                  step={5}
+                  value={switchWindow}
+                  onChange={(e) => setSwitchWindow(e.target.value)}
+                  disabled={submitting}
+                />
+              </div>
+            </div>
           </div>
 
           <div className="grid gap-2">
@@ -718,7 +748,7 @@ export function CampaignUploadDialog({
                 id="campaign-retries"
                 type="range"
                 min={0}
-                max={5}
+                max={9}
                 step={1}
                 value={retries}
                 onChange={(e) => setRetries(Number(e.target.value))}
@@ -726,7 +756,7 @@ export function CampaignUploadDialog({
                 className="w-full cursor-pointer accent-foreground"
               />
               <div className="flex justify-between px-0.5 text-[10px] text-muted-foreground">
-                {[0, 1, 2, 3, 4, 5].map((n) => (
+                {Array.from({ length: 10 }, (_, n) => (
                   <span key={n} className="tabular-nums">
                     {n}
                   </span>

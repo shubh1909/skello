@@ -6,6 +6,7 @@ import {
   PhoneOutgoingIcon,
   TargetIcon,
   TrendingUpIcon,
+  TriangleAlertIcon,
   UsersIcon,
 } from "lucide-react";
 
@@ -13,6 +14,7 @@ import { CallOutcomes } from "@/components/app/analytics/call-outcomes";
 import { ChartFrame } from "@/components/app/analytics/chart-frame";
 import { LineChart } from "@/components/app/analytics/line-chart";
 import { StatCard } from "@/components/app/stat-card";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { CampaignStats } from "@/actions/campaigns";
 
@@ -145,13 +147,29 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
         />
       </section>
 
-      {/* Per caller-ID breakdown — how rotation spread the load + which
-          numbers connect best. Only shown once dials exist. */}
+      {/* Degraded warning — every judged number is resting, so the dispatcher
+          is dialing from the least-bad number (operator's completion-first
+          choice). Non-blocking, but worth surfacing. */}
+      {stats.degraded ? (
+        <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3.5 text-sm">
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <p className="leading-relaxed">
+            <span className="font-medium">Running on degraded numbers.</span>{" "}
+            Every caller ID is below the {stats.switchFloorPct}% connect-rate
+            floor over the last {stats.switchWindowMinutes} min, so calls are
+            going out on the least-bad number. Add fresh numbers to recover
+            answer rates.
+          </p>
+        </div>
+      ) : null}
+
+      {/* Per caller-ID breakdown — how switching spread the load + each
+          number's recent connect-rate health. Only shown once dials exist. */}
       {stats.byNumber.length > 0 ? (
         <ChartFrame
           icon={PhoneIcon}
           title="Caller IDs"
-          subtitle={`Rotation spread · cap ${stats.dailyCap}/number/day`}
+          subtitle={`Connect-rate switching · floor ${stats.switchFloorPct}% over ${stats.switchWindowMinutes}m`}
           className="p-5"
         >
           <div className="overflow-x-auto">
@@ -164,61 +182,55 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
                   <th className="py-2 px-3 text-right font-medium">
                     Connect rate
                   </th>
-                  <th className="py-2 pl-3 text-right font-medium">Today</th>
+                  <th className="py-2 pl-3 text-right font-medium">
+                    Recent ({stats.switchWindowMinutes}m)
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {stats.byNumber.map((n) => {
-                  const capPct = Math.min(
-                    100,
-                    Math.round((n.callsToday / stats.dailyCap) * 100),
-                  );
-                  const nearCap = n.callsToday >= stats.dailyCap * 0.8;
-                  return (
-                    <tr key={n.phone} className="align-middle">
-                      <td className="py-2.5 pr-3">
+                {stats.byNumber.map((n) => (
+                  <tr key={n.phone} className="align-middle">
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center gap-2">
                         <div className="flex flex-col">
                           <span className="font-medium">{n.label}</span>
                           <span className="font-mono text-[11px] text-muted-foreground">
                             {n.phone}
                           </span>
                         </div>
-                      </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums">
-                        {n.totalCalls.toLocaleString()}
-                      </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums">
-                        {n.connected.toLocaleString()}
-                      </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums">
-                        {n.connectRatePct}%
-                      </td>
-                      <td className="py-2.5 pl-3 text-right">
-                        <div className="flex flex-col items-end gap-1">
-                          <span
-                            className={cn(
-                              "text-xs tabular-nums",
-                              nearCap
-                                ? "font-medium text-amber-600 dark:text-amber-400"
-                                : "text-muted-foreground",
-                            )}
+                        {n.isResting ? (
+                          <Badge
+                            variant="secondary"
+                            className="text-[10px] text-amber-700 dark:text-amber-400"
                           >
-                            {n.callsToday} / {stats.dailyCap}
-                          </span>
-                          <span className="h-1 w-20 overflow-hidden rounded-full bg-muted">
-                            <span
-                              className={cn(
-                                "block h-full rounded-full",
-                                nearCap ? "bg-amber-500" : "bg-emerald-500/70",
-                              )}
-                              style={{ width: `${capPct}%` }}
-                            />
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                            resting
+                          </Badge>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-3 text-right tabular-nums">
+                      {n.totalCalls.toLocaleString()}
+                    </td>
+                    <td className="py-2.5 px-3 text-right tabular-nums">
+                      {n.connected.toLocaleString()}
+                    </td>
+                    <td className="py-2.5 px-3 text-right tabular-nums">
+                      {n.connectRatePct}%
+                    </td>
+                    <td
+                      className={cn(
+                        "py-2.5 pl-3 text-right tabular-nums",
+                        n.isResting
+                          ? "font-medium text-amber-600 dark:text-amber-400"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {n.recentConnectRatePct === null
+                        ? "—"
+                        : `${n.recentConnectRatePct}%`}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

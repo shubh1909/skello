@@ -70,24 +70,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // 2000 webhook deliveries per minute per source IP. The cap is a
+  // 10000 webhook deliveries per minute per source IP. The cap is a
   // tertiary defence behind the IP allowlist + secret check — it
   // exists to stop a forged-payload flood from saturating worker
   // memory if both upstream gates fail, not to throttle legitimate
   // Bolna traffic. Bolna sends from a small pool of IPs shared by
-  // every tenant, so this bucket is global across orgs: a single
-  // busy outbound campaign at ~30 concurrent calls already produces
-  // ~120 events/min (initiated → ringing → answered → completed),
-  // and several orgs running campaigns in parallel pile on top.
-  // Sizing for ~500 concurrent calls × 4 events/min = 2000 keeps us
-  // well above realistic peak load while still capping the flood.
-  // A tighter cap risks losing status updates / transcripts because
-  // Bolna's 429 retry behaviour isn't guaranteed.
+  // every tenant, so this bucket is global across orgs. Each call
+  // emits ~4 lifecycle events (initiated → ringing → answered →
+  // completed); the dispatcher now bursts up to ~250 new outbound
+  // calls/min (BATCH_LIMIT), and several orgs plus inbound traffic
+  // pile on top. Sizing at 10000/min keeps us far above realistic
+  // peak while still capping a flood. Dropping a status event is
+  // costly now — a lost final event leaves a campaign contact stuck
+  // in_flight (until the 30-min reconcile) and skips disposition
+  // retry — so we err high; Bolna's 429 retry behaviour isn't
+  // guaranteed.
   const sourceIp = clientIpFromRequest(request);
   const rl = await checkRateLimit({
     key: `bolna-calls-webhook:ip:${sourceIp}`,
     windowSeconds: 60,
-    max: 2000,
+    max: 10000,
   });
   if (!rl.allowed) {
     return tooManyRequestsResponse(rl.retryAfterSeconds);

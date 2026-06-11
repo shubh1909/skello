@@ -14,16 +14,23 @@ export type CallDirection = "inbound" | "outbound";
 
 // Semantic disposition of the conversation — what the customer actually wanted,
 // distinct from the technical CallStatus. Extracted by the voice agent and used
-// to drive disposition-based campaign retry. `no_decision` is the fallback when
-// the agent reached no actionable conclusion.
-export type CallOutcome =
-  | "interested"
-  | "meeting_booked"
-  | "not_interested"
-  | "callback_requested"
-  | "do_not_call"
-  | "wrong_number"
-  | "no_decision";
+// to drive disposition-based campaign retry.
+//
+// Outcomes are now PER-ORG configurable (see org_outcome_policies), so the type
+// is an open string (the normalised key the agent emits). KNOWN_CALL_OUTCOMES
+// lists the seeded defaults — used for alias normalisation and as sensible
+// suggestions in the admin UI — but an org may add its own.
+export type CallOutcome = string;
+
+export const KNOWN_CALL_OUTCOMES = [
+  "interested",
+  "meeting_booked",
+  "not_interested",
+  "callback_requested",
+  "do_not_call",
+  "wrong_number",
+  "no_decision",
+] as const;
 
 export type CallTranscriptStatus =
   | "pending"

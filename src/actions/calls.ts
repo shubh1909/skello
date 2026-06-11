@@ -226,7 +226,7 @@ export async function initiateTestCall(
     return fail("Forbidden");
   }
 
-  // 10 test calls per hour per org. Test calls fire real billable
+  // 30 test calls per hour per org. Test calls fire real billable
   // dials through the voice provider; the cap stops an operator (or
   // a compromised session inside an org) from running up a bill or
   // turning the workspace into a robo-dialer. Keyed on org so a
@@ -234,7 +234,7 @@ export async function initiateTestCall(
   const rl = await checkRateLimit({
     key: `test-call:org:${parsed.data.organisation_id}`,
     windowSeconds: 3600,
-    max: 10,
+    max: 30,
   });
   if (!rl.allowed) {
     return fail(

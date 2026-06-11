@@ -1,11 +1,16 @@
 import type { CallOutcome, CallStatus } from "@/types/call";
 import type { CampaignRetryTrigger } from "@/types/campaign";
+import {
+  FALLBACK_OUTCOME_KEY,
+  type ResolvedOutcomePolicy,
+} from "@/types/outcome-policy";
 
 // Pure decision core for the campaign-contact state machine. No I/O — given a
-// finished call + the contact's counters + the campaign's retry config, it
-// returns WHAT should happen and the exact column patch. The async applier
-// (outcome.ts) does the DB reads/writes and the lead conversion. Keeping this
-// pure makes the whole decision table unit-testable with zero mocks.
+// finished call + the contact's counters + the campaign's retry config + the
+// org's outcome policy, it returns WHAT should happen and the exact column
+// patch. The async applier (outcome.ts) does the DB reads/writes and the lead
+// conversion. Keeping this pure makes the whole decision table unit-testable
+// with zero mocks.
 
 const RETRY_ELIGIBLE: ReadonlySet<CallStatus> = new Set<CallStatus>([
   "no_answer",
@@ -21,22 +26,6 @@ const TERMINAL_STATUSES: ReadonlySet<CallStatus> = new Set<CallStatus>([
   "failed",
   "canceled",
 ]);
-
-// Dispositions that close the contact as a SUCCESS (we reached the customer and
-// had a meaningful conversation) and convert it to a lead.
-const SUCCESS_OUTCOMES: ReadonlySet<CallOutcome> = new Set<CallOutcome>([
-  "interested",
-  "meeting_booked",
-  "no_decision",
-]);
-
-// Dispositions that close the contact WITHOUT a retry — the customer's answer
-// was definitive, re-dialing would only annoy them. Mapped to a human reason.
-const CLOSING_OUTCOMES: Record<string, string> = {
-  not_interested: "Customer not interested",
-  do_not_call: "Customer requested no further calls",
-  wrong_number: "Wrong number",
-};
 
 export function isTerminalCallStatus(status: CallStatus): boolean {
   return TERMINAL_STATUSES.has(status);
@@ -56,6 +45,9 @@ export interface DecideOutcomeInput {
     retry_interval_seconds: number;
     retry_on: CampaignRetryTrigger[];
   };
+  // The org's resolved outcome policy: per-key action + fallback action for any
+  // label not in the org's configured set.
+  policy: ResolvedOutcomePolicy;
   // Injected clock (ms). Pass Date.now() in production; a fixed value in tests.
   now: number;
 }
@@ -69,7 +61,8 @@ export type OutcomeDecision =
   | { kind: "rearm"; patch: Record<string, unknown> };
 
 export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
-  const { callStatus, callId, attempt, callbackCount, campaign, now } = input;
+  const { callStatus, callId, attempt, callbackCount, campaign, policy, now } =
+    input;
 
   if (!TERMINAL_STATUSES.has(callStatus)) return { kind: "noop" };
 
@@ -77,9 +70,13 @@ export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
 
   // ---- Disposition tier (completed calls only) ----------------------------
   if (callStatus === "completed") {
-    const outcome = input.callOutcome ?? "no_decision";
+    // Record the actual key the agent emitted (or the reserved fallback when
+    // none was extracted) so stats can map it back to the policy. Resolve the
+    // ACTION via the policy, falling back for any unconfigured key.
+    const outcomeKey = input.callOutcome ?? FALLBACK_OUTCOME_KEY;
+    const action = policy.actions[outcomeKey] ?? policy.fallbackAction;
 
-    if (outcome === "callback_requested") {
+    if (action === "callback") {
       if (callbackCount < campaign.max_callbacks) {
         return {
           kind: "rearm",
@@ -93,33 +90,59 @@ export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
               now,
             ),
             last_error: null,
-            last_outcome: outcome,
+            last_outcome: outcomeKey,
           },
         };
       }
       // Engaged customer, but we've honored as many callbacks as allowed —
       // close as a success rather than re-dial indefinitely.
-      return succeedDecision(basePatch, outcome);
+      return succeedDecision(basePatch, outcomeKey);
     }
 
-    const closeReason = CLOSING_OUTCOMES[outcome];
-    if (closeReason) {
+    if (action === "retry") {
+      // Disposition-driven retry: re-dial at the standard interval if we're
+      // still under the dial allowance, otherwise it's terminal.
+      const capHit = attempt >= campaign.max_attempts + callbackCount;
+      if (!capHit) {
+        return {
+          kind: "rearm",
+          patch: {
+            ...basePatch,
+            status: "pending",
+            next_attempt_at: new Date(
+              now + campaign.retry_interval_seconds * 1000,
+            ).toISOString(),
+            last_error: null,
+            last_outcome: outcomeKey,
+          },
+        };
+      }
       return {
         kind: "fail",
         patch: {
           ...basePatch,
           status: "failed",
-          last_error: closeReason,
-          last_outcome: outcome,
+          last_error: `Retries exhausted (${outcomeKey})`,
+          last_outcome: outcomeKey,
         },
       };
     }
 
-    // interested / meeting_booked / no_decision → success. Any outcome we
-    // didn't enumerate also falls here so a connected call never silently
-    // stalls in_flight.
-    if (SUCCESS_OUTCOMES.has(outcome)) return succeedDecision(basePatch, outcome);
-    return succeedDecision(basePatch, outcome);
+    if (action === "fail") {
+      return {
+        kind: "fail",
+        patch: {
+          ...basePatch,
+          status: "failed",
+          last_error: `Outcome: ${outcomeKey}`,
+          last_outcome: outcomeKey,
+        },
+      };
+    }
+
+    // action === "succeed" (and, defensively, any unexpected value) so a
+    // connected call never silently stalls in_flight.
+    return succeedDecision(basePatch, outcomeKey);
   }
 
   // ---- Technical tier (no_answer / busy / failed / canceled) --------------
@@ -148,7 +171,7 @@ export function decideOutcome(input: DecideOutcomeInput): OutcomeDecision {
 
 function succeedDecision(
   basePatch: { last_status: CallStatus; last_call_id: string },
-  outcome: CallOutcome,
+  outcomeKey: string,
 ): OutcomeDecision {
   return {
     kind: "succeed",
@@ -156,7 +179,7 @@ function succeedDecision(
       ...basePatch,
       status: "succeeded",
       last_error: null,
-      last_outcome: outcome,
+      last_outcome: outcomeKey,
     },
   };
 }

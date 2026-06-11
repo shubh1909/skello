@@ -43,6 +43,12 @@ export interface Campaign {
   max_callbacks: number;
   retry_interval_seconds: number;
   retry_on: CampaignRetryTrigger[];
+  // Caller-ID switching: rest a number whose connect rate over
+  // switch_window_minutes falls below switch_connect_rate_floor (once it has
+  // switch_min_samples dials in the window).
+  switch_connect_rate_floor: number;
+  switch_window_minutes: number;
+  switch_min_samples: number;
   total_contacts: number;
   valid_contacts: number;
   succeeded_count: number;
@@ -64,6 +70,9 @@ export interface CampaignContact {
   attempt: number;
   // Honored callbacks so far — a budget separate from `attempt`.
   callback_count: number;
+  // Consecutive all-numbers-resting deferrals (drives the backoff → least-bad
+  // fallback in the dispatcher).
+  health_defer_count: number;
   next_attempt_at: string | null;
   last_call_id: string | null;
   last_status: string | null;

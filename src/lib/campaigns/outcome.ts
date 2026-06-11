@@ -7,6 +7,46 @@ import {
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { CallOutcome, CallStatus } from "@/types/call";
 import type { CampaignRetryTrigger } from "@/types/campaign";
+import {
+  FALLBACK_OUTCOME_KEY,
+  type OutcomeAction,
+  type ResolvedOutcomePolicy,
+} from "@/types/outcome-policy";
+
+// Safe policy when an org has none (brand-new, pre-backfill): treat every
+// outcome as a success — the pre-config default — so nothing ever stalls.
+const EMPTY_POLICY: ResolvedOutcomePolicy = {
+  actions: {},
+  fallbackAction: "succeed",
+};
+
+// Build the resolved outcome policy for an org from org_outcome_policies.
+async function loadOutcomePolicy(
+  admin: ReturnType<typeof createAdminClient>,
+  organisationId: string,
+): Promise<ResolvedOutcomePolicy> {
+  const { data } = await admin
+    .from("org_outcome_policies")
+    .select("outcome_key, action, is_fallback")
+    .eq("organisation_id", organisationId)
+    .returns<
+      { outcome_key: string; action: OutcomeAction; is_fallback: boolean }[]
+    >();
+
+  if (!data || data.length === 0) return EMPTY_POLICY;
+
+  const actions: Record<string, OutcomeAction> = {};
+  let fallbackAction: OutcomeAction | null = null;
+  for (const row of data) {
+    actions[row.outcome_key] = row.action;
+    if (row.is_fallback) fallbackAction = row.action;
+  }
+  return {
+    actions,
+    fallbackAction:
+      fallbackAction ?? actions[FALLBACK_OUTCOME_KEY] ?? "succeed",
+  };
+}
 
 interface ApplyOutcomeInput {
   contactId: string;
@@ -76,6 +116,14 @@ export async function applyCampaignContactOutcome({
   // a duplicate/late webhook re-deciding an already-resolved contact.
   if (contact.status !== "in_flight") return;
 
+  // The outcome policy only matters for the disposition tier (completed calls);
+  // technical statuses (no_answer/busy/…) are decided from retry_on alone, so
+  // skip the extra query on that hot path.
+  const policy =
+    callStatus === "completed"
+      ? await loadOutcomePolicy(admin, contact.organisation_id)
+      : EMPTY_POLICY;
+
   const decision = decideOutcome({
     callStatus,
     callOutcome,
@@ -89,6 +137,7 @@ export async function applyCampaignContactOutcome({
       retry_interval_seconds: contact.campaign.retry_interval_seconds,
       retry_on: contact.campaign.retry_on,
     },
+    policy,
     now: Date.now(),
   });
 

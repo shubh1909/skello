@@ -7,6 +7,7 @@ import {
   GaugeIcon,
   HeadphonesIcon,
   SlidersHorizontalIcon,
+  TargetIcon,
   UserIcon,
   UsersIcon,
 } from "lucide-react";
@@ -142,6 +143,13 @@ export default async function AdminOrganisationDetailPage({
             title="Dashboard"
             description="Compose the org's analytics dashboard from a catalogue of stat cards, charts, and pivot tables."
             icon={<GaugeIcon className="size-4" />}
+          />
+          <Separator />
+          <ConfigLink
+            href={`/admin/organisations/${org.id}/outcomes`}
+            title="Call outcomes"
+            description="Configure what each conversation outcome does (succeed / fail / callback / retry) and which count as a success."
+            icon={<TargetIcon className="size-4" />}
           />
         </CardContent>
       </Card>
