@@ -163,4 +163,21 @@ describe("computeNumberHealth", () => {
     ];
     expect(computeNumberHealth(rows, windowMs, NOW).size).toBe(0);
   });
+
+  it("excludes in-flight dials so a fresh burst doesn't read as 0% connect", () => {
+    // A burst of dials that haven't resolved yet must NOT count — otherwise the
+    // measured rate craters to ~0% and every number gets rested. Only the one
+    // resolved call informs health here.
+    const rows = [
+      { organisation_id: "o", from_phone: "+A", status: "initiated", started_at: within },
+      { organisation_id: "o", from_phone: "+A", status: "ringing", started_at: within },
+      { organisation_id: "o", from_phone: "+A", status: "in_progress", started_at: within },
+      { organisation_id: "o", from_phone: "+A", status: "completed", started_at: within },
+    ];
+    // 4 dials placed, but only the resolved (completed) one counts.
+    expect(computeNumberHealth(rows, windowMs, NOW).get("+A")).toEqual({
+      dials: 1,
+      connects: 1,
+    });
+  });
 });

@@ -16,7 +16,59 @@ import { LineChart } from "@/components/app/analytics/line-chart";
 import { StatCard } from "@/components/app/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { CampaignStats } from "@/actions/campaigns";
+import type { CampaignStats, ContactState } from "@/actions/campaigns";
+
+// Visual language for each contact lifecycle state. Order here also drives the
+// summary strip (actionable states first).
+const CONTACT_STATE_META: Array<{
+  key: ContactState;
+  label: string;
+  badge: string;
+}> = [
+  {
+    key: "deferred",
+    label: "Deferred",
+    badge:
+      "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  },
+  {
+    key: "callback",
+    label: "Callback",
+    badge:
+      "bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-300",
+  },
+  {
+    key: "retry",
+    label: "Retrying",
+    badge:
+      "bg-orange-100 text-orange-800 dark:bg-orange-500/15 dark:text-orange-300",
+  },
+  {
+    key: "dialing",
+    label: "Dialing",
+    badge: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+  },
+  {
+    key: "queued",
+    label: "Queued",
+    badge: "bg-muted text-muted-foreground",
+  },
+  {
+    key: "failed",
+    label: "Failed",
+    badge: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+  },
+  {
+    key: "succeeded",
+    label: "Succeeded",
+    badge:
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+  },
+];
+
+const CONTACT_STATE_LABEL = Object.fromEntries(
+  CONTACT_STATE_META.map((m) => [m.key, m]),
+) as Record<ContactState, (typeof CONTACT_STATE_META)[number]>;
 
 // Performance dashboard for a single campaign. Pure presentation — the page
 // fetches CampaignStats server-side and hands it down. Mirrors the visual
@@ -32,6 +84,10 @@ function formatDuration(totalSeconds: number): string {
 }
 
 export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
+  // States present in this campaign, in actionable order, for the summary strip.
+  const presentStates = CONTACT_STATE_META.filter(
+    (m) => stats.contactStateCounts[m.key] > 0,
+  );
   const funnel: Array<{ label: string; value: number; hint: string }> = [
     {
       label: "Contacts",
@@ -161,6 +217,85 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
             answer rates.
           </p>
         </div>
+      ) : null}
+
+      {/* Per-contact state — answers "why hasn't this contact been called?".
+          Each pending contact is broken out into deferred / callback / retry /
+          queued so a slow-looking run is self-explanatory. */}
+      {stats.contacts.length > 0 ? (
+        <ChartFrame
+          icon={UsersIcon}
+          title="Contacts"
+          subtitle="Where each contact sits — and why it's waiting"
+          className="p-5"
+        >
+          {/* Summary strip: count per state. */}
+          <div className="mb-4 flex flex-wrap gap-2">
+            {presentStates.map((m) => (
+              <Badge key={m.key} className={cn("gap-1.5", m.badge)}>
+                {m.label}
+                <span className="tabular-nums">
+                  {stats.contactStateCounts[m.key].toLocaleString()}
+                </span>
+              </Badge>
+            ))}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-border/60 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                  <th className="py-2 pr-3 font-medium">Contact</th>
+                  <th className="py-2 px-3 font-medium">State</th>
+                  <th className="py-2 px-3 font-medium">Reason</th>
+                  <th className="py-2 px-3 text-right font-medium">Attempts</th>
+                  <th className="py-2 pl-3 text-right font-medium">
+                    Next attempt
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {stats.contacts.map((c) => {
+                  const meta = CONTACT_STATE_LABEL[c.state];
+                  return (
+                    <tr key={c.id} className="align-middle">
+                      <td className="py-2.5 pr-3">
+                        <div className="flex flex-col">
+                          <span className="font-medium">
+                            {c.name?.trim() || "—"}
+                          </span>
+                          <span className="font-mono text-[11px] text-muted-foreground">
+                            {c.phone}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <Badge className={meta.badge}>{meta.label}</Badge>
+                      </td>
+                      <td className="py-2.5 px-3 text-muted-foreground">
+                        {c.detail}
+                      </td>
+                      <td className="py-2.5 px-3 text-right tabular-nums">
+                        {c.attempt}/{c.maxAttempts}
+                      </td>
+                      <td className="py-2.5 pl-3 text-right tabular-nums text-muted-foreground">
+                        {c.nextAttemptLabel ?? "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {stats.contactsOverflow > 0 ? (
+            <p className="mt-3 text-[11px] text-muted-foreground">
+              Showing the {stats.contacts.length} most actionable contacts.{" "}
+              {stats.contactsOverflow.toLocaleString()} more not shown — counts
+              above cover all contacts.
+            </p>
+          ) : null}
+        </ChartFrame>
       ) : null}
 
       {/* Per caller-ID breakdown — how switching spread the load + each

@@ -625,13 +625,15 @@ Transcript fetch is **not** done here — it happens asynchronously when the cal
   // Added 2026-04-26:
   direction?: "inbound" | "outbound";
   agent_id?: string;                    // ≤ 200 chars
+  call_outcome?: string;                // semantic disposition key (eq filter) —
+                                        //   per-org configurable, so an open string
   from?: string;                        // ISO datetime — started_at >= from
   to?: string;                          // ISO datetime — started_at <= to
   q?: string;                           // free-text over to_phone / from_phone /
                                         //   bolna_call_id (uses ilike)
 }
 ```
-Returns `ActionResult<{ items: Call[]; total: number }>`, ordered by `started_at desc`. Each `Call` carries the full column set, including `direction`, `transcript`, and `transcript_status`.
+Returns `ActionResult<{ items: Call[]; total: number }>`, ordered by `started_at desc`. Each `Call` carries the full column set, including `direction`, `call_outcome`, `requested_callback_at`, `transcript`, and `transcript_status`. (All filters live in `applyCallFilters` — [src/lib/queries/call-filters.ts](../src/lib/queries/call-filters.ts) — shared with the CSV export route so the two paths never drift.)
 
 ### `listConversations(input)`
 
@@ -650,6 +652,16 @@ type CallWithLead = Call & {
 Returns the distinct `agent_id` values seen on this org's most recent 500 calls. Drives the **All agents** dropdown on `/conversations`.
 
 **Returns** `ActionResult<string[]>`.
+
+### `listCampaignOutcomeOptions(organisationId)`
+
+Returns the org's configured outcome keys + labels from `org_outcome_policies` (RLS-scoped read after an ownership check — no admin client). Populates the **Outcome** dropdown on the campaign detail **Calls** tab filter bar.
+
+**Returns** `ActionResult<{ key: string; label: string }[]>`.
+
+#### Campaign Calls tab — filtering & disposition
+
+The campaign detail Calls tab ([page.tsx](../src/app/(app)/campaigns/[id]/page.tsx)) renders a `CampaignCallsFilterBar` ([src/components/app/campaign-calls-filter-bar.tsx](../src/components/app/campaign-calls-filter-bar.tsx)) above the shared `ConversationsTable`. Filters are URL-driven (`?tab=calls&status=…&outcome=…&q=…`) and always preserve `tab=calls`; changing one remounts the table so infinite-scroll resets to page 1. The table now shows a **Disposition** column (`call_outcome`, prettified, with the `requested_callback_at` time underneath when present) — visible on `/conversations` too.
 
 ### UI triggers
 
@@ -1157,11 +1169,27 @@ Per-campaign knobs (set on upload, defaults shown):
 Selection (`pickHealthyNumber` in [src/lib/campaigns/dispatch.ts](../src/lib/campaigns/dispatch.ts)):
 - **Candidates**: `campaigns.from_phone_numbers[]` (pool), else the single override (`campaigns.from_phone_number` → `bolna_integrations.from_phone_number`), else none → dial with no caller-ID (provider's pool).
 - A candidate is **eligible** if it has `< switch_min_samples` dials in the window (too few to judge → give it a chance) **or** its connect rate is `>= floor`.
+- **Connect rate is computed over RESOLVED calls only** (`completed`/`no_answer`/`busy`/`failed`/`canceled` — see `RESOLVED_CALL_STATUSES`). In-flight dials (`initiated`/`ringing`/`in_progress`) have no connect verdict yet, so they're excluded from both the numerator and denominator. **This is critical:** counting them would make a fresh burst of dials read as ~0% connect rate (all dialed, none completed yet), rest every caller-ID, and throttle the campaign to a deferral crawl. Both `loadNumberCalls` (query filter) and `computeNumberHealth` (in-memory guard) enforce this.
 - Among eligible numbers, pick the **least-loaded** (window dials + in-batch dials) to spread volume.
 - **All resting** → `pickHealthyNumber` returns `defer`. The dispatcher pushes `next_attempt_at` out with exponential backoff (`30m × 2^round`) and bumps `campaign_contacts.health_defer_count`. Once `health_defer_count >= MAX_HEALTH_BACKOFF_ROUNDS` (3), it dials the **least-bad** (highest connect rate) number, flagged `degraded`. `health_defer_count` resets to 0 only on a healthy dial, so least-bad mode is sticky until a number recovers.
 - Health is computed **org-wide** (a number's reputation spans the org) from recent `calls`, loaded once per tick over the longest window any campaign in the batch needs, then sliced per campaign window. Tenancy: rows are grouped by `organisation_id` so one org's volume never colours another's (Law #1).
 
-The dashboard (`getCampaignStats`) shows each number's recent connect rate + a **resting** badge, and a **degraded** banner when every judged number is resting. (Dashboard health is campaign-scoped over the window; the dispatcher uses the org-wide view.)
+The dashboard (`getCampaignStats`) shows each number's recent connect rate + a **resting** badge, and a **degraded** banner when every judged number is resting. (Dashboard health is campaign-scoped over the window; the dispatcher uses the org-wide view.) The recent-window rate here uses the **same resolved-only** rule as the dispatcher, so the dashboard can't mislabel a number as resting right after a burst.
+
+#### Per-contact transparency (Performance tab → "Contacts")
+
+`getCampaignStats` also returns a per-contact lifecycle view so a slow-looking run is self-explanatory — it answers *"why hasn't this contact been called yet?"*. Each contact is mapped to one `ContactState`:
+
+| State | Meaning |
+| --- | --- |
+| `succeeded` / `failed` | Terminal. |
+| `dialing` | `in_flight` right now. |
+| `deferred` | Pending — every caller-ID is resting (in backoff). `nextAttemptLabel` shows when it retries. |
+| `callback` | Pending — a customer-requested callback is scheduled (honours the requested time, which can be days out). |
+| `retry` | Pending — waiting on the retry interval after a `no_answer`/`busy`/`failed`. |
+| `queued` | Pending — never dialled yet. |
+
+`contactStateCounts` is exact (covers every contact); `contacts` is the **200 most-actionable** rows (deferred → callback → retry → … ), with `contactsOverflow` for the remainder. `nextAttemptLabel` (`in 24m` / `in 2h` / `in 6d`) is computed server-side at fetch so the render stays pure.
 
 Numbers are added/managed per org in **Manage agents & numbers** ([voice-config.ts](../src/actions/voice-config.ts) → `bolna_integrations.from_phone_numbers[]` + `from_phone_labels`). They're trusted as entered — Bolna only honors a `from_phone_number` that's a Bolna dedicated number or one on a connected Twilio/Plivo/SIP account; an unrecognized number surfaces Bolna's error on the failed dial.
 

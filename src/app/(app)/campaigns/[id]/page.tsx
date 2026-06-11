@@ -10,12 +10,18 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { CampaignCallsFilterBar } from "@/components/app/campaign-calls-filter-bar";
 import { CampaignPerformance } from "@/components/app/campaign-performance";
 import { ConversationsTable } from "@/components/app/conversations-table";
-import { getCampaign, getCampaignStats } from "@/actions/campaigns";
+import {
+  getCampaign,
+  getCampaignStats,
+  listCampaignOutcomeOptions,
+} from "@/actions/campaigns";
 import { listConversations } from "@/actions/calls";
 import { requireSession } from "@/lib/auth/session";
 import { cn } from "@/lib/utils";
+import type { CallStatus } from "@/types/call";
 import type { CampaignStatus } from "@/types/campaign";
 
 export const metadata = { title: "Campaign · Skelo" };
@@ -45,6 +51,38 @@ const STATUS_CLASS: Record<CampaignStatus, string> = {
 
 type Tab = "performance" | "calls";
 
+const CALL_STATUSES: readonly CallStatus[] = [
+  "initiated",
+  "ringing",
+  "in_progress",
+  "completed",
+  "failed",
+  "no_answer",
+  "busy",
+  "canceled",
+];
+
+// Pull the Calls-tab filter set off the query string (validated).
+function readCallFilters(sp: Record<string, string | string[] | undefined>): {
+  status?: CallStatus;
+  outcome?: string;
+  q?: string;
+} {
+  const one = (key: string): string | undefined => {
+    const v = sp[key];
+    return Array.isArray(v) ? v[0] : v;
+  };
+  const statusRaw = one("status")?.toLowerCase();
+  return {
+    status:
+      statusRaw && (CALL_STATUSES as readonly string[]).includes(statusRaw)
+        ? (statusRaw as CallStatus)
+        : undefined,
+    outcome: one("outcome")?.trim() || undefined,
+    q: one("q")?.trim() || undefined,
+  };
+}
+
 interface PageProps {
   params: Promise<{ id: string }>;
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -59,6 +97,7 @@ export default async function CampaignDetailPage({
   const sp = (await searchParams) ?? {};
   const rawTab = Array.isArray(sp.tab) ? sp.tab[0] : sp.tab;
   const tab: Tab = rawTab === "calls" ? "calls" : "performance";
+  const callFilters = readCallFilters(sp);
 
   const campaignResult = await getCampaign({ id });
   if (!campaignResult.success) {
@@ -72,7 +111,7 @@ export default async function CampaignDetailPage({
   const campaign = campaignResult.data;
 
   // Fetch only what the active tab needs to keep the page snappy.
-  const [statsResult, callsResult] = await Promise.all([
+  const [statsResult, callsResult, outcomeOptionsResult] = await Promise.all([
     tab === "performance" ? getCampaignStats({ id }) : Promise.resolve(null),
     tab === "calls"
       ? listConversations({
@@ -80,9 +119,22 @@ export default async function CampaignDetailPage({
           limit: INITIAL_PAGE_SIZE,
           offset: 0,
           campaign_id: id,
+          status: callFilters.status,
+          call_outcome: callFilters.outcome,
+          q: callFilters.q,
         })
       : Promise.resolve(null),
+    tab === "calls"
+      ? listCampaignOutcomeOptions(session.organisation.id)
+      : Promise.resolve(null),
   ]);
+  const outcomeOptions =
+    outcomeOptionsResult && outcomeOptionsResult.success
+      ? outcomeOptionsResult.data
+      : [];
+  // Remount the table when filters change so infinite-scroll resets to the
+  // fresh first page instead of appending across filter sets.
+  const callsTableKey = `${callFilters.status ?? ""}|${callFilters.outcome ?? ""}|${callFilters.q ?? ""}`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -151,13 +203,25 @@ export default async function CampaignDetailPage({
           {callsResult?.error ?? "Could not load calls."}
         </Card>
       ) : (
-        <ConversationsTable
-          calls={callsResult.data.items}
-          total={callsResult.data.total}
-          pageSize={INITIAL_PAGE_SIZE}
-          organisationId={session.organisation.id}
-          filters={{ campaignId: campaign.id }}
-        />
+        <div className="flex flex-col gap-4">
+          <CampaignCallsFilterBar
+            filters={callFilters}
+            outcomeOptions={outcomeOptions}
+          />
+          <ConversationsTable
+            key={callsTableKey}
+            calls={callsResult.data.items}
+            total={callsResult.data.total}
+            pageSize={INITIAL_PAGE_SIZE}
+            organisationId={session.organisation.id}
+            filters={{
+              campaignId: campaign.id,
+              status: callFilters.status,
+              callOutcome: callFilters.outcome,
+              q: callFilters.q,
+            }}
+          />
+        </div>
       )}
     </div>
   );

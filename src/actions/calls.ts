@@ -16,7 +16,7 @@ import type { Call, CallStatus, CallWithLead } from "@/types/call";
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const CALL_COLUMNS =
-  "id, organisation_id, lead_id, initiated_by, bolna_call_id, to_phone, from_phone, agent_id, status, direction, error_code, error_message, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript_url, transcript, transcript_status, transcript_fetched_at, language, summary, name_extracted, interest, lead_intent_extracted, actionable, customer_status, visit_scheduled_at, connect_on_whatsapp, lead_data, custom_data, is_test, created_at, updated_at";
+  "id, organisation_id, lead_id, initiated_by, bolna_call_id, to_phone, from_phone, agent_id, status, direction, error_code, error_message, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript_url, transcript, transcript_status, transcript_fetched_at, language, summary, name_extracted, interest, lead_intent_extracted, actionable, customer_status, visit_scheduled_at, connect_on_whatsapp, call_outcome, requested_callback_at, lead_data, custom_data, is_test, created_at, updated_at";
 
 const STATUS_MAP: Record<string, CallStatus> = {
   initiated: "initiated",

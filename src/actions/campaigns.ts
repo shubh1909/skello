@@ -3,7 +3,10 @@
 import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 
-import { dispatchDueCampaignContacts } from "@/lib/campaigns/dispatch";
+import {
+  RESOLVED_CALL_STATUSES,
+  dispatchDueCampaignContacts,
+} from "@/lib/campaigns/dispatch";
 import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -503,6 +506,118 @@ export interface CampaignStats {
     recentConnectRatePct: number | null; // null until enough samples
     isResting: boolean;
   }>;
+  // Per-contact "why is it here" view. Counts are always exact (every contact);
+  // `contacts` is capped (most-actionable first) so the payload stays bounded.
+  contactStateCounts: Record<ContactState, number>;
+  contacts: ContactRow[];
+  contactsOverflow: number; // contacts not in the capped list above
+}
+
+// Where a single contact sits in the dial lifecycle, with the actionable
+// pending sub-states broken out so an operator can see WHY it hasn't dialed.
+export type ContactState =
+  | "succeeded"
+  | "failed"
+  | "dialing" // in_flight right now
+  | "deferred" // pending — every caller-ID resting (backoff)
+  | "callback" // pending — customer-requested callback scheduled
+  | "retry" // pending — waiting on the retry interval after a no-answer/busy
+  | "queued"; // pending — never dialed yet
+
+export interface ContactRow {
+  id: string;
+  name: string | null;
+  phone: string;
+  state: ContactState;
+  detail: string; // short human reason, no timestamp
+  attempt: number;
+  maxAttempts: number;
+  nextAttemptAt: string | null; // ISO (drives sort)
+  // Compact "in 24m" / "in 2h" / "in 6d" label, computed at fetch time so the
+  // render stays pure. Null unless the contact is waiting for a next dial.
+  nextAttemptLabel: string | null;
+}
+
+// Compact, timezone-agnostic "how long until" label.
+function formatUntil(iso: string | null, now: number): string | null {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime() - now;
+  if (Number.isNaN(ms)) return null;
+  if (ms <= 0) return "due now";
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 48) return `in ${hrs}h`;
+  return `in ${Math.round(hrs / 24)}d`;
+}
+
+// States that are actively waiting for a next dial — only these show a time.
+const WAITING_STATES: ReadonlySet<ContactState> = new Set<ContactState>([
+  "deferred",
+  "callback",
+  "retry",
+]);
+
+// Order the contact list so the operator sees the contacts that need attention
+// first. Lower = higher priority.
+const CONTACT_STATE_RANK: Record<ContactState, number> = {
+  deferred: 0,
+  callback: 1,
+  retry: 2,
+  dialing: 3,
+  queued: 4,
+  failed: 5,
+  succeeded: 6,
+};
+
+// How many contact rows we ship to the UI. Counts cover everyone; the list is
+// capped so a 50k-contact campaign doesn't serialise a giant payload.
+const CONTACT_LIST_CAP = 200;
+
+// Pure mapping from a contact's columns to its lifecycle state + a short reason.
+// A `completed` last_status that is back in `pending` can only be a callback
+// re-arm (the disposition tier is the lone path that re-pends a connected call).
+function deriveContactState(c: {
+  status: string;
+  attempt: number;
+  last_status: string | null;
+  last_outcome: string | null;
+  last_error: string | null;
+  health_defer_count: number;
+  callback_count: number;
+}): { state: ContactState; detail: string } {
+  if (c.status === "succeeded") {
+    return {
+      state: "succeeded",
+      detail: c.last_outcome ? `Outcome: ${c.last_outcome}` : "Completed",
+    };
+  }
+  if (c.status === "failed") {
+    return {
+      state: "failed",
+      detail: c.last_error ?? c.last_status ?? "Failed",
+    };
+  }
+  if (c.status === "in_flight") {
+    return { state: "dialing", detail: "Dialing now" };
+  }
+  // status === 'pending' from here — explain which kind of wait it is.
+  if (c.health_defer_count > 0) {
+    return {
+      state: "deferred",
+      detail: "All caller IDs resting (low connect rate)",
+    };
+  }
+  if (c.callback_count > 0 && c.last_status === "completed") {
+    return { state: "callback", detail: "Customer-requested callback" };
+  }
+  if (c.attempt > 0) {
+    return {
+      state: "retry",
+      detail: c.last_status ? `Retrying after ${c.last_status}` : "Retrying",
+    };
+  }
+  return { state: "queued", detail: "Waiting to be dialled" };
 }
 
 const ALL_CALL_STATUSES: CallStatus[] = [
@@ -529,12 +644,13 @@ export async function getCampaignStats(
   const { data: campaign } = await admin
     .from("campaigns")
     .select(
-      "id, organisation_id, switch_connect_rate_floor, switch_window_minutes, switch_min_samples",
+      "id, organisation_id, max_attempts, switch_connect_rate_floor, switch_window_minutes, switch_min_samples",
     )
     .eq("id", parsed.data.id)
     .maybeSingle<{
       id: string;
       organisation_id: string;
+      max_attempts: number;
       switch_connect_rate_floor: number;
       switch_window_minutes: number;
       switch_min_samples: number;
@@ -575,18 +691,28 @@ export async function getCampaignStats(
     if (r.is_fallback) fallbackSuccess = r.counts_as_success;
   }
 
-  // Contacts (small per campaign — bounded by CSV upload).
+  // Contacts (small per campaign — bounded by CSV upload). We pull the pacing
+  // columns too so we can explain WHY each contact is where it is (deferred /
+  // callback-scheduled / waiting on a retry) — the campaign's transparency view.
   const { data: contacts, error: cErr } = await admin
     .from("campaign_contacts")
-    .select("id, status, attempt, last_status, last_outcome")
+    .select(
+      "id, name, phone, status, attempt, last_status, last_outcome, last_error, next_attempt_at, health_defer_count, callback_count",
+    )
     .eq("campaign_id", campaign.id)
     .returns<
       Array<{
         id: string;
+        name: string | null;
+        phone: string;
         status: string;
         attempt: number;
         last_status: string | null;
         last_outcome: string | null;
+        last_error: string | null;
+        next_attempt_at: string | null;
+        health_defer_count: number;
+        callback_count: number;
       }>
     >();
   if (cErr) return fail(cErr.message);
@@ -598,6 +724,17 @@ export async function getCampaignStats(
   let failedContacts = 0;
   let pendingContacts = 0;
   let attemptSum = 0;
+  const contactStateCounts: Record<ContactState, number> = {
+    succeeded: 0,
+    failed: 0,
+    dialing: 0,
+    deferred: 0,
+    callback: 0,
+    retry: 0,
+    queued: 0,
+  };
+  const allContactRows: ContactRow[] = [];
+  const nowMs = Date.now();
   for (const c of contacts ?? []) {
     attemptSum += c.attempt;
     if (c.attempt > 0) attemptedContacts += 1;
@@ -612,7 +749,32 @@ export async function getCampaignStats(
     if (c.status === "failed") failedContacts += 1;
     else if (c.status === "pending" || c.status === "in_flight")
       pendingContacts += 1;
+
+    const { state, detail } = deriveContactState(c);
+    contactStateCounts[state] += 1;
+    allContactRows.push({
+      id: c.id,
+      name: c.name,
+      phone: c.phone,
+      state,
+      detail,
+      attempt: c.attempt,
+      maxAttempts: campaign.max_attempts,
+      nextAttemptAt: c.next_attempt_at,
+      nextAttemptLabel: WAITING_STATES.has(state)
+        ? formatUntil(c.next_attempt_at, nowMs)
+        : null,
+    });
   }
+  // Most-actionable first (deferred → callback → retry → …), then cap.
+  allContactRows.sort(
+    (a, b) =>
+      CONTACT_STATE_RANK[a.state] - CONTACT_STATE_RANK[b.state] ||
+      // Within a state, soonest next attempt first (nulls last).
+      (a.nextAttemptAt ?? "9").localeCompare(b.nextAttemptAt ?? "9"),
+  );
+  const contactRows = allContactRows.slice(0, CONTACT_LIST_CAP);
+  const contactsOverflow = Math.max(0, totalContacts - contactRows.length);
 
   // Calls (every dial). Bounded by attempts × contacts; fine to pull for
   // aggregation. Exclude test rows defensively (campaign calls never are).
@@ -660,7 +822,13 @@ export async function getCampaignStats(
       };
       agg.total += 1;
       if (call.status === "completed") agg.connected += 1;
-      if (new Date(call.started_at).getTime() >= windowCutoff) {
+      // Mirror the dispatcher: only RESOLVED calls inform the recent connect
+      // rate. Counting in-flight dials here would mislabel a number as
+      // "resting" right after a burst (same bug the dispatcher avoids).
+      if (
+        new Date(call.started_at).getTime() >= windowCutoff &&
+        RESOLVED_CALL_STATUSES.has(call.status)
+      ) {
         agg.recentDials += 1;
         if (call.status === "completed") agg.recentConnects += 1;
       }
@@ -741,5 +909,43 @@ export async function getCampaignStats(
     switchWindowMinutes,
     degraded,
     byNumber,
+    contactStateCounts,
+    contacts: contactRows,
+    contactsOverflow,
   });
+}
+
+export interface OutcomeFilterOption {
+  key: string; // the normalised call_outcome stored on calls
+  label: string; // human label from the org's policy
+}
+
+/**
+ * Outcome keys + labels configured for an org (from `org_outcome_policies`),
+ * used to populate the campaign Calls filter. Read with the user's own
+ * (RLS-scoped) client after an explicit ownership check — no admin client
+ * needed, and it never leaks another tenant's vocabulary.
+ */
+export async function listCampaignOutcomeOptions(
+  organisationId: string,
+): Promise<ActionResult<OutcomeFilterOption[]>> {
+  if (!organisationId) return fail("Missing organisation id");
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+  if (!(await userOwnsOrg(supabase, user.id, organisationId))) {
+    return fail("Forbidden");
+  }
+
+  const { data, error } = await supabase
+    .from("org_outcome_policies")
+    .select("outcome_key, label, position")
+    .eq("organisation_id", organisationId)
+    .order("position", { ascending: true })
+    .returns<{ outcome_key: string; label: string; position: number }[]>();
+  if (error) return fail(error.message);
+
+  return ok(
+    (data ?? []).map((r) => ({ key: r.outcome_key, label: r.label })),
+  );
 }
