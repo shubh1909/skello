@@ -21,7 +21,9 @@ const EMPTY_POLICY: ResolvedOutcomePolicy = {
 };
 
 // Build the resolved outcome policy for an org from org_outcome_policies.
-async function loadOutcomePolicy(
+// Exported so the inbound-callback scheduler resolves the `callback` action
+// against the SAME policy the campaign applier uses — one source of truth.
+export async function loadOutcomePolicy(
   admin: ReturnType<typeof createAdminClient>,
   organisationId: string,
 ): Promise<ResolvedOutcomePolicy> {

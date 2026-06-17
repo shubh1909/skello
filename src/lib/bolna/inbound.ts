@@ -4,12 +4,17 @@ import type { BolnaLeadPayload } from "@/lib/bolna/extract";
 import { mergePayloadIntoLead } from "@/lib/bolna/lead-merge";
 import { parseTranscript } from "@/lib/bolna/transcript";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { CallStatus, CallTranscriptStatus } from "@/types/call";
+import type { CallOutcome, CallStatus, CallTranscriptStatus } from "@/types/call";
 
 interface RecordInboundCallArgs {
   organisationId: string;
   externalId: string;
   payload: BolnaLeadPayload;
+  // Disposition extracted by the route (it already runs extractLead). Persisted
+  // on the inbound call row so the Conversations disposition column and the
+  // callback scheduler both read it from one place.
+  callOutcome?: CallOutcome | null;
+  requestedCallbackAt?: string | null;
 }
 
 interface RecordInboundCallResult {
@@ -111,6 +116,8 @@ export async function recordInboundCall(
         from_phone: fromPhone,
         agent_id: agentId,
         status: mapStatus(payload.status),
+        call_outcome: args.callOutcome ?? null,
+        requested_callback_at: args.requestedCallbackAt ?? null,
         duration_seconds: durationSeconds,
         recording_url: recordingUrl,
         transcript,

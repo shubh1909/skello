@@ -17,6 +17,7 @@ import "server-only";
 //   SKELO:EXPORT               → CSV export route
 //   SKELO:ANALYTICS            → dashboard analytics fetch
 //   SKELO:CAMPAIGN             → campaign actions
+//   SKELO:CALLBACK-SCHEDULE    → queueing an automated inbound callback
 //
 // The tag is included in the user-facing error message too, so a tester
 // can paste the toast text into a log search and immediately find the
@@ -38,7 +39,8 @@ export type SkeloErrorTag =
   | "WEBHOOK-INGEST"
   | "EXPORT"
   | "ANALYTICS"
-  | "CAMPAIGN";
+  | "CAMPAIGN"
+  | "CALLBACK-SCHEDULE";
 
 export interface SkeloErrorContext {
   // Each id field accepts `null` so call sites can use `?? null` shorthand

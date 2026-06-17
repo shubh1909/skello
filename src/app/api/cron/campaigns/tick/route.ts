@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { dispatchDueCallbacks } from "@/lib/callbacks/dispatch";
 import { dispatchDueCampaignContacts } from "@/lib/campaigns/dispatch";
 
 export const runtime = "nodejs";
@@ -27,8 +28,34 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const result = await dispatchDueCampaignContacts();
-    return NextResponse.json(result, { status: 200 });
+    // Both drains share the tick. Run callbacks even if the campaign drain
+    // throws (and vice-versa) so one subsystem can't starve the other.
+    const [campaigns, callbacks] = await Promise.allSettled([
+      dispatchDueCampaignContacts(),
+      dispatchDueCallbacks(),
+    ]);
+
+    if (campaigns.status === "rejected" && callbacks.status === "rejected") {
+      const message =
+        campaigns.reason instanceof Error
+          ? campaigns.reason.message
+          : "dispatch failed";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+
+    return NextResponse.json(
+      {
+        campaigns:
+          campaigns.status === "fulfilled"
+            ? campaigns.value
+            : { error: String(campaigns.reason) },
+        callbacks:
+          callbacks.status === "fulfilled"
+            ? callbacks.value
+            : { error: String(callbacks.reason) },
+      },
+      { status: 200 },
+    );
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "dispatch failed";

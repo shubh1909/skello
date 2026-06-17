@@ -187,7 +187,7 @@ const e164Schema = z
 const testCallSchema = z.object({
   organisation_id: z.string().uuid(),
   // Pick an agent the org has configured (validated server-side against
-  // the integration's agent_labels). Required even when there's only one
+  // the voice_agents registry). Required even when there's only one
   // agent — keeps the contract explicit and forward-compatible.
   agent_id: z.string().trim().min(1).max(200),
   // Optional override of the integration's default from_phone_number. When
@@ -249,12 +249,11 @@ export async function initiateTestCall(
   const { data: integration, error: intErr } = await admin
     .from("bolna_integrations")
     .select(
-      "agent_id, agent_labels, api_key, from_phone_number, from_phone_labels, enabled",
+      "agent_id, api_key, from_phone_number, from_phone_labels, enabled",
     )
     .eq("organisation_id", parsed.data.organisation_id)
     .maybeSingle<{
       agent_id: string;
-      agent_labels: Record<string, unknown> | null;
       api_key: string;
       from_phone_number: string | null;
       from_phone_labels: Record<string, unknown> | null;
@@ -269,14 +268,17 @@ export async function initiateTestCall(
     return fail("Voice agent is disabled for this workspace.");
   }
 
-  // Allow either the configured default agent_id or one explicitly named
-  // in agent_labels. Same rule as the dispatcher uses — keeps the org's
-  // catalogue authoritative.
+  // The voice_agents registry is the single source of truth for which
+  // agent_ids belong to this org (it superseded the old agent_labels map on
+  // bolna_integrations). Allow the integration's default agent_id too.
   const knownAgents = new Set<string>();
   if (integration.agent_id) knownAgents.add(integration.agent_id);
-  for (const k of Object.keys(integration.agent_labels ?? {})) {
-    knownAgents.add(k);
-  }
+  const { data: agentRows } = await admin
+    .from("voice_agents")
+    .select("agent_id")
+    .eq("organisation_id", parsed.data.organisation_id)
+    .eq("enabled", true);
+  for (const row of agentRows ?? []) knownAgents.add(row.agent_id);
   if (!knownAgents.has(parsed.data.agent_id)) {
     return fail("Unknown agent for this workspace.");
   }

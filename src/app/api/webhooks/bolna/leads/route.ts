@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { maybeScheduleInboundCallback } from "@/lib/callbacks/schedule";
 import { bolnaLeadPayloadSchema, extractLead } from "@/lib/bolna/extract";
 import { recordInboundCall } from "@/lib/bolna/inbound";
 import { clientIpAllowed } from "@/lib/bolna/ip-allowlist";
@@ -275,13 +276,38 @@ export async function POST(request: NextRequest) {
       organisationId,
       externalId,
       payload: parsed.data,
+      callOutcome: extracted.call_outcome,
+      requestedCallbackAt: extracted.requested_callback_at,
     });
+
+    // Queue an automated callback if this inbound disposition maps to the
+    // `callback` action in the org's policy and callbacks are enabled. Runs
+    // after the call is recorded (we need its id as the idempotency key), and
+    // never throws — a scheduling hiccup must not fail the webhook ack.
+    let callbackScheduled = false;
+    if (result.callId) {
+      const callerPhone =
+        parsed.data.telephony_data?.from_number?.trim() ||
+        parsed.data.user_number?.trim() ||
+        null;
+      const cb = await maybeScheduleInboundCallback({
+        organisationId,
+        sourceCallId: result.callId,
+        leadId: result.leadId,
+        phone: callerPhone,
+        callOutcome: extracted.call_outcome,
+        requestedCallbackAt: extracted.requested_callback_at,
+      });
+      callbackScheduled = cb.scheduled;
+    }
+
     return NextResponse.json(
       {
         ok: true,
         callId: result.callId,
         leadId: result.leadId,
         leadCreated: result.leadCreated,
+        callbackScheduled,
         routingSource,
       },
       { status: 200 },

@@ -62,7 +62,7 @@ export const RESOLVED_CALL_STATUSES: ReadonlySet<string> = new Set([
  * Promise.allSettled semantics — every item runs to completion regardless of
  * whether siblings reject, and the result array is in submission order.
  */
-async function pooledMap<T, U>(
+export async function pooledMap<T, U>(
   items: T[],
   workers: number,
   fn: (item: T, index: number) => Promise<U>,

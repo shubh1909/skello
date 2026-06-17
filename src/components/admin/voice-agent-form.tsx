@@ -31,6 +31,15 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
     integration?.from_phone_number ?? "",
   );
   const [enabled, setEnabled] = React.useState(integration?.enabled ?? true);
+  const [callbacksEnabled, setCallbacksEnabled] = React.useState(
+    integration?.callbacks_enabled ?? false,
+  );
+  const [callbackAgentId, setCallbackAgentId] = React.useState(
+    integration?.callback_agent_id ?? "",
+  );
+  const [callbackFromPhone, setCallbackFromPhone] = React.useState(
+    integration?.callback_from_phone ?? "",
+  );
 
   const hasExisting = integration !== null;
 
@@ -70,6 +79,17 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
       }
       if (enabled !== integration.enabled) patch.enabled = enabled;
       if (apiKey.trim().length > 0) patch.api_key = apiKey.trim();
+      if (callbacksEnabled !== integration.callbacks_enabled) {
+        patch.callbacks_enabled = callbacksEnabled;
+      }
+      if ((callbackAgentId.trim() || null) !== integration.callback_agent_id) {
+        patch.callback_agent_id = callbackAgentId.trim() || null;
+      }
+      if (
+        (callbackFromPhone.trim() || null) !== integration.callback_from_phone
+      ) {
+        patch.callback_from_phone = callbackFromPhone.trim() || null;
+      }
 
       if (Object.keys(patch).length === 1) {
         toast.info("No changes to save");
@@ -124,6 +144,9 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
       setApiKey("");
       setFromPhone("");
       setEnabled(true);
+      setCallbacksEnabled(false);
+      setCallbackAgentId("");
+      setCallbackFromPhone("");
       router.refresh();
     });
   }
@@ -197,6 +220,66 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
           autoComplete="off"
         />
       </div>
+
+      {hasExisting ? (
+        <div className="grid gap-3 rounded-md border p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Automated callbacks</p>
+              <p className="text-[11px] text-muted-foreground">
+                When an inbound call&rsquo;s outcome resolves to{" "}
+                <span className="font-medium">callback</span>, automatically
+                call the customer back at the requested time.
+              </p>
+            </div>
+            <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={callbacksEnabled}
+                onChange={(e) => setCallbacksEnabled(e.target.checked)}
+                className="size-4 accent-foreground"
+              />
+              Enable
+            </label>
+          </div>
+
+          {callbacksEnabled ? (
+            <>
+              <div className="grid gap-1.5">
+                <Label htmlFor="callback-agent">
+                  Callback agent ID (optional)
+                </Label>
+                <Input
+                  id="callback-agent"
+                  placeholder={`Default — ${integration.agent_id}`}
+                  value={callbackAgentId}
+                  onChange={(e) => setCallbackAgentId(e.target.value)}
+                  autoComplete="off"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Which agent places the callback. Leave blank to use the
+                  outbound agent above.
+                </p>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="callback-from-phone">
+                  Callback caller ID (optional)
+                </Label>
+                <Input
+                  id="callback-from-phone"
+                  placeholder={
+                    integration.from_phone_number ?? "+91-XXXXXXXXXX"
+                  }
+                  value={callbackFromPhone}
+                  onChange={(e) => setCallbackFromPhone(e.target.value)}
+                  autoComplete="off"
+                />
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
         <div className="flex flex-wrap items-center gap-2">

@@ -237,52 +237,66 @@ File: [src/actions/leads.ts](../src/actions/leads.ts) — Type: [src/types/lead.
 
 ### Live columns
 
+> ⚠ **The 2026-05-17 lead/call remodel reshaped this table.** The columns below are the **current** state. See the migrations [lead_call_remodel](../supabase/migrations/20260517000001_lead_call_remodel.sql), [dynamic_lead_fields](../supabase/migrations/20260517000002_dynamic_lead_fields.sql), and [cleanup](../supabase/migrations/20260517000003_cleanup.sql).
+
 ```
-id, created_at, updated_at, org_slug, external_id,
-name, interest,                          -- renamed from `product` on 2026-04-27
-summary,                                 -- short LLM synopsis (added 2026-04-27)
-lead_intent (enum: hot | warm | cold),   -- Postgres enum `intent_type`
-visit_date_time, customer_status,        -- customer_status = free-form
-                                         --   "buyer type" label
+-- Identity / tenancy
+id, created_at, updated_at,
+organisation_id,              -- uuid, NOT NULL — the primary tenant key
+                              --   (added by the remodel)
+org_slug,                     -- text — denormalized convenience FK to
+                              --   organisations.slug; kept for back-compat,
+                              --   slated for a future cleanup
 phone,                        -- nullable; consumed by the WhatsApp dialog
-wants_to_connect_on_watsapp,  -- from the voice agent: what the customer wants
-pending_action,               -- NOT NULL DEFAULT true. Renamed from
-                              --   `contacted_on_watsapp` on 2026-04-27 with
-                              --   inverted semantics — true means an action
-                              --   is still owed by the team.
+phone_normalized,             -- GENERATED (digits only) — the dedupe/match key
+first_seen_at, last_contact_at,
 
--- Added 2026-04-24 (20260424000000_leads_add_crm_fields.sql):
-source   (enum lead_source:
-   inbound_call | whatsapp | manual | import | web_form),
-status   (enum lead_status:
+-- Current view (admin-editable; the inbound webhook also fills name/intent)
+name,
+current_intent (enum intent_type: hot | warm | cold),   -- temperature
+city, pincode,
+
+-- Admin-owned (the inbound webhook never writes these)
+status (enum lead_status:
    new | contacted | qualified | negotiating | won | lost)
-         NOT NULL DEFAULT 'new',
+       NOT NULL DEFAULT 'new',                          -- pipeline stage
+source (enum lead_source:
+   inbound_call | whatsapp | manual | import | web_form),
 notes,
-city,
-pincode,
+pending_action,               -- NOT NULL DEFAULT true — true = a follow-up
+                              --   is still owed by the team
 
--- Added 2026-04-29 (20260429000000_leads_actionable_and_recording.sql):
-actionable,                    -- free-form string the voice agent extracts
-                               --   describing the concrete next step
-                               --   (e.g. "Send quote on Royal Enfield 2023",
-                               --   "Schedule visit Friday afternoon"). ≤1000.
-recording_url                  -- direct link to the latest call recording on
-                               --   the provider's storage. Stamped by the
-                               --   inbound webhook and overwritten on every
-                               --   subsequent inbound call from the same
-                               --   number. ≤2000 chars.
+-- Dynamic fields (the remodel's "dynamic lead fields" model)
+lead_data    jsonb NOT NULL DEFAULT '{}',   -- full provider extraction
+custom_data  jsonb NOT NULL DEFAULT '{}',   -- free-form catch-all
+search_tsv,                   -- GENERATED tsvector over name + notes +
+                              --   lead_data values; backs free-text search
 ```
 
-Tenant scoping on `leads` is via **`org_slug` (text)**, enforced by FK `leads.org_slug → organisations.slug` (cascade on update/delete). All actions also gate on the caller owning that org.
+**What the remodel dropped from `leads`:** `external_id`, `interest`, `summary`, `actionable`, `recording_url`, `customer_status`, `wants_to_connect_on_watsapp`, `visit_date_time`, and `lead_intent`. Per-call snapshots (`summary`, `actionable`, `recording_url`) now live on `calls`; everything else the agent extracts lands in `lead_data` jsonb (described by `lead_field_definitions`).
 
-**Two "status" columns, deliberately distinct:**
+**Back-compat aliases.** The `Lead` type ([src/types/lead.ts](../src/types/lead.ts)) still **exposes** the old field names, but they are now **derived on read** by `actions/leads.ts` so existing UI keeps working — they are not real columns:
 
-- `status` — the **pipeline stage** enum (new → contacted → qualified → negotiating → won/lost). The column is still authoritative on the server, but **as of 2026-04-27 the leads table no longer renders it** — it was hidden from the table UI to reduce visual noise alongside the new pending-action chip. The detail sheet still surfaces it (as a Badge and an editable Select), and `listLeads` still accepts `status` as a filter input so deep links and programmatic callers continue to work.
-- `customer_status` — a **free-form** label the team uses for buyer type ("Buyer", "Owner", "Service", etc). Editable as an Input in the detail sheet, labelled **Customer type** in the UI.
+| Exposed field | Derived from |
+| --- | --- |
+| `lead_intent` | `current_intent` |
+| `interest` | `lead_data.interest` |
+| `customer_status` | `lead_data.customer_status` |
+| `wants_to_connect_on_watsapp` | `lead_data.connect_on_whatsapp` |
+| `visit_date_time` | `lead_data.date_and_time_of_visit` |
+| `summary` / `actionable` / `recording_url` | latest linked `calls` row |
+| `external_id` | always `null` |
 
-`lead_intent` (hot/warm/cold) is a **temperature**, independent of both above — a "hot" lead can be `new` or `qualified` or `lost`.
+Tenant scoping is via **`organisation_id` (uuid, NOT NULL)** — the primary key for all RLS and app-layer checks since the remodel. The legacy **`org_slug` (text)** column is retained (FK `leads.org_slug → organisations.slug`, cascade on update/delete) and still used by the `lead_call_activity` RPCs and the leads realtime channel; it will be dropped in a later cleanup.
 
-**Idempotency**: `external_id` + unique index `(org_slug, external_id) where external_id is not null` allows inbound-webhook retries to be safely upserted without creating duplicates.
+**Two "status" notions, deliberately distinct:**
+
+- `status` — the **pipeline stage** enum (new → contacted → qualified → negotiating → won/lost). A real column, authoritative on the server, but **hidden from the leads table UI since 2026-04-27** (still shown in the detail sheet; `listLeads` still accepts it as a filter so deep links work).
+- `customer_status` — a **free-form** buyer-type label ("Buyer", "Owner", "Service"). Now stored in `lead_data.customer_status` and surfaced via the alias above; still labelled **Customer type** in the UI.
+
+`current_intent` (hot/warm/cold) is a **temperature**, independent of both — a "hot" lead can be `new` or `qualified` or `lost`.
+
+**Idempotency**: the unique index `(organisation_id, phone_normalized)` means the inbound webhook finds-or-creates one lead per normalized phone per org — retries (and concurrent inserts) converge on the same row. (Pre-remodel this was keyed on `external_id`, which no longer exists on `leads`.)
 
 > Column names are `watsapp` (not `whatsapp`). Code mirrors the DB exactly — renaming later would need a migration plus coordinated code change.
 
@@ -583,6 +597,24 @@ transcript_status (enum: pending | processing | ready | failed | skipped)
 transcript_fetched_at,
 language,                                -- e.g. "hi-IN"
 
+-- Per-call extraction (added by the 2026-05-17 remodel) — the agent's
+-- read of THIS conversation, kept on the call (the lead holds the rollup):
+name_extracted, interest, lead_intent_extracted (enum intent_type),
+actionable, customer_status, visit_scheduled_at, connect_on_whatsapp,
+
+-- Dynamic fields, mirroring leads (added 2026-05-17):
+lead_data    jsonb NOT NULL DEFAULT '{}',
+custom_data  jsonb NOT NULL DEFAULT '{}',
+
+-- Disposition (added 2026-06-08) — per-org vocabulary, NO fixed CHECK
+-- (the outcome enum was dropped 2026-06-10); resolved vs org_outcome_policies:
+call_outcome,            -- semantic disposition key (what the customer wanted)
+requested_callback_at,   -- when the customer asked to be re-called
+
+is_test (boolean NOT NULL DEFAULT false),  -- added 2026-05-27; test-call dials
+                                           --   are excluded from headline stats
+campaign_contact_id,     -- nullable FK → campaign_contacts (the campaign seam)
+
 created_at, updated_at
 ```
 
@@ -815,15 +847,17 @@ The same payload schema covers both inbound and outbound — they only differ in
 
 ### Extraction rules
 
+> **Post-remodel destinations.** Extracted lead fields no longer write to dedicated `leads` columns (most were dropped). They are merged into **`leads.lead_data`** jsonb by `lib/bolna/lead-merge.ts` — **lock-aware**: any field a human has pinned via `lead_field_overrides` is skipped (see `lead_locked_fields`). Each discovered key is also registered in `lead_field_definitions` so admins can promote it to a visible column. The per-call `summary` / `actionable` / `recording_url` are written to the **`calls`** row and surfaced on the lead via the latest-call aliases.
+
 - For each `lead_data` field, `pickValue()` prefers `subjective`, falls back to `objective`. Empty strings are treated as absent.
-- `lead_data.product` → `leads.interest`. The webhook payload still uses `product` for backward compatibility.
-- `lead_data.actionable.subjective` → `leads.actionable` (free-form string the agent extracts describing the next step).
-- `connect_on_whatsapp` is coerced via `toBoolean()` (accepts `true|false|yes|no|1|0`).
-- `date_and_time_of_visit` is coerced via `toTimestamp()` (parseable ISO → UTC ISO; otherwise null).
+- `lead_data.product` → `leads.lead_data.interest`. The webhook payload still uses `product` for backward compatibility.
+- `lead_data.actionable.subjective` → `calls.actionable` (free-form next-step string; surfaced on the lead via the latest-call alias).
+- `connect_on_whatsapp` is coerced via `toBoolean()` (accepts `true|false|yes|no|1|0`) → `leads.lead_data.connect_on_whatsapp`.
+- `date_and_time_of_visit` is coerced via `toTimestamp()` (parseable ISO → UTC ISO; otherwise null) → `leads.lead_data.date_and_time_of_visit`.
 - `call_outcome` → `calls.call_outcome` via `coerceCallOutcome()` (normalises to a stable key — trim/lowercase/underscore — and maps the standard aliases; **custom keys pass through**, since outcomes are per-org configurable). `callback_at` → `calls.requested_callback_at` via `toTimestamp()`. These drive disposition-based campaign retry, resolved against the org's `org_outcome_policies` (see *Campaign post-step → Configurable outcome policy*).
-- `lead_intent` is lowercased and matched against the `LeadIntent` enum.
+- `lead_intent` is lowercased, matched against the `LeadIntent` enum, and written to `leads.current_intent`.
 - A per-field `confidence` map is captured.
-- **Summary**: `buildSummary()` concatenates each field's `reasoning_subjective` as `<Humanised Field>: <reasoning>` paragraphs into `leads.summary`. On idempotent retry the upsert overwrites — manual edits to `summary` will be replaced.
+- **Summary**: `buildSummary()` concatenates each field's `reasoning_subjective` as `<Humanised Field>: <reasoning>` paragraphs into `calls.summary`. On idempotent retry the upsert overwrites — agent-generated summaries are replaced on each call.
 
 ### Inbound flow — `recordInboundCall`
 
@@ -831,7 +865,7 @@ File: [src/lib/bolna/inbound.ts](../src/lib/bolna/inbound.ts).
 
 When `telephony_data.call_type === "inbound"`:
 
-1. **Lead upsert** (admin client) keyed on `(org_slug, external_id)` so retries don't duplicate. Lead fields populated directly from the webhook: `name`, `interest`, `summary`, `customer_status`, `lead_intent`, `actionable`, `wants_to_connect_on_watsapp`, `visit_date_time`, `phone` (from top-level `user_number`), `recording_url` (from `telephony_data.recording_url`), `source: "inbound_call"`.
+1. **Lead find-or-create** (admin client) keyed on `(organisation_id, phone_normalized)` so retries don't duplicate. The row stamps identity (`phone` from top-level `user_number`, `source: "inbound_call"`, `first_seen_at`/`last_contact_at`); `name` and `current_intent` are filled from the extraction, and every other extracted field is merged into `leads.lead_data` (lock-aware — see the *Post-remodel destinations* note above). `summary` / `actionable` / `recording_url` are written to the `calls` row in step 2, not the lead.
 2. **Call row upsert** keyed on `(organisation_id, bolna_call_id)`. Fields populated from the webhook: `direction: "inbound"`, `to_phone` (`telephony_data.to_number` — our agent line), `from_phone` (`telephony_data.from_number` — the caller), `agent_id`, `status` (mapped), `duration_seconds` (from `conversation_duration`), `recording_url`, `transcript`, `transcript_status` (`ready` if transcript present, else `skipped`), `started_at` / `ended_at` from the payload's `created_at` / `updated_at`.
 3. **Transcript turns** parsed inline via `parseTranscript()` and bulk-inserted into `call_transcripts` (existing turns deleted first so retries produce a clean set).
 
@@ -852,9 +886,9 @@ This is what turns "Calling …" rows into **Completed** rows on the Conversatio
 
 ### Routing & idempotency
 
-- Inbound `business_slug` → lookup on `organisations.slug` via the **admin client** (webhook is not an authenticated session).
-- Outbound: org is implied by the existing call row's `organisation_id` — no slug needed.
-- Lead upsert keyed on `(org_slug, external_id)`. Call upsert keyed on `(organisation_id, bolna_call_id)`. Both retries produce at most one row.
+- Inbound: org is resolved from the trusted `agent_id` via `resolveOrgByAgentId` (`resolve_org_by_agent` RPC on the `voice_agents` registry), with the dialed number (`to_number`) as a DID fallback (`resolve_org_by_dialed_number`). All via the **admin client** (webhook is not an authenticated session). The LLM-emitted `business_slug` is captured as `advisory_business_slug` for observability **but never used to route** — a mismatch between it and the agent-resolved org is logged, not acted on.
+- Outbound: org is implied by the existing call row's `organisation_id` — no lookup needed.
+- Lead find-or-create keyed on `(organisation_id, phone_normalized)`. Call upsert keyed on `(organisation_id, bolna_call_id)`. Both retries produce at most one row.
 
 ### Responses
 
@@ -863,9 +897,9 @@ This is what turns "Calling …" rows into **Completed** rows on the Conversatio
 | `200 { ok: true, ignored: "no extracted_data" }` | Prelim event (`in-progress` / `call-disconnected`) |
 | `200 { id: "<lead uuid>" }` | Inbound lead recorded |
 | `200 { ok: true, callId, matched }` | Outbound call updated (or no-op match=false) |
-| `400` | Invalid JSON / schema / missing `business_slug` (inbound) / missing execution id (outbound) |
+| `400` | Invalid JSON / schema / missing `agent_id` (inbound, with no DID fallback match) / missing execution id (outbound) |
 | `401` | Missing or wrong secret |
-| `404` | Inbound `business_slug` doesn't match any org |
+| `404` | Inbound `agent_id` (and DID fallback) doesn't resolve to any org |
 | `500` | Supabase lookup/insert/update failed |
 
 ### Configuring the webhook in the Bolna dashboard
@@ -1398,7 +1432,7 @@ Sign out and sign back in — the login action reads the flag and redirects to `
 2. **App-layer tenant check** — `userOwnsOrg(user, orgId)` gates every mutation. The action filters by `organisation_id` even if RLS would block.
 3. **RLS policies** — Every tenant-scoped table has `select/insert/update/delete` policies tied to `organisations.owner_id = auth.uid()`. Safety net only.
 4. **Service role** — Reserved for trusted server paths (webhook). Never imported into a Client Component.
-5. **Webhook signature** — Constant-time compare of a shared secret. Never trust tenant ids from payload — always resolve server-side from `business_slug`.
+5. **Webhook signature** — Constant-time compare of a shared secret. Never trust tenant ids from the payload — resolve server-side from the trusted `agent_id` via the `voice_agents` registry (`resolve_org_by_agent`), with a dialed-number (DID) fallback. This replaced the old LLM-emitted `business_slug` routing.
 6. **Input validation** — Zod at every boundary. No `any`, no `@ts-ignore`.
 
 **Things a future reviewer should check:**
