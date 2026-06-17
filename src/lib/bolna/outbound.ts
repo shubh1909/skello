@@ -3,6 +3,7 @@ import "server-only";
 import type { BolnaLeadPayload } from "@/lib/bolna/extract";
 import { mapStatus, writeTranscriptTurns } from "@/lib/bolna/inbound";
 import { mergePayloadIntoLead } from "@/lib/bolna/lead-merge";
+import { applyScheduledCallbackOutcome } from "@/lib/callbacks/outcome";
 import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveOrgByAgentId } from "@/lib/bolna/routing";
@@ -38,7 +39,7 @@ export async function recordOutboundResult(
 
   const { data: existingCall, error: findErr } = await admin
     .from("calls")
-    .select("id, organisation_id, lead_id, is_test, campaign_contact_id")
+    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id")
     .eq("bolna_call_id", externalId)
     .maybeSingle<{
       id: string;
@@ -46,6 +47,7 @@ export async function recordOutboundResult(
       lead_id: string | null;
       is_test: boolean;
       campaign_contact_id: string | null;
+      scheduled_callback_id: string | null;
     }>();
 
   if (findErr) {
@@ -217,6 +219,21 @@ export async function recordOutboundResult(
     }
   }
 
+  // Finalise a scheduled callback's own dial when it `completed` (same reason as
+  // campaigns: reaching the customer is only known on the extracted event).
+  if (call.scheduled_callback_id) {
+    try {
+      await applyScheduledCallbackOutcome({
+        callbackId: call.scheduled_callback_id,
+        callId: call.id,
+        callStatus: status,
+        callOutcome: merge.callSnapshot.call_outcome,
+      });
+    } catch (err) {
+      console.error("[outbound] callback outcome failed", err);
+    }
+  }
+
   return {
     callId: call.id,
     transcriptStatus: finalStatus,
@@ -236,6 +253,7 @@ async function bootstrapDirectOutboundCall(
   lead_id: string | null;
   is_test: boolean;
   campaign_contact_id: string | null;
+  scheduled_callback_id: string | null;
 } | null> {
   const agentId = payload.agent_id?.trim();
   if (!agentId) return null;
@@ -266,13 +284,14 @@ async function bootstrapDirectOutboundCall(
       status: "initiated",
       ...(startedAt ? { started_at: startedAt } : {}),
     })
-    .select("id, organisation_id, lead_id, is_test, campaign_contact_id")
+    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id")
     .single<{
       id: string;
       organisation_id: string;
       lead_id: string | null;
       is_test: boolean;
       campaign_contact_id: string | null;
+      scheduled_callback_id: string | null;
     }>();
 
   if (!insertErr && inserted) return inserted;
@@ -281,7 +300,7 @@ async function bootstrapDirectOutboundCall(
   if (insertErr?.code === "23505") {
     const { data: refetched } = await admin
       .from("calls")
-      .select("id, organisation_id, lead_id, is_test, campaign_contact_id")
+      .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id")
       .eq("organisation_id", route.organisationId)
       .eq("bolna_call_id", externalId)
       .maybeSingle<{
@@ -290,6 +309,7 @@ async function bootstrapDirectOutboundCall(
         lead_id: string | null;
         is_test: boolean;
         campaign_contact_id: string | null;
+        scheduled_callback_id: string | null;
       }>();
     if (refetched) return refetched;
   }

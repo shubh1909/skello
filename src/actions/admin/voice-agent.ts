@@ -16,6 +16,9 @@ interface IntegrationRow {
   from_phone_number: string | null;
   enabled: boolean;
   daily_calls_per_number: number | null;
+  callbacks_enabled: boolean;
+  callback_agent_id: string | null;
+  callback_from_phone: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -23,7 +26,7 @@ interface IntegrationRow {
 const DEFAULT_DAILY_CALLS_PER_NUMBER = 200;
 
 const INTEGRATION_COLUMNS =
-  "organisation_id, agent_id, api_key, from_phone_number, enabled, daily_calls_per_number, created_at, updated_at";
+  "organisation_id, agent_id, api_key, from_phone_number, enabled, daily_calls_per_number, callbacks_enabled, callback_agent_id, callback_from_phone, created_at, updated_at";
 
 function toPublic(row: IntegrationRow): BolnaIntegration {
   return {
@@ -33,6 +36,9 @@ function toPublic(row: IntegrationRow): BolnaIntegration {
     enabled: row.enabled,
     daily_calls_per_number:
       row.daily_calls_per_number ?? DEFAULT_DAILY_CALLS_PER_NUMBER,
+    callbacks_enabled: row.callbacks_enabled,
+    callback_agent_id: row.callback_agent_id,
+    callback_from_phone: row.callback_from_phone,
     created_at: row.created_at,
     updated_at: row.updated_at,
     api_key_last4: row.api_key.slice(-4),
@@ -44,6 +50,14 @@ const fromPhone = z
   .trim()
   .min(5)
   .max(32)
+  .nullish()
+  .transform((v) => (v && v.length > 0 ? v : null));
+
+// Optional, empty → null. Used for the callback-agent override.
+const optionalAgentId = z
+  .string()
+  .trim()
+  .max(200)
   .nullish()
   .transform((v) => (v && v.length > 0 ? v : null));
 
@@ -61,6 +75,10 @@ const updateSchema = z.object({
   api_key: z.string().trim().min(1).max(500).optional(),
   from_phone_number: fromPhone.optional(),
   enabled: z.boolean().optional(),
+  // Automated inbound callbacks (see scheduled_callbacks).
+  callbacks_enabled: z.boolean().optional(),
+  callback_agent_id: optionalAgentId.optional(),
+  callback_from_phone: fromPhone.optional(),
 });
 
 export async function getVoiceAgentAdmin(

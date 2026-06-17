@@ -3,6 +3,7 @@ import "server-only";
 import { after } from "next/server";
 
 import { enrichOutboundCall } from "@/lib/bolna/enrich";
+import { applyScheduledCallbackOutcome } from "@/lib/callbacks/outcome";
 import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
 import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -103,11 +104,12 @@ export async function applyCallStatusUpdate(
     .from("calls")
     .update(patch)
     .eq("bolna_call_id", input.bolnaCallId)
-    .select("id, organisation_id, campaign_contact_id")
+    .select("id, organisation_id, campaign_contact_id, scheduled_callback_id")
     .maybeSingle<{
       id: string;
       organisation_id: string;
       campaign_contact_id: string | null;
+      scheduled_callback_id: string | null;
     }>();
 
   if (error) {
@@ -163,6 +165,26 @@ export async function applyCallStatusUpdate(
         });
       } catch (err) {
         console.error("[status-update] campaign outcome failed", err);
+      }
+    });
+  }
+
+  // Same split for a scheduled callback's own dial: technical terminal statuses
+  // (no_answer / busy / failed / canceled) resolve here; a `completed` callback
+  // is finalised by recordOutboundResult on the extracted event.
+  if (data.scheduled_callback_id && input.status !== "completed") {
+    const callbackId = data.scheduled_callback_id;
+    const callId = data.id;
+    const status = input.status;
+    after(async () => {
+      try {
+        await applyScheduledCallbackOutcome({
+          callbackId,
+          callId,
+          callStatus: status,
+        });
+      } catch (err) {
+        console.error("[status-update] callback outcome failed", err);
       }
     });
   }
