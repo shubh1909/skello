@@ -133,6 +133,9 @@ async function fetchLatestCallSnapshots(
     .select("lead_id, summary, actionable, recording_url, started_at")
     .eq("organisation_id", organisationId)
     .in("lead_id", leadIds)
+    // Admin client bypasses RLS; exclude soft-deleted calls so a hidden
+    // campaign dial can't surface as a still-visible lead's latest snapshot.
+    .is("deleted_at", null)
     .order("started_at", { ascending: false });
   for (const row of (data ?? []) as Array<{
     lead_id: string;

@@ -28,6 +28,39 @@ export const campaignContactInputSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).default({}),
 });
 
+// IANA timezone names supported by the runtime. Guards against a client sending
+// an arbitrary string that would later make every window check throw.
+function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Calling window: hours-of-day + weekday guard for dialing. Sent as a nested
+// object (or null = no window) so the three columns stay all-or-nothing.
+export const callingWindowSchema = z
+  .object({
+    // Minutes since local midnight. start in [0,1439], end in [1,1440].
+    start_minute: z.number().int().min(0).max(1439),
+    end_minute: z.number().int().min(1).max(1440),
+    // Allowed weekdays 0=Sun..6=Sat. Empty = every day. De-duped on the client;
+    // capped at 7 to bound the array.
+    days: z.array(z.number().int().min(0).max(6)).max(7).default([]),
+    timezone: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .refine(isValidTimeZone, "Unknown timezone"),
+  })
+  .refine((w) => w.end_minute > w.start_minute, {
+    message: "Calling window end must be after the start",
+    path: ["end_minute"],
+  });
+
 export const createCampaignSchema = z.object({
   organisation_id: z.string().uuid(),
   name: z.string().trim().min(1).max(200),
@@ -67,6 +100,9 @@ export const createCampaignSchema = z.object({
   switch_connect_rate_floor: z.number().int().min(0).max(100).default(30),
   switch_window_minutes: z.number().int().min(5).max(1440).default(60),
   switch_min_samples: z.number().int().min(1).max(1000).default(20),
+  // Null (or omitted) = dial any time. When set, the dispatcher only dials
+  // inside the window and defers due contacts to the next open instant.
+  calling_window: callingWindowSchema.nullish().default(null),
   contacts: z.array(campaignContactInputSchema).min(1).max(10000),
 });
 

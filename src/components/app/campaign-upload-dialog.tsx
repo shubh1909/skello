@@ -36,15 +36,30 @@ import {
 import { VoiceConfigDialog } from "@/components/app/voice-config-dialog";
 import { createCampaign } from "@/actions/campaigns";
 import { getVoiceConfig } from "@/actions/voice-config";
-import {
-  parseCampaignCsv,
-  type ParsedCsv,
-} from "@/lib/campaigns/csv-parse";
+import { parseCampaignCsv, type ParsedCsv } from "@/lib/campaigns/csv-parse";
 import { cn } from "@/lib/utils";
 import type { CampaignRetryTrigger } from "@/types/campaign";
 import type { VoiceConfig } from "@/types/voice-config";
 
 type ScheduleMode = "now" | "later";
+
+// Weekday toggles for the calling window. value matches the 0=Sun..6=Sat
+// indexing used by lib/campaigns/calling-window and the DB column.
+const WEEKDAYS: { value: number; label: string }[] = [
+  { value: 1, label: "Mon" },
+  { value: 2, label: "Tue" },
+  { value: 3, label: "Wed" },
+  { value: 4, label: "Thu" },
+  { value: 5, label: "Fri" },
+  { value: 6, label: "Sat" },
+  { value: 0, label: "Sun" },
+];
+
+// "HH:MM" (from a <input type="time">) → minutes since midnight.
+function timeToMinutes(t: string): number {
+  const [h, m] = t.split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
 
 const RETRY_INTERVAL_OPTIONS: { value: number; label: string }[] = [
   { value: 5 * 60, label: "5 min" },
@@ -55,7 +70,11 @@ const RETRY_INTERVAL_OPTIONS: { value: number; label: string }[] = [
   { value: 24 * 60 * 60, label: "24 hr" },
 ];
 
-const RETRY_TRIGGER_OPTIONS: { value: CampaignRetryTrigger; label: string; hint: string }[] = [
+const RETRY_TRIGGER_OPTIONS: {
+  value: CampaignRetryTrigger;
+  label: string;
+  hint: string;
+}[] = [
   { value: "no_answer", label: "No answer", hint: "Recipient did not pick up" },
   { value: "busy", label: "Busy", hint: "Line was busy" },
   { value: "failed", label: "Failed", hint: "Provider error or unreachable" },
@@ -119,9 +138,8 @@ export function CampaignUploadDialog({
   const [parsing, setParsing] = React.useState(false);
   const [dragOver, setDragOver] = React.useState(false);
   const [scheduleMode, setScheduleMode] = React.useState<ScheduleMode>("now");
-  const [scheduledAt, setScheduledAt] = React.useState<string>(
-    defaultScheduleAt(),
-  );
+  const [scheduledAt, setScheduledAt] =
+    React.useState<string>(defaultScheduleAt());
   const [retries, setRetries] = React.useState<number>(2);
   const [retryInterval, setRetryInterval] = React.useState<number>(15 * 60);
   const [retryOn, setRetryOn] = React.useState<CampaignRetryTrigger[]>(
@@ -130,6 +148,18 @@ export function CampaignUploadDialog({
   // Caller-ID switching (connect-rate based). Defaults match the DB defaults.
   const [switchFloor, setSwitchFloor] = React.useState<string>("30");
   const [switchWindow, setSwitchWindow] = React.useState<string>("60");
+  // Calling window — restrict dialing to set hours/days. Off by default (dial
+  // any time). Times are interpreted in the operator's detected timezone.
+  const [windowEnabled, setWindowEnabled] = React.useState(false);
+  const [windowStart, setWindowStart] = React.useState("09:00");
+  const [windowEnd, setWindowEnd] = React.useState("18:00");
+  const [windowDays, setWindowDays] = React.useState<number[]>([
+    1, 2, 3, 4, 5,
+  ]);
+  const timeZone = React.useMemo(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    [],
+  );
   const [submitting, setSubmitting] = React.useState(false);
 
   // Voice config (agents + dialling numbers). Fetched lazily once the dialog
@@ -181,6 +211,10 @@ export function CampaignUploadDialog({
     setRetryOn(DEFAULT_RETRY_TRIGGERS);
     setSwitchFloor("30");
     setSwitchWindow("60");
+    setWindowEnabled(false);
+    setWindowStart("09:00");
+    setWindowEnd("18:00");
+    setWindowDays([1, 2, 3, 4, 5]);
     setSubmitting(false);
     setAgentChoice("");
     setFromPhoneChoices([]);
@@ -257,11 +291,15 @@ export function CampaignUploadDialog({
     );
   }
 
+  function toggleWindowDay(day: number) {
+    setWindowDays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day],
+    );
+  }
+
   function toggleFromPhone(phone: string) {
     setFromPhoneChoices((prev) =>
-      prev.includes(phone)
-        ? prev.filter((p) => p !== phone)
-        : [...prev, phone],
+      prev.includes(phone) ? prev.filter((p) => p !== phone) : [...prev, phone],
     );
   }
 
@@ -290,13 +328,42 @@ export function CampaignUploadDialog({
 
     const floor = Number(switchFloor);
     if (!Number.isInteger(floor) || floor < 0 || floor > 100) {
-      toast.error("Connect-rate floor must be a whole number between 0 and 100");
+      toast.error(
+        "Connect-rate floor must be a whole number between 0 and 100",
+      );
       return;
     }
     const windowMin = Number(switchWindow);
     if (!Number.isInteger(windowMin) || windowMin < 5 || windowMin > 1440) {
       toast.error("Switching window must be between 5 and 1440 minutes");
       return;
+    }
+
+    let callingWindow: {
+      start_minute: number;
+      end_minute: number;
+      days: number[];
+      timezone: string;
+    } | null = null;
+    if (windowEnabled) {
+      const startMin = timeToMinutes(windowStart);
+      const endMin = timeToMinutes(windowEnd);
+      if (endMin <= startMin) {
+        toast.error("Calling window end time must be after the start time");
+        return;
+      }
+      if (windowDays.length === 0) {
+        toast.error("Pick at least one day for the calling window");
+        return;
+      }
+      callingWindow = {
+        start_minute: startMin,
+        end_minute: endMin,
+        // All seven selected = every day; send empty so the dispatcher treats it
+        // as unrestricted by weekday.
+        days: windowDays.length === 7 ? [] : windowDays,
+        timezone: timeZone,
+      };
     }
 
     setSubmitting(true);
@@ -307,9 +374,7 @@ export function CampaignUploadDialog({
         file_name: file?.name ?? null,
         schedule_mode: scheduleMode,
         scheduled_at:
-          scheduleMode === "later"
-            ? new Date(scheduledAt).toISOString()
-            : null,
+          scheduleMode === "later" ? new Date(scheduledAt).toISOString() : null,
         // Empty string = "use workspace default"; the action treats null/empty
         // identically and falls back at dispatch time.
         agent_id: agentChoice || null,
@@ -323,6 +388,7 @@ export function CampaignUploadDialog({
         retry_on: retryOn,
         switch_connect_rate_floor: floor,
         switch_window_minutes: windowMin,
+        calling_window: callingWindow,
         contacts: parsed.contacts,
       });
       if (!result.success) {
@@ -350,7 +416,7 @@ export function CampaignUploadDialog({
       <DialogTrigger
         render={
           <Button>
-            <UploadIcon /> Upload
+            <UploadIcon /> Create a Campaign
           </Button>
         }
       />
@@ -358,8 +424,8 @@ export function CampaignUploadDialog({
         <DialogHeader>
           <DialogTitle>New campaign</DialogTitle>
           <DialogDescription>
-            Upload a CSV of phone numbers. We&apos;ll dial each one through
-            your voice agent and retry failures based on your settings.
+            Upload a CSV of phone numbers. We&apos;ll dial each one through your
+            voice agent and retry failures based on your settings.
           </DialogDescription>
         </DialogHeader>
 
@@ -496,7 +562,9 @@ export function CampaignUploadDialog({
               )}
             </div>
             <p className="text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">Required column:</span>{" "}
+              <span className="font-medium text-foreground">
+                Required column:
+              </span>{" "}
               <code className="font-mono">phone</code> (also accepts{" "}
               <code className="font-mono">mobile</code> /{" "}
               <code className="font-mono">number</code>).{" "}
@@ -667,9 +735,8 @@ export function CampaignUploadDialog({
             </Label>
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               The dialer rests a number when its connect rate drops below the
-              floor over the window — the sign it&apos;s being spam-flagged.
-              Set the floor a little below your numbers&apos; normal connect
-              rate.
+              floor over the window — the sign it&apos;s being spam-flagged. Set
+              the floor a little below your numbers&apos; normal connect rate.
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5">
@@ -735,13 +802,120 @@ export function CampaignUploadDialog({
           </div>
 
           <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/30 p-3.5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="grid gap-0.5">
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+                  Calling window
+                </Label>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  Only dial during set hours and days. Outside the window a
+                  contact waits for the next opening — no attempt is used.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWindowEnabled((v) => !v)}
+                disabled={submitting}
+                aria-pressed={windowEnabled}
+                className={cn(
+                  "flex shrink-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors",
+                  windowEnabled
+                    ? "border-foreground/30 bg-background text-foreground"
+                    : "border-border/60 bg-transparent text-muted-foreground hover:bg-background",
+                  submitting && "cursor-not-allowed opacity-60",
+                )}
+              >
+                <span
+                  className={cn(
+                    "grid size-3.5 shrink-0 place-items-center rounded border",
+                    windowEnabled
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-border",
+                  )}
+                  aria-hidden
+                >
+                  {windowEnabled ? <CheckMark /> : null}
+                </span>
+                {windowEnabled ? "Enabled" : "Enable"}
+              </button>
+            </div>
+
+            {windowEnabled ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="window-start" className="text-xs">
+                      From
+                    </Label>
+                    <Input
+                      id="window-start"
+                      type="time"
+                      value={windowStart}
+                      onChange={(e) => setWindowStart(e.target.value)}
+                      disabled={submitting}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="window-end" className="text-xs">
+                      To
+                    </Label>
+                    <Input
+                      id="window-end"
+                      type="time"
+                      value={windowEnd}
+                      onChange={(e) => setWindowEnd(e.target.value)}
+                      disabled={submitting}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label className="text-xs">Days</Label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {WEEKDAYS.map((d) => {
+                      const checked = windowDays.includes(d.value);
+                      return (
+                        <button
+                          key={d.value}
+                          type="button"
+                          onClick={() => toggleWindowDay(d.value)}
+                          disabled={submitting}
+                          aria-pressed={checked}
+                          className={cn(
+                            "rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors",
+                            checked
+                              ? "border-foreground/30 bg-background text-foreground"
+                              : "border-border/60 bg-transparent text-muted-foreground hover:bg-background",
+                            submitting && "cursor-not-allowed opacity-60",
+                          )}
+                        >
+                          {d.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  Times are in{" "}
+                  <span className="font-medium text-foreground">{timeZone}</span>{" "}
+                  (your timezone).
+                </p>
+              </>
+            ) : null}
+          </div>
+
+          <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/30 p-3.5">
             <div className="grid gap-1">
               <div className="flex items-center justify-between">
-                <Label htmlFor="campaign-retries" className="text-xs uppercase tracking-wider text-muted-foreground">
+                <Label
+                  htmlFor="campaign-retries"
+                  className="text-xs uppercase tracking-wider text-muted-foreground"
+                >
                   Retry settings
                 </Label>
                 <span className="text-xs tabular-nums text-muted-foreground">
-                  {retries === 0 ? "No retries" : `${retries} retr${retries === 1 ? "y" : "ies"}`}
+                  {retries === 0
+                    ? "No retries"
+                    : `${retries} retr${retries === 1 ? "y" : "ies"}`}
                 </span>
               </div>
               <input
@@ -812,7 +986,8 @@ export function CampaignUploadDialog({
                         checked
                           ? "border-foreground/30 bg-background"
                           : "border-border/60 bg-transparent text-muted-foreground hover:bg-background",
-                        (submitting || retries === 0) && "cursor-not-allowed opacity-60",
+                        (submitting || retries === 0) &&
+                          "cursor-not-allowed opacity-60",
                       )}
                     >
                       <span
@@ -853,7 +1028,9 @@ export function CampaignUploadDialog({
           <Button
             type="button"
             onClick={onConfirm}
-            disabled={submitting || parsing || !parsed || parsed.valid_rows === 0}
+            disabled={
+              submitting || parsing || !parsed || parsed.valid_rows === 0
+            }
           >
             {submitting ? <Loader2Icon className="animate-spin" /> : null}
             {submitting ? "Saving…" : confirmLabel}

@@ -88,4 +88,9 @@ export interface Call {
 
 export interface CallWithLead extends Call {
   lead: { name: string | null; phone: string | null } | null;
+  // Highest-priority disposition this call's campaign contact reached across all
+  // its attempts, per the org's outcome priority order (top priorities only).
+  // Only populated for campaign-scoped lists; null = nothing notable. Derived on
+  // read — not a stored column.
+  best_outcome?: string | null;
 }

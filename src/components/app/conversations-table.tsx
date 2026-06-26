@@ -22,6 +22,7 @@ import {
 import { CallTranscriptDialog } from "@/components/app/call-transcript-dialog";
 import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { listConversations } from "@/actions/calls";
+import { formatOutcomeKey } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useCallsRealtime } from "@/hooks/use-calls-realtime";
 import {
@@ -114,21 +115,13 @@ const SORTABLE_HEADERS: {
 const COL_CALL_ID = "call_id";
 const COL_LEAD = "lead";
 const COL_DISPOSITION = "disposition";
+const COL_BEST_DISPOSITION = "best_disposition";
 const COL_AUDIO = "audio";
 const DEFAULT_CALL_ID_WIDTH = 130;
 const DEFAULT_LEAD_WIDTH = 220;
 const DEFAULT_DISPOSITION_WIDTH = 180;
+const DEFAULT_BEST_DISPOSITION_WIDTH = 170;
 const DEFAULT_AUDIO_WIDTH = 130;
-
-// The semantic disposition key is an open string (per-org configurable), so we
-// prettify it for display: "callback_requested" → "Callback requested". Known
-// and custom labels both read naturally.
-function formatOutcomeKey(key: string): string {
-  return key
-    .split("_")
-    .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1) : w))
-    .join(" ");
-}
 
 export interface ConversationsTableFilters {
   direction?: CallDirection;
@@ -171,7 +164,12 @@ export function ConversationsTable({
   const widthCallId = widths[COL_CALL_ID] ?? DEFAULT_CALL_ID_WIDTH;
   const widthLead = widths[COL_LEAD] ?? DEFAULT_LEAD_WIDTH;
   const widthDisposition = widths[COL_DISPOSITION] ?? DEFAULT_DISPOSITION_WIDTH;
+  const widthBestDisposition =
+    widths[COL_BEST_DISPOSITION] ?? DEFAULT_BEST_DISPOSITION_WIDTH;
   const widthAudio = widths[COL_AUDIO] ?? DEFAULT_AUDIO_WIDTH;
+  // "Best disposition" is a per-contact, across-attempts roll-up that only the
+  // server populates for campaign-scoped lists — show the column there only.
+  const showBestDisposition = !!filters.campaignId;
   function widthForSort(field: SortField, fallback: number): number {
     return widths[field] ?? fallback;
   }
@@ -282,6 +280,9 @@ export function ConversationsTable({
                 />
               ))}
               <col style={{ width: `${widthDisposition}px` }} />
+              {showBestDisposition ? (
+                <col style={{ width: `${widthBestDisposition}px` }} />
+              ) : null}
               <col style={{ width: `${widthAudio}px` }} />
             </colgroup>
             <thead className="border-b border-border/60 bg-muted/30">
@@ -329,6 +330,20 @@ export function ConversationsTable({
                     )}
                   />
                 </th>
+                {showBestDisposition ? (
+                  <th
+                    scope="col"
+                    className="relative px-4 py-3 font-medium"
+                  >
+                    Best disposition
+                    <ColumnResizeHandle
+                      onStart={makeResizeStarter(
+                        COL_BEST_DISPOSITION,
+                        widthBestDisposition,
+                      )}
+                    />
+                  </th>
+                ) : null}
                 <th
                   scope="col"
                   className="relative px-4 py-3 font-medium"
@@ -421,6 +436,19 @@ export function ConversationsTable({
                         <span className="text-xs text-muted-foreground">—</span>
                       )}
                     </td>
+                    {showBestDisposition ? (
+                      <td className="px-4 py-3">
+                        {call.best_outcome ? (
+                          <Badge variant="secondary" className="w-fit">
+                            {formatOutcomeKey(call.best_outcome)}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
+                        )}
+                      </td>
+                    ) : null}
                     <td
                       className="px-4 py-3"
                       onClick={(e) => e.stopPropagation()}

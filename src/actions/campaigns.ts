@@ -15,15 +15,21 @@ import {
   createCampaignSchema,
   listCampaignsSchema,
 } from "@/lib/validations/campaign";
+import { pickBestOutcome } from "@/lib/campaigns/best-disposition";
+import { loadOutcomeRanking } from "@/lib/queries/outcome-ranking";
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { CallStatus, CallDirection } from "@/types/call";
-import type { Campaign, CampaignContact } from "@/types/campaign";
+import type {
+  Campaign,
+  CampaignContact,
+  CampaignListItem,
+} from "@/types/campaign";
 import { FALLBACK_OUTCOME_KEY } from "@/types/outcome-policy";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const CAMPAIGN_COLUMNS =
-  "id, organisation_id, created_by, name, file_name, agent_id, from_phone_number, from_phone_numbers, status, scheduled_at, started_at, completed_at, max_attempts, max_callbacks, retry_interval_seconds, retry_on, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
+  "id, organisation_id, created_by, name, file_name, agent_id, from_phone_number, from_phone_numbers, status, scheduled_at, started_at, completed_at, max_attempts, max_callbacks, retry_interval_seconds, retry_on, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone, total_contacts, valid_contacts, succeeded_count, failed_count, in_flight_count, created_at, updated_at";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -161,6 +167,13 @@ export async function createCampaign(
       switch_connect_rate_floor: parsed.data.switch_connect_rate_floor,
       switch_window_minutes: parsed.data.switch_window_minutes,
       switch_min_samples: parsed.data.switch_min_samples,
+      // Calling window: all-or-nothing. Null window → all three columns null and
+      // an empty day set (the DB default), meaning "dial any time".
+      calling_window_start_minute:
+        parsed.data.calling_window?.start_minute ?? null,
+      calling_window_end_minute: parsed.data.calling_window?.end_minute ?? null,
+      calling_window_days: parsed.data.calling_window?.days ?? [],
+      calling_window_timezone: parsed.data.calling_window?.timezone ?? null,
     })
     .select(CAMPAIGN_COLUMNS)
     .single<Campaign>();
@@ -327,6 +340,12 @@ export async function stopCampaign(
   return ok(data);
 }
 
+// Soft-delete a campaign and its footprint: the campaign hides from every
+// org-facing surface (list, detail, exports) while every row stays intact in
+// the DB. Leads this campaign SOLELY created are hidden too; leads it shared
+// with inbound/manual/other campaigns stay, with only this campaign's calls on
+// them hidden. Restore is service-role only (no org-facing undo). See
+// supabase/migrations/20260623000001_campaign_soft_delete.sql.
 export async function deleteCampaign(
   input: unknown,
 ): Promise<ActionResult<{ id: string }>> {
@@ -339,18 +358,48 @@ export async function deleteCampaign(
   const admin = createAdminClient();
   const { data: existing } = await admin
     .from("campaigns")
-    .select("id, organisation_id")
+    .select("id, organisation_id, status, deleted_at")
     .eq("id", parsed.data.id)
-    .maybeSingle<{ id: string; organisation_id: string }>();
-  if (!existing) return fail("Campaign not found");
+    .maybeSingle<{
+      id: string;
+      organisation_id: string;
+      status: string;
+      deleted_at: string | null;
+    }>();
+  // A row that's already soft-deleted reads as "not found" to the org.
+  if (!existing || existing.deleted_at) return fail("Campaign not found");
   if (!(await userOwnsOrg(supabase, user.id, existing.organisation_id))) {
     return fail("Forbidden");
   }
 
-  // Cascade drops campaign_contacts; calls.campaign_contact_id becomes null
-  // (history preserved on the calls table).
-  const { error } = await admin.from("campaigns").delete().eq("id", existing.id);
-  if (error) return fail(error.message);
+  // Stop an active run first so the dispatcher can't dial mid-delete: skip any
+  // still-pending contacts and flip the campaign out of a running state. The
+  // RPC then stamps the whole footprint (incl. these) under one batch id.
+  if (existing.status === "in_progress" || existing.status === "scheduled") {
+    await admin
+      .from("campaign_contacts")
+      .update({ status: "skipped" })
+      .eq("campaign_id", existing.id)
+      .eq("status", "pending");
+    await admin
+      .from("campaigns")
+      .update({ status: "stopped", completed_at: new Date().toISOString() })
+      .eq("id", existing.id);
+  }
+
+  // Atomic soft delete (service-role-only RPC). Verified ownership above.
+  const { error } = await admin.rpc("soft_delete_campaign", {
+    p_campaign_id: existing.id,
+    p_user_id: user.id,
+  });
+  if (error) {
+    return fail(
+      logSkeloError("CAMPAIGN", "Soft delete failed", {
+        organisationId: existing.organisation_id,
+        cause: error,
+      }),
+    );
+  }
 
   revalidatePath("/campaigns");
   return ok({ id: existing.id });
@@ -358,7 +407,7 @@ export async function deleteCampaign(
 
 export async function listCampaigns(
   input: unknown,
-): Promise<ActionResult<{ items: Campaign[]; total: number }>> {
+): Promise<ActionResult<{ items: CampaignListItem[]; total: number }>> {
   const parsed = listCampaignsSchema.safeParse(input);
   if (!parsed.success) {
     return fail(parsed.error.issues[0]?.message ?? "Invalid input");
@@ -382,7 +431,57 @@ export async function listCampaigns(
   const { data, error, count } = await query.returns<Campaign[]>();
   if (error) return fail(error.message);
 
-  return ok({ items: data ?? [], total: count ?? 0 });
+  const campaigns = data ?? [];
+  const bestByCampaign = await loadCampaignBestDispositions(
+    supabase,
+    parsed.data.organisation_id,
+    campaigns.map((c) => c.id),
+  );
+  const items: CampaignListItem[] = campaigns.map((c) => ({
+    ...c,
+    best_disposition: bestByCampaign.get(c.id) ?? null,
+  }));
+
+  return ok({ items, total: count ?? 0 });
+}
+
+// Resolve the single highest-priority disposition reached by any contact in
+// each campaign. One policy read + one aggregate RPC per page; the RPC returns
+// the small distinct (campaign, outcome) set and we rank it here so reordering
+// outcomes can never leave a stale value behind.
+async function loadCampaignBestDispositions(
+  supabase: SupabaseServerClient,
+  organisationId: string,
+  campaignIds: string[],
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (campaignIds.length === 0) return result;
+
+  const ranking = await loadOutcomeRanking(supabase, organisationId);
+  if (ranking.size === 0) return result;
+
+  const { data, error } = await supabase.rpc("campaign_best_dispositions", {
+    p_org_id: organisationId,
+    p_campaign_ids: campaignIds,
+  });
+  if (error) return result;
+  const rows: { campaign_id: string; outcome_key: string }[] = Array.isArray(
+    data,
+  )
+    ? data
+    : [];
+
+  const occurredByCampaign = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const set = occurredByCampaign.get(row.campaign_id) ?? new Set<string>();
+    set.add(row.outcome_key);
+    occurredByCampaign.set(row.campaign_id, set);
+  }
+  for (const [campaignId, keys] of occurredByCampaign) {
+    const best = pickBestOutcome(keys, ranking);
+    if (best) result.set(campaignId, best);
+  }
+  return result;
 }
 
 export interface CampaignCallRow {
@@ -458,6 +557,9 @@ export async function getCampaign(
     .from("campaigns")
     .select(CAMPAIGN_COLUMNS)
     .eq("id", parsed.data.id)
+    // This read uses the admin client (bypasses RLS), so exclude soft-deleted
+    // campaigns explicitly — a bookmarked detail URL must 404 after deletion.
+    .is("deleted_at", null)
     .maybeSingle<Campaign>();
   if (error) return fail(error.message);
   if (!data) return fail("Campaign not found");

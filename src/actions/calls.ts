@@ -5,7 +5,9 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
+import { pickBestOutcome } from "@/lib/campaigns/best-disposition";
 import { applyCallFilters } from "@/lib/queries/call-filters";
+import { loadOutcomeRanking } from "@/lib/queries/outcome-ranking";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -425,9 +427,13 @@ export async function listConversations(
   }
 
   const ascending = parsed.data.dir === "asc";
+  // campaign_contact_id rides along so the campaign Calls tab can show each
+  // contact's best disposition across attempts; it's harmless on other lists.
   let query = supabase
     .from("calls")
-    .select(`${CALL_COLUMNS}, lead:leads(name, phone)`, { count: "exact" })
+    .select(`${CALL_COLUMNS}, campaign_contact_id, lead:leads(name, phone)`, {
+      count: "exact",
+    })
     .eq("organisation_id", parsed.data.organisation_id)
     .order(parsed.data.sort, { ascending, nullsFirst: false })
     .order("started_at", { ascending: false })
@@ -438,10 +444,77 @@ export async function listConversations(
     campaign_contact_ids: campaignContactIds,
   });
 
-  const { data, error, count } = await query.returns<CallWithLead[]>();
+  const { data, error, count } = await query.returns<CallRowWithContact[]>();
   if (error) return fail(error.message);
 
-  return ok({ items: data ?? [], total: count ?? 0 });
+  const rows = data ?? [];
+  // Best-disposition enrichment only makes sense within a campaign (it groups
+  // a contact's attempts); skip the extra round-trips elsewhere.
+  const items = parsed.data.campaign_id
+    ? await attachBestDispositions(
+        supabase,
+        parsed.data.organisation_id,
+        rows,
+      )
+    : rows;
+
+  return ok({ items, total: count ?? 0 });
+}
+
+// CallWithLead as returned by listConversations, carrying the contact id used
+// to compute the per-contact best disposition.
+type CallRowWithContact = CallWithLead & {
+  campaign_contact_id: string | null;
+};
+
+// For each call row, attach `best_outcome` — the highest-priority disposition
+// its campaign contact reached across ALL its attempts (not just this call).
+async function attachBestDispositions(
+  supabase: SupabaseServerClient,
+  organisationId: string,
+  rows: CallRowWithContact[],
+): Promise<CallRowWithContact[]> {
+  const contactIds = [
+    ...new Set(
+      rows
+        .map((r) => r.campaign_contact_id)
+        .filter((id): id is string => id !== null),
+    ),
+  ];
+  if (contactIds.length === 0) return rows;
+
+  const ranking = await loadOutcomeRanking(supabase, organisationId);
+  if (ranking.size === 0) return rows;
+
+  // Every outcome-bearing call for the page's contacts (bounded by
+  // attempts × contacts), so "best so far" reflects all attempts.
+  const { data: outcomeRows } = await supabase
+    .from("calls")
+    .select("campaign_contact_id, call_outcome")
+    .in("campaign_contact_id", contactIds)
+    .not("call_outcome", "is", null)
+    .returns<{ campaign_contact_id: string; call_outcome: string }[]>();
+
+  const occurredByContact = new Map<string, Set<string>>();
+  for (const row of outcomeRows ?? []) {
+    const set =
+      occurredByContact.get(row.campaign_contact_id) ?? new Set<string>();
+    set.add(row.call_outcome);
+    occurredByContact.set(row.campaign_contact_id, set);
+  }
+
+  const bestByContact = new Map<string, string>();
+  for (const [contactId, keys] of occurredByContact) {
+    const best = pickBestOutcome(keys, ranking);
+    if (best) bestByContact.set(contactId, best);
+  }
+
+  return rows.map((r) => ({
+    ...r,
+    best_outcome: r.campaign_contact_id
+      ? (bestByContact.get(r.campaign_contact_id) ?? null)
+      : null,
+  }));
 }
 
 // Resolve a campaign's contact-id set, verifying the campaign belongs to the

@@ -66,6 +66,13 @@ describe("toTimestamp", () => {
     expect(toTimestamp(null)).toBeNull();
     expect(toTimestamp("not a date")).toBeNull();
   });
+
+  it("interprets a naive (timezone-less) spoken time in the app zone, not UTC", () => {
+    // Agents emit local wall-clock times. With the default IST zone, 15:00
+    // local must store as 09:30 UTC — not 15:00 UTC (the +5:30 shift bug that
+    // made callbacks fire late). Assumes APP_DEFAULT_TIMEZONE is unset (IST).
+    expect(toTimestamp("2026-06-24T15:00:00")).toBe("2026-06-24T09:30:00.000Z");
+  });
 });
 
 describe("normalizeOutcomeKey", () => {

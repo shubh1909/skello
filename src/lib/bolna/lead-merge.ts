@@ -193,6 +193,10 @@ async function findOrCreateLead(
       .select("id")
       .eq("organisation_id", organisationId)
       .eq("phone_normalized", phoneNorm)
+      // Skip soft-deleted (handed-over) leads — a new interaction must create a
+      // fresh visible lead, not merge into a hidden one. The dedup unique index
+      // is partial on deleted_at IS NULL to allow exactly this.
+      .is("deleted_at", null)
       .maybeSingle<{ id: string }>();
     if (existing) return { leadId: existing.id, created: false };
   }
@@ -222,13 +226,14 @@ async function findOrCreateLead(
   if (!error && created) return { leadId: created.id, created: true };
 
   // Lost the race — another webhook just created this lead. Refetch by the
-  // unique key and continue.
+  // unique key and continue. (Partial unique index → only a live row collides.)
   if (error?.code === "23505" && phoneNorm) {
     const { data: raced } = await admin
       .from("leads")
       .select("id")
       .eq("organisation_id", organisationId)
       .eq("phone_normalized", phoneNorm)
+      .is("deleted_at", null)
       .maybeSingle<{ id: string }>();
     if (raced) return { leadId: raced.id, created: false };
   }

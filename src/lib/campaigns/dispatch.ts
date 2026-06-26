@@ -1,6 +1,11 @@
 import "server-only";
 
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
+import {
+  campaignCallingWindow,
+  isWithinCallingWindow,
+  nextCallingWindowOpen,
+} from "@/lib/campaigns/calling-window";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 // Throughput per tick. The cron fires every minute (createCampaign also kicks
@@ -167,6 +172,10 @@ export interface DueContact {
     switch_connect_rate_floor: number;
     switch_window_minutes: number;
     switch_min_samples: number;
+    calling_window_start_minute: number | null;
+    calling_window_end_minute: number | null;
+    calling_window_days: number[] | null;
+    calling_window_timezone: string | null;
   } | null;
 }
 
@@ -358,7 +367,7 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   const { data, error } = await admin
     .from("campaign_contacts")
     .select(
-      "id, campaign_id, organisation_id, phone, name, metadata, attempt, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples)",
+      "id, campaign_id, organisation_id, phone, name, metadata, attempt, callback_count, health_defer_count, campaign:campaigns!campaign_id(id, organisation_id, status, max_attempts, agent_id, from_phone_number, from_phone_numbers, switch_connect_rate_floor, switch_window_minutes, switch_min_samples, calling_window_start_minute, calling_window_end_minute, calling_window_days, calling_window_timezone)",
     )
     .eq("status", "pending")
     .lte("next_attempt_at", nowIso)
@@ -438,7 +447,47 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   }
   const batchUsage = new Map<string, number>();
 
+  // Calling-window status per campaign (computed once — the answer is the same
+  // for every contact in a campaign this tick). `open` gates dialing; `nextOpen`
+  // is where we park deferred contacts so they wake when the window reopens.
+  const nowDate = new Date(now);
+  const windowByCampaign = new Map<
+    string,
+    { open: boolean; nextOpen: string }
+  >();
+  for (const c of queue) {
+    if (!c.campaign || windowByCampaign.has(c.campaign.id)) continue;
+    const win = campaignCallingWindow(c.campaign);
+    if (!win) {
+      windowByCampaign.set(c.campaign.id, { open: true, nextOpen: nowIso });
+      continue;
+    }
+    const open = isWithinCallingWindow(win, nowDate);
+    windowByCampaign.set(c.campaign.id, {
+      open,
+      nextOpen: open
+        ? nowIso
+        : nextCallingWindowOpen(win, nowDate).toISOString(),
+    });
+  }
+
   const fired = await pooledMap(queue, CONCURRENCY, async (contact) => {
+      // Calling window gate — checked first so an out-of-window contact is parked
+      // (next_attempt_at → window open) rather than dialed, marked failed, or
+      // having its number-health touched. No attempt is consumed.
+      const win = windowByCampaign.get(contact.campaign_id);
+      if (win && !win.open) {
+        await admin
+          .from("campaign_contacts")
+          .update({
+            next_attempt_at: win.nextOpen,
+            last_error: "Outside calling window — deferred",
+          })
+          .eq("id", contact.id)
+          .eq("status", "pending");
+        return { id: contact.id, ok: false, reason: "outside_window" };
+      }
+
       const integration = integrationByOrg.get(contact.organisation_id);
       if (!integration || !integration.enabled) {
         await admin

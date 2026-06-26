@@ -7,6 +7,7 @@ import {
 } from "@/lib/bolna/client";
 import { parseTranscript } from "@/lib/bolna/transcript";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { parseProviderTimestamp } from "@/lib/time";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -81,8 +82,10 @@ export async function enrichInboundLead(
           typeof execution.conversation_time === "number"
             ? Math.round(execution.conversation_time)
             : null,
-        started_at: execution.created_at ?? new Date().toISOString(),
-        ended_at: execution.updated_at ?? null,
+        started_at:
+          parseProviderTimestamp(execution.created_at) ??
+          new Date().toISOString(),
+        ended_at: parseProviderTimestamp(execution.updated_at),
         error_message: execution.error_message ?? null,
       },
       { onConflict: "organisation_id,bolna_call_id" },
@@ -128,7 +131,8 @@ export async function enrichOutboundCall(
   if (typeof execution.conversation_time === "number") {
     patch.duration_seconds = Math.round(execution.conversation_time);
   }
-  if (execution.updated_at) patch.ended_at = execution.updated_at;
+  const endedAt = parseProviderTimestamp(execution.updated_at);
+  if (endedAt) patch.ended_at = endedAt;
   if (execution.error_message) patch.error_message = execution.error_message;
   if (Object.keys(patch).length > 0) {
     const { error } = await admin

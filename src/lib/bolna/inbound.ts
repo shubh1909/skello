@@ -4,6 +4,7 @@ import type { BolnaLeadPayload } from "@/lib/bolna/extract";
 import { mergePayloadIntoLead } from "@/lib/bolna/lead-merge";
 import { parseTranscript } from "@/lib/bolna/transcript";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { parseProviderTimestamp } from "@/lib/time";
 import type { CallOutcome, CallStatus, CallTranscriptStatus } from "@/types/call";
 
 interface RecordInboundCallArgs {
@@ -79,8 +80,9 @@ export async function recordInboundCall(
       ? Math.round(payload.conversation_duration)
       : null;
   const agentId = payload.agent_id ?? "inbound";
-  const startedAt = payload.created_at ?? new Date().toISOString();
-  const endedAt = payload.updated_at ?? null;
+  const startedAt =
+    parseProviderTimestamp(payload.created_at) ?? new Date().toISOString();
+  const endedAt = parseProviderTimestamp(payload.updated_at);
   const errorMessage = payload.error_message ?? null;
   const transcriptStatus: CallTranscriptStatus = transcript ? "ready" : "skipped";
 

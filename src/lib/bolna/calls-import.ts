@@ -4,6 +4,7 @@ import { resolveOrgByAgentId } from "@/lib/bolna/routing";
 import { buildSummary, type BolnaLeadPayload } from "@/lib/bolna/extract";
 import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { parseProviderTimestamp } from "@/lib/time";
 import type { BolnaCsvRow } from "@/lib/validations/bolna-csv";
 import type { CallStatus, CallTranscriptStatus } from "@/types/call";
 
@@ -149,6 +150,8 @@ export async function processRow(
         .select("id")
         .eq("organisation_id", sessionOrgId)
         .eq("phone_normalized", phoneNorm)
+        // Don't link a CSV-imported call to a soft-deleted (handed-over) lead.
+        .is("deleted_at", null)
         .maybeSingle<{ id: string }>();
       leadId = lead?.id ?? null;
     }
@@ -177,7 +180,7 @@ export async function processRow(
       ? "ready"
       : "skipped") satisfies CallTranscriptStatus,
     transcript_fetched_at: transcript ? new Date().toISOString() : null,
-    started_at: row.created_at ?? null,
+    started_at: parseProviderTimestamp(row.created_at),
     summary: summaryFromLeadData,
     ...(snapshot
       ? {
