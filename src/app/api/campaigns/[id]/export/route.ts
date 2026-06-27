@@ -55,6 +55,8 @@ export async function GET(
     .from("campaigns")
     .select("id, organisation_id, name, file_name")
     .eq("id", id)
+    // Admin client bypasses RLS; a soft-deleted campaign must 404 here too.
+    .is("deleted_at", null)
     .maybeSingle<{
       id: string;
       organisation_id: string;

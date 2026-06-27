@@ -44,6 +44,16 @@ export function formatDateTime(iso: string | null | undefined): string {
   }).format(new Date(iso));
 }
 
+// The semantic disposition key is an open string (per-org configurable), so we
+// prettify it for display: "callback_requested" → "Callback requested". Known
+// and custom labels both read naturally.
+export function formatOutcomeKey(key: string): string {
+  return key
+    .split("_")
+    .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
 /** Strip all non-digits. wa.me requires E.164 without `+`. */
 export function normalisePhoneForWa(phone: string | null | undefined): string {
   if (!phone) return "";

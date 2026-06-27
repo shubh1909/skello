@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import {
   createOutcomePolicy,
   deleteOutcomePolicy,
+  reorderOutcomePolicies,
   updateOutcomePolicy,
 } from "@/actions/admin/outcome-policies";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +22,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { TOP_DISPOSITION_PRIORITIES } from "@/lib/campaigns/best-disposition";
+import { cn } from "@/lib/utils";
 import { OUTCOME_ACTIONS, type OutcomePolicy } from "@/types/outcome-policy";
 
 // Human labels for each action — also the source of truth for the dropdowns.
@@ -37,14 +40,101 @@ interface Props {
 }
 
 export function OutcomePoliciesEditor({ organisationId, policies }: Props) {
+  const router = useRouter();
+  const [saving, startSaving] = React.useTransition();
+  // null = view mode. An array = ranking mode, holding outcome ids in the order
+  // the admin has clicked them (index + 1 is the priority number shown).
+  const [sequence, setSequence] = React.useState<string[] | null>(null);
+  const ranking = sequence !== null;
+
+  function toggle(id: string) {
+    setSequence((seq) => {
+      if (seq === null) return seq;
+      return seq.includes(id) ? seq.filter((x) => x !== id) : [...seq, id];
+    });
+  }
+
+  function onSave() {
+    if (sequence === null) return;
+    // Clicked outcomes first (in click order), then everything else in its
+    // current order — a partial ranking still yields a complete, gap-free list.
+    const ordered = [
+      ...sequence,
+      ...policies.map((p) => p.id).filter((id) => !sequence.includes(id)),
+    ];
+    startSaving(async () => {
+      const res = await reorderOutcomePolicies({
+        organisation_id: organisationId,
+        ordered_ids: ordered,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success("Priority order saved");
+      setSequence(null);
+      router.refresh();
+    });
+  }
+
+  // View-mode display rank counts only real outcomes; the fallback never ranks.
+  let viewRank = 0;
+
   return (
     <div className="flex flex-col gap-6">
       <AgentLabelsPanel policies={policies} />
+
+      <div className="rounded-lg border border-border/60 bg-muted/20 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+        <span className="font-medium text-foreground">Order = priority.</span>{" "}
+        The top{" "}
+        <span className="font-medium text-foreground">
+          {TOP_DISPOSITION_PRIORITIES}
+        </span>{" "}
+        outcomes set the “Best disposition” shown on campaigns and in call
+        history — the highest-ranked outcome a contact reaches wins. Outcomes
+        below the top {TOP_DISPOSITION_PRIORITIES} (and the fallback) never count
+        as a best disposition.
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          {ranking
+            ? "Click outcomes in order of priority — each click assigns the next number. Click a numbered outcome to remove it."
+            : "Outcomes are ranked top to bottom."}
+        </p>
+        <div className="flex items-center gap-2">
+          {ranking ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSequence(null)}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button size="sm" onClick={onSave} disabled={saving}>
+                {saving ? <Loader2Icon className="animate-spin" /> : null}
+                Save priority order
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSequence([])}
+            >
+              Set priority order
+            </Button>
+          )}
+        </div>
+      </div>
 
       <div className="overflow-x-auto rounded-lg border border-border/60">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-border/60 bg-muted/30 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              <th className="px-3 py-2 font-medium">Priority</th>
               <th className="px-3 py-2 font-medium">Outcome key</th>
               <th className="px-3 py-2 font-medium">Label</th>
               <th className="px-3 py-2 font-medium">Action</th>
@@ -53,13 +143,28 @@ export function OutcomePoliciesEditor({ organisationId, policies }: Props) {
             </tr>
           </thead>
           <tbody className="divide-y divide-border/60">
-            {policies.map((p) => (
-              <PolicyRow
-                key={p.id}
-                organisationId={organisationId}
-                policy={p}
-              />
-            ))}
+            {policies.map((p) => {
+              const thisViewRank = p.is_fallback ? null : ++viewRank;
+              const seqIndex = sequence ? sequence.indexOf(p.id) : -1;
+              return (
+                <PolicyRow
+                  key={p.id}
+                  organisationId={organisationId}
+                  policy={p}
+                  rowDisabled={ranking}
+                  priorityCell={
+                    <PriorityCell
+                      ranking={ranking}
+                      isFallback={p.is_fallback}
+                      viewRank={thisViewRank}
+                      seqNumber={seqIndex >= 0 ? seqIndex + 1 : null}
+                      onToggle={() => toggle(p.id)}
+                      disabled={saving}
+                    />
+                  }
+                />
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -69,15 +174,85 @@ export function OutcomePoliciesEditor({ organisationId, policies }: Props) {
   );
 }
 
+// The Priority cell, in both modes. View mode shows the current rank; ranking
+// mode shows a clickable slot — a number once clicked, a dashed "+" until then.
+// The reserved fallback never ranks in either mode.
+function PriorityCell({
+  ranking,
+  isFallback,
+  viewRank,
+  seqNumber,
+  onToggle,
+  disabled,
+}: {
+  ranking: boolean;
+  isFallback: boolean;
+  viewRank: number | null;
+  seqNumber: number | null;
+  onToggle: () => void;
+  disabled: boolean;
+}) {
+  if (isFallback) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+
+  if (!ranking) {
+    const isTop = viewRank !== null && viewRank <= TOP_DISPOSITION_PRIORITIES;
+    return (
+      <Badge
+        variant={isTop ? "default" : "secondary"}
+        className="tabular-nums"
+        title={
+          isTop
+            ? "Counts toward the campaign best disposition"
+            : "Below the priority window — never a best disposition"
+        }
+      >
+        {viewRank}
+      </Badge>
+    );
+  }
+
+  const ranked = seqNumber !== null;
+  const isTop = ranked && seqNumber <= TOP_DISPOSITION_PRIORITIES;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      aria-label={
+        ranked ? `Priority ${seqNumber} — click to remove` : "Add to priority order"
+      }
+      className={cn(
+        "grid size-7 place-items-center rounded-full border text-xs font-medium tabular-nums transition-colors disabled:pointer-events-none disabled:opacity-50",
+        ranked
+          ? isTop
+            ? "border-transparent bg-foreground text-background"
+            : "border-transparent bg-muted-foreground/20 text-foreground"
+          : "border-dashed border-border text-muted-foreground hover:border-foreground hover:text-foreground",
+      )}
+    >
+      {ranked ? seqNumber : <PlusIcon className="size-3.5" />}
+    </button>
+  );
+}
+
 function PolicyRow({
   organisationId,
   policy,
+  priorityCell,
+  rowDisabled,
 }: {
   organisationId: string;
   policy: OutcomePolicy;
+  priorityCell: React.ReactNode;
+  // True while the org is in priority-ranking mode — the row's edit controls
+  // are paused so clicks land on the priority slots, not the fields.
+  rowDisabled: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = React.useTransition();
+  const disabled = pending || rowDisabled;
   const [label, setLabel] = React.useState(policy.label);
   const [action, setAction] = React.useState<string>(policy.action);
   const [countsAsSuccess, setCountsAsSuccess] = React.useState(
@@ -129,6 +304,7 @@ function PolicyRow({
 
   return (
     <tr className="align-middle">
+      <td className="px-3 py-2.5">{priorityCell}</td>
       <td className="px-3 py-2.5">
         <div className="flex items-center gap-2">
           <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
@@ -145,7 +321,7 @@ function PolicyRow({
         <Input
           value={label}
           onChange={(e) => setLabel(e.target.value)}
-          disabled={pending}
+          disabled={disabled}
           className="h-8"
         />
       </td>
@@ -153,7 +329,7 @@ function PolicyRow({
         <Select
           value={action}
           onValueChange={(v) => v !== null && setAction(v)}
-          disabled={pending}
+          disabled={disabled}
         >
           <SelectTrigger className="h-8 w-full min-w-56">
             <SelectValue>{ACTION_LABELS[action] ?? action}</SelectValue>
@@ -172,14 +348,14 @@ function PolicyRow({
           type="checkbox"
           checked={countsAsSuccess}
           onChange={(e) => setCountsAsSuccess(e.target.checked)}
-          disabled={pending}
+          disabled={disabled}
           className="size-4 accent-foreground"
           aria-label="Counts as success"
         />
       </td>
       <td className="px-3 py-2.5">
         <div className="flex items-center justify-end gap-1.5">
-          <Button size="sm" onClick={onSave} disabled={pending || !dirty}>
+          <Button size="sm" onClick={onSave} disabled={disabled || !dirty}>
             {pending ? <Loader2Icon className="animate-spin" /> : null}
             Save
           </Button>
@@ -187,7 +363,7 @@ function PolicyRow({
             size="icon"
             variant="ghost"
             onClick={onDelete}
-            disabled={pending || policy.is_fallback}
+            disabled={disabled || policy.is_fallback}
             title={
               policy.is_fallback
                 ? "The fallback outcome can't be deleted"

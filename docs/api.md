@@ -693,7 +693,9 @@ Returns the org's configured outcome keys + labels from `org_outcome_policies` (
 
 #### Campaign Calls tab — filtering & disposition
 
-The campaign detail Calls tab ([page.tsx](../src/app/(app)/campaigns/[id]/page.tsx)) renders a `CampaignCallsFilterBar` ([src/components/app/campaign-calls-filter-bar.tsx](../src/components/app/campaign-calls-filter-bar.tsx)) above the shared `ConversationsTable`. Filters are URL-driven (`?tab=calls&status=…&outcome=…&q=…`) and always preserve `tab=calls`; changing one remounts the table so infinite-scroll resets to page 1. The table now shows a **Disposition** column (`call_outcome`, prettified, with the `requested_callback_at` time underneath when present) — visible on `/conversations` too.
+The campaign detail Calls tab ([page.tsx](../src/app/(app)/campaigns/[id]/page.tsx)) renders a `CampaignCallsFilterBar` ([src/components/app/campaign-calls-filter-bar.tsx](../src/components/app/campaign-calls-filter-bar.tsx)) above the shared `ConversationsTable`. Filters are URL-driven (`?tab=calls&status=…&outcome=…&q=…`) and always preserve `tab=calls`; changing one remounts the table so infinite-scroll resets to page 1. The table shows a **Disposition** column (`call_outcome`, prettified, with the `requested_callback_at` time underneath when present) — visible on `/conversations` too.
+
+When scoped to a campaign (`campaign_id` set), `listConversations` also enriches each row with `best_outcome: string | null` and the table adds a **Best disposition** column — the highest-priority disposition that row's *contact* reached across **all** its attempts (not just this call). See *Best disposition* below. The column is hidden on the org-wide `/conversations` list (no campaign context).
 
 ### UI triggers
 
@@ -1167,7 +1169,7 @@ Hard-deletes the `campaigns` row. FK cascade drops `campaign_contacts`; `calls.c
 }
 ```
 
-**Returns** `ActionResult<{ items: Campaign[]; total: number }>`. Ordered `created_at desc`.
+**Returns** `ActionResult<{ items: CampaignListItem[]; total: number }>`. Ordered `created_at desc`. `CampaignListItem` is `Campaign` plus a derived `best_disposition: string | null` — the campaign's **best disposition** (see *Best disposition* below), computed on read from the org's outcome priority. Powers the **Best disposition** column on the campaigns list.
 
 ### `getCampaignCalls(input)`
 
@@ -1265,8 +1267,17 @@ Per org, one row per outcome: `outcome_key` (the normalised label the agent emit
 - **`no_decision` is the reserved, non-deletable fallback.** Any label not in the policy resolves to it.
 - **Seeding** (`seed_default_outcome_policies`) fires on org insert + a backfill, so existing orgs keep today's behaviour. Edited via `actions/admin/outcome-policies.ts` (requireAdmin, service-role).
 - **Success rate** (`getCampaignStats`) counts contacts whose `last_outcome` maps to `counts_as_success` — but **gated on the call having connected** (`last_status = 'completed'`), so a never-connected contact can't count via the fallback and the funnel stays monotonic (`succeeded ⊆ connected`).
+- **`position` is the outcome PRIORITY** (ascending = higher priority), set by the admin on `/admin/organisations/[id]/outcomes` via the **click-to-rank** control (`reorderOutcomePolicies` reassigns gap-free positions `0..n`; `is_fallback` never ranks). The same order drives the **Best disposition** feature below and the Calls-tab outcome dropdown order.
 
 The campaign trigger keeps the parent counters in sync and auto-flips the campaign to `completed` once nothing remains pending or in-flight.
+
+#### Best disposition (`campaign_best_dispositions`)
+
+The single highest-priority outcome reached, shown per campaign (campaigns list) and per contact (campaign Calls tab). Logic lives in the pure [src/lib/campaigns/best-disposition.ts](../src/lib/campaigns/best-disposition.ts) (`buildOutcomeRanking` → top-`TOP_DISPOSITION_PRIORITIES` (5) `outcome_key → rank` map, excluding the fallback; `pickBestOutcome` → the lowest-rank key that occurred, or `null`). Loaded via [src/lib/queries/outcome-ranking.ts](../src/lib/queries/outcome-ranking.ts) (`loadOutcomeRanking`, RLS-scoped read of `org_outcome_policies`).
+
+- **Per campaign** (`listCampaigns`): the `campaign_best_dispositions(p_org_id, p_campaign_ids[])` RPC (migration `20260624000000`, `security definer`, org-bounded) returns the distinct `(campaign_id, outcome_key)` set that occurred (joining `calls → campaign_contacts`, excluding `is_test`); the action ranks it per campaign → `best_disposition`.
+- **Per contact** (`listConversations`, campaign-scoped only): a bounded follow-up query over the page's contacts' calls → best per contact → `best_outcome` on each row.
+- **Compute-on-read** (no denormalized column) so reordering outcome priority can never leave a stale value. Outcomes ranked **below the top 5**, the fallback, or contacts/campaigns with no qualifying outcome render as `—`.
 
 ### `GET /api/campaigns/[id]/export`
 

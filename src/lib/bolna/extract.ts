@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { parseProviderTimestamp } from "@/lib/time";
 import { type CallOutcome, KNOWN_CALL_OUTCOMES } from "@/types/call";
 
 // Per-field caps bound the work the webhook does on a single payload. Bolna's
@@ -88,11 +89,11 @@ export function toBoolean(v: string | null): boolean | null {
   return null;
 }
 
+// Agent-extracted times (callback_at, date_and_time_of_visit) are spoken in the
+// customer's LOCAL zone and usually arrive without a timezone. Interpret them in
+// the app's configured zone, not the server's — see parseProviderTimestamp.
 export function toTimestamp(v: string | null): string | null {
-  if (!v) return null;
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
+  return parseProviderTimestamp(v);
 }
 
 // Normalise any outcome-ish string to a stable key: trim, lowercase, and

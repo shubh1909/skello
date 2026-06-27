@@ -7,6 +7,7 @@ import { applyScheduledCallbackOutcome } from "@/lib/callbacks/outcome";
 import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
 import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { parseProviderTimestamp } from "@/lib/time";
 import type { CallStatus } from "@/types/call";
 
 // Bolna emits a variety of status strings across the call lifecycle. We
@@ -89,8 +90,12 @@ export async function applyCallStatusUpdate(
   const admin = createAdminClient();
 
   const patch: Record<string, unknown> = { status: input.status };
-  if (input.answeredAt) patch.answered_at = input.answeredAt;
-  if (input.endedAt) patch.ended_at = input.endedAt;
+  // Provider timestamps may arrive without a timezone; interpret them in the
+  // app's zone rather than the server's so stored instants aren't shifted.
+  const answeredAt = parseProviderTimestamp(input.answeredAt);
+  const endedAt = parseProviderTimestamp(input.endedAt);
+  if (answeredAt) patch.answered_at = answeredAt;
+  if (endedAt) patch.ended_at = endedAt;
   if (typeof input.durationSeconds === "number") {
     patch.duration_seconds = input.durationSeconds;
   }

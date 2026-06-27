@@ -49,6 +49,13 @@ export interface Campaign {
   switch_connect_rate_floor: number;
   switch_window_minutes: number;
   switch_min_samples: number;
+  // Calling window: dialing is restricted to [start, end) minutes-since-midnight
+  // on the allowed weekdays, interpreted in calling_window_timezone. All null /
+  // empty days = no window (dial any time). See lib/campaigns/calling-window.
+  calling_window_start_minute: number | null;
+  calling_window_end_minute: number | null;
+  calling_window_days: number[];
+  calling_window_timezone: string | null;
   total_contacts: number;
   valid_contacts: number;
   succeeded_count: number;
@@ -56,6 +63,14 @@ export interface Campaign {
   in_flight_count: number;
   created_at: string;
   updated_at: string;
+}
+
+// A campaign row enriched for the list view. `best_disposition` is the
+// highest-priority outcome reached by any contact in the campaign, per the
+// org's outcome priority order (top priorities only). null = nothing notable
+// yet. Derived on read — not a stored column.
+export interface CampaignListItem extends Campaign {
+  best_disposition: string | null;
 }
 
 export interface CampaignContact {
