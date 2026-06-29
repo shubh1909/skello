@@ -1,10 +1,13 @@
+import Link from "next/link";
 import {
   CalendarClockIcon,
   CheckCheckIcon,
+  LayoutTemplateIcon,
   RadioIcon,
   ZapIcon,
 } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CampaignUploadDialog } from "@/components/app/campaign-upload-dialog";
 import { CampaignsTable } from "@/components/app/campaigns-table";
@@ -55,6 +58,9 @@ export default async function CampaignsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" render={<Link href="/campaigns/templates" />}>
+            <LayoutTemplateIcon /> Templates
+          </Button>
           <TestCallDialog organisationId={session.organisation.id} />
           <VoiceConfigDialog organisationId={session.organisation.id} />
           <CampaignUploadDialog organisationId={session.organisation.id} />

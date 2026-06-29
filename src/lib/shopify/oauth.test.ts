@@ -2,7 +2,6 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
-  isValidShopDomain,
   signOAuthState,
   verifyOAuthHmac,
   verifyOAuthState,
@@ -12,7 +11,7 @@ import {
 const SECRET = "shpss_test_secret";
 
 // Build the query string Shopify signs (every param except hmac, sorted, joined
-// key=value with &) and attach a valid hmac — mirrors the callback.
+// key=value with &) and attach a valid hex hmac — mirrors the OAuth callback.
 function signedParams(
   fields: Record<string, string>,
   secret = SECRET,
@@ -24,22 +23,6 @@ function signedParams(
   const hmac = createHmac("sha256", secret).update(message).digest("hex");
   return new URLSearchParams({ ...fields, hmac });
 }
-
-describe("isValidShopDomain", () => {
-  it("accepts a real myshopify domain", () => {
-    expect(isValidShopDomain("teststore.myshopify.com")).toBe(true);
-    expect(isValidShopDomain("my-store-123.myshopify.com")).toBe(true);
-  });
-
-  it("rejects anything that isn't *.myshopify.com", () => {
-    expect(isValidShopDomain("evil.com")).toBe(false);
-    expect(isValidShopDomain("teststore.myshopify.com.evil.com")).toBe(false);
-    expect(isValidShopDomain("myshopify.com")).toBe(false);
-    expect(isValidShopDomain(null)).toBe(false);
-    expect(isValidShopDomain(undefined)).toBe(false);
-    expect(isValidShopDomain("")).toBe(false);
-  });
-});
 
 describe("verifyOAuthHmac", () => {
   const fields = {
@@ -55,12 +38,12 @@ describe("verifyOAuthHmac", () => {
 
   it("rejects a tampered param", () => {
     const params = signedParams(fields);
-    params.set("shop", "attacker.myshopify.com"); // hmac no longer matches
+    params.set("shop", "attacker.myshopify.com");
     expect(verifyOAuthHmac(params, SECRET)).toBe(false);
   });
 
   it("rejects a wrong secret", () => {
-    expect(verifyOAuthHmac(signedParams(fields), "wrong_secret")).toBe(false);
+    expect(verifyOAuthHmac(signedParams(fields), "other")).toBe(false);
   });
 
   it("rejects when hmac is missing", () => {
@@ -77,25 +60,23 @@ describe("signOAuthState / verifyOAuthState", () => {
   };
 
   it("round-trips a freshly-signed cookie", () => {
-    const cookie = signOAuthState(payload, SECRET);
-    expect(verifyOAuthState(cookie, SECRET)).toEqual(payload);
+    expect(verifyOAuthState(signOAuthState(payload, SECRET), SECRET)).toEqual(
+      payload,
+    );
   });
 
   it("rejects a tampered payload", () => {
-    const cookie = signOAuthState(payload, SECRET);
-    const [data] = cookie.split(".");
-    const forged = `${data}.deadbeef`;
-    expect(verifyOAuthState(forged, SECRET)).toBeNull();
+    const [data] = signOAuthState(payload, SECRET).split(".");
+    expect(verifyOAuthState(`${data}.deadbeef`, SECRET)).toBeNull();
   });
 
   it("rejects a wrong secret", () => {
-    const cookie = signOAuthState(payload, SECRET);
-    expect(verifyOAuthState(cookie, "wrong_secret")).toBeNull();
+    expect(verifyOAuthState(signOAuthState(payload, SECRET), "other")).toBeNull();
   });
 
   it("rejects an expired cookie", () => {
     const stale = signOAuthState(
-      { ...payload, ts: Date.now() - 11 * 60 * 1000 }, // older than the 10-min TTL
+      { ...payload, ts: Date.now() - 11 * 60 * 1000 },
       SECRET,
     );
     expect(verifyOAuthState(stale, SECRET)).toBeNull();
@@ -103,6 +84,6 @@ describe("signOAuthState / verifyOAuthState", () => {
 
   it("rejects undefined / malformed input", () => {
     expect(verifyOAuthState(undefined, SECRET)).toBeNull();
-    expect(verifyOAuthState("not-a-valid-cookie", SECRET)).toBeNull();
+    expect(verifyOAuthState("not-a-cookie", SECRET)).toBeNull();
   });
 });

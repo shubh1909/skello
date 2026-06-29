@@ -5,6 +5,7 @@ import { after } from "next/server";
 import { enrichOutboundCall } from "@/lib/bolna/enrich";
 import { applyScheduledCallbackOutcome } from "@/lib/callbacks/outcome";
 import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
+import { applyShopifyRecoveryOutcome } from "@/lib/shopify/recovery";
 import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseProviderTimestamp } from "@/lib/time";
@@ -109,12 +110,15 @@ export async function applyCallStatusUpdate(
     .from("calls")
     .update(patch)
     .eq("bolna_call_id", input.bolnaCallId)
-    .select("id, organisation_id, campaign_contact_id, scheduled_callback_id")
+    .select(
+      "id, organisation_id, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id",
+    )
     .maybeSingle<{
       id: string;
       organisation_id: string;
       campaign_contact_id: string | null;
       scheduled_callback_id: string | null;
+      shopify_recovery_attempt_id: string | null;
     }>();
 
   if (error) {
@@ -190,6 +194,25 @@ export async function applyCallStatusUpdate(
         });
       } catch (err) {
         console.error("[status-update] callback outcome failed", err);
+      }
+    });
+  }
+
+  // Same split for a cart-recovery dial: technical terminal statuses resolve
+  // here; a `completed` recovery is finalised by recordOutboundResult.
+  if (data.shopify_recovery_attempt_id && input.status !== "completed") {
+    const attemptId = data.shopify_recovery_attempt_id;
+    const callId = data.id;
+    const status = input.status;
+    after(async () => {
+      try {
+        await applyShopifyRecoveryOutcome({
+          attemptId,
+          callId,
+          callStatus: status,
+        });
+      } catch (err) {
+        console.error("[status-update] recovery outcome failed", err);
       }
     });
   }

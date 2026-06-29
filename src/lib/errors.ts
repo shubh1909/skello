@@ -41,7 +41,7 @@ export type SkeloErrorTag =
   | "ANALYTICS"
   | "CAMPAIGN"
   | "CALLBACK-SCHEDULE"
-  | "SHOPIFY-OAUTH";
+  | "SHOPIFY";
 
 export interface SkeloErrorContext {
   // Each id field accepts `null` so call sites can use `?? null` shorthand

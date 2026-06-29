@@ -5,6 +5,7 @@ import { mapStatus, writeTranscriptTurns } from "@/lib/bolna/inbound";
 import { mergePayloadIntoLead } from "@/lib/bolna/lead-merge";
 import { applyScheduledCallbackOutcome } from "@/lib/callbacks/outcome";
 import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
+import { applyShopifyRecoveryOutcome } from "@/lib/shopify/recovery";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveOrgByAgentId } from "@/lib/bolna/routing";
 import type { CallStatus, CallTranscriptStatus } from "@/types/call";
@@ -39,7 +40,7 @@ export async function recordOutboundResult(
 
   const { data: existingCall, error: findErr } = await admin
     .from("calls")
-    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id")
+    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id")
     .eq("bolna_call_id", externalId)
     .maybeSingle<{
       id: string;
@@ -48,6 +49,7 @@ export async function recordOutboundResult(
       is_test: boolean;
       campaign_contact_id: string | null;
       scheduled_callback_id: string | null;
+      shopify_recovery_attempt_id: string | null;
     }>();
 
   if (findErr) {
@@ -234,6 +236,20 @@ export async function recordOutboundResult(
     }
   }
 
+  // Finalise a cart-recovery dial when it `completed` — reaching the shopper
+  // ends the attempt (the conversion itself is tracked from the order webhook).
+  if (call.shopify_recovery_attempt_id) {
+    try {
+      await applyShopifyRecoveryOutcome({
+        attemptId: call.shopify_recovery_attempt_id,
+        callId: call.id,
+        callStatus: status,
+      });
+    } catch (err) {
+      console.error("[outbound] recovery outcome failed", err);
+    }
+  }
+
   return {
     callId: call.id,
     transcriptStatus: finalStatus,
@@ -254,6 +270,7 @@ async function bootstrapDirectOutboundCall(
   is_test: boolean;
   campaign_contact_id: string | null;
   scheduled_callback_id: string | null;
+  shopify_recovery_attempt_id: string | null;
 } | null> {
   const agentId = payload.agent_id?.trim();
   if (!agentId) return null;
@@ -284,7 +301,7 @@ async function bootstrapDirectOutboundCall(
       status: "initiated",
       ...(startedAt ? { started_at: startedAt } : {}),
     })
-    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id")
+    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id")
     .single<{
       id: string;
       organisation_id: string;
@@ -292,6 +309,7 @@ async function bootstrapDirectOutboundCall(
       is_test: boolean;
       campaign_contact_id: string | null;
       scheduled_callback_id: string | null;
+      shopify_recovery_attempt_id: string | null;
     }>();
 
   if (!insertErr && inserted) return inserted;
@@ -300,7 +318,7 @@ async function bootstrapDirectOutboundCall(
   if (insertErr?.code === "23505") {
     const { data: refetched } = await admin
       .from("calls")
-      .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id")
+      .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id")
       .eq("organisation_id", route.organisationId)
       .eq("bolna_call_id", externalId)
       .maybeSingle<{
@@ -310,6 +328,7 @@ async function bootstrapDirectOutboundCall(
         is_test: boolean;
         campaign_contact_id: string | null;
         scheduled_callback_id: string | null;
+        shopify_recovery_attempt_id: string | null;
       }>();
     if (refetched) return refetched;
   }
