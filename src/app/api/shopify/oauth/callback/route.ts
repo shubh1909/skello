@@ -66,18 +66,24 @@ export async function GET(request: NextRequest) {
   }
 
   // 2. CSRF — we started this install (signed state cookie), and the nonce,
-  //    shop, and org all match.
-  const stored = verifyOAuthState(
-    request.cookies.get(OAUTH_STATE_COOKIE)?.value,
-    integration.api_secret,
-  );
+  //    shop, and org all match. A missing cookie (hasCookie:false) means the
+  //    flow didn't begin at /api/shopify/install — e.g. opened from Shopify.
+  const cookieValue = request.cookies.get(OAUTH_STATE_COOKIE)?.value;
+  const stored = verifyOAuthState(cookieValue, integration.api_secret);
   if (
     !stored ||
     stored.state !== returnedState ||
     stored.shop !== shop ||
     stored.organisationId !== integration.organisation_id
   ) {
-    warnSkelo("SHOPIFY", "OAuth callback state validation failed", { shop });
+    warnSkelo("SHOPIFY", "OAuth callback state validation failed", {
+      shop,
+      hasCookie: Boolean(cookieValue),
+      cookieParsed: Boolean(stored),
+      stateMatch: stored ? stored.state === returnedState : null,
+      shopMatch: stored ? stored.shop === shop : null,
+      orgMatch: stored ? stored.organisationId === integration.organisation_id : null,
+    });
     return NextResponse.json(
       { error: "State validation failed" },
       { status: 401 },
