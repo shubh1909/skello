@@ -6,6 +6,7 @@ import {
   ChevronRightIcon,
   GaugeIcon,
   HeadphonesIcon,
+  ShoppingCartIcon,
   SlidersHorizontalIcon,
   TargetIcon,
   UserIcon,
@@ -150,6 +151,13 @@ export default async function AdminOrganisationDetailPage({
             title="Call outcomes"
             description="Configure what each conversation outcome does (succeed / fail / callback / retry) and which count as a success."
             icon={<TargetIcon className="size-4" />}
+          />
+          <Separator />
+          <ConfigLink
+            href={`/admin/organisations/${org.id}/shopify`}
+            title="Cart Recovery (Shopify)"
+            description="Connect the store's Shopify app so abandoned checkouts trigger recovery calls."
+            icon={<ShoppingCartIcon className="size-4" />}
           />
         </CardContent>
       </Card>

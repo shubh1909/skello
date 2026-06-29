@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { dispatchDueCallbacks } from "@/lib/callbacks/dispatch";
 import { dispatchDueCampaignContacts } from "@/lib/campaigns/dispatch";
+import { dispatchDueRecoveries } from "@/lib/shopify/recovery";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,14 +29,19 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Both drains share the tick. Run callbacks even if the campaign drain
-    // throws (and vice-versa) so one subsystem can't starve the other.
-    const [campaigns, callbacks] = await Promise.allSettled([
+    // All drains share the tick. Each runs independently so one subsystem
+    // throwing can't starve the others.
+    const [campaigns, callbacks, recoveries] = await Promise.allSettled([
       dispatchDueCampaignContacts(),
       dispatchDueCallbacks(),
+      dispatchDueRecoveries(),
     ]);
 
-    if (campaigns.status === "rejected" && callbacks.status === "rejected") {
+    if (
+      campaigns.status === "rejected" &&
+      callbacks.status === "rejected" &&
+      recoveries.status === "rejected"
+    ) {
       const message =
         campaigns.reason instanceof Error
           ? campaigns.reason.message
@@ -53,6 +59,10 @@ export async function POST(request: NextRequest) {
           callbacks.status === "fulfilled"
             ? callbacks.value
             : { error: String(callbacks.reason) },
+        recoveries:
+          recoveries.status === "fulfilled"
+            ? recoveries.value
+            : { error: String(recoveries.reason) },
       },
       { status: 200 },
     );
