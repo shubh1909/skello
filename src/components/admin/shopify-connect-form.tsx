@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import {
   disconnectShopify,
+  getRegisteredWebhooks,
   registerShopifyWebhooks,
   saveShopifyIntegration,
 } from "@/actions/admin/shopify";
@@ -33,6 +34,14 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
   const [apiVersion, setApiVersion] = React.useState(
     status?.api_version ?? DEFAULT_API_VERSION,
   );
+  const [webhooks, setWebhooks] = React.useState<
+    { topic: string; address: string }[] | null
+  >(null);
+  // Which button triggered the shared transition — so only that button shows a
+  // spinner (the `pending` flag is shared across all actions).
+  const [activeAction, setActiveAction] = React.useState<
+    "save" | "register" | "show" | "disconnect" | null
+  >(null);
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -40,6 +49,7 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
       toast.error("Store domain, API key, and API secret are all required");
       return;
     }
+    setActiveAction("save");
     startTransition(async () => {
       const res = await saveShopifyIntegration({
         organisation_id: organisationId,
@@ -59,6 +69,7 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
   }
 
   function onRegisterWebhooks() {
+    setActiveAction("register");
     startTransition(async () => {
       const res = await registerShopifyWebhooks({
         organisation_id: organisationId,
@@ -76,6 +87,20 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
     });
   }
 
+  function onShowWebhooks() {
+    setActiveAction("show");
+    startTransition(async () => {
+      const res = await getRegisteredWebhooks({
+        organisation_id: organisationId,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return;
+      }
+      setWebhooks(res.data);
+    });
+  }
+
   function onDisconnect() {
     if (
       !confirm(
@@ -84,6 +109,7 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
     ) {
       return;
     }
+    setActiveAction("disconnect");
     startTransition(async () => {
       const res = await disconnectShopify({ organisation_id: organisationId });
       if (!res.success) {
@@ -121,6 +147,15 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
               disabled={pending}
             >
               Register webhooks
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onShowWebhooks}
+              disabled={pending}
+            >
+              Show webhooks
             </Button>
             <Button
               type="button"
@@ -177,6 +212,30 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
           <span className="font-medium text-foreground">Authorize</span>.
         </div>
       )}
+
+      {webhooks ? (
+        <div className="rounded-lg border border-border/60 p-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Registered webhooks ({webhooks.length})
+          </p>
+          {webhooks.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              None yet — click “Register webhooks”.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2 text-sm">
+              {webhooks.map((w, i) => (
+                <li key={`${w.topic}-${i}`} className="flex flex-col">
+                  <code className="text-xs font-medium">{w.topic}</code>
+                  <span className="break-all font-mono text-[11px] text-muted-foreground">
+                    {w.address}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
 
       <form
         onSubmit={onSubmit}
@@ -245,7 +304,9 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
 
         <div className="flex items-center justify-end">
           <Button type="submit" disabled={pending}>
-            {pending ? <Loader2Icon className="animate-spin" /> : null}
+            {pending && activeAction === "save" ? (
+              <Loader2Icon className="animate-spin" />
+            ) : null}
             Save credentials
           </Button>
         </div>

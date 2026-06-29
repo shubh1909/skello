@@ -63,16 +63,16 @@ async function createWebhook(
   });
 }
 
-interface WebhookRow {
+export interface ShopifyWebhookRow {
   id: number;
   topic: string;
   address: string;
 }
 
-async function listWebhooks(
+export async function listShopifyWebhooks(
   cfg: ShopifyClientConfig,
-): Promise<WebhookRow[]> {
-  const json = await request<{ webhooks?: WebhookRow[] }>(
+): Promise<ShopifyWebhookRow[]> {
+  const json = await request<{ webhooks?: ShopifyWebhookRow[] }>(
     cfg,
     "GET",
     "/webhooks.json",
@@ -89,7 +89,7 @@ export async function ensureWebhooks(
   topics: readonly ShopifyWebhookTopic[],
   address: string,
 ): Promise<{ registered: ShopifyWebhookTopic[]; alreadyPresent: ShopifyWebhookTopic[] }> {
-  const existing = await listWebhooks(cfg);
+  const existing = await listShopifyWebhooks(cfg);
   const present = new Set(
     existing
       .filter((w) => w.address === address)
