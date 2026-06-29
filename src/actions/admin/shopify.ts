@@ -5,7 +5,11 @@ import { z } from "zod";
 
 import { requireAdmin } from "@/lib/auth/admin";
 import { logSkeloError } from "@/lib/errors";
-import { ShopifyApiError, ensureWebhooks } from "@/lib/shopify/client";
+import {
+  ShopifyApiError,
+  ensureWebhooks,
+  listShopifyWebhooks,
+} from "@/lib/shopify/client";
 import {
   deleteShopifyIntegration,
   getShopifyIntegration,
@@ -149,6 +153,41 @@ export async function registerShopifyWebhooks(
     }
     return fail(
       logSkeloError("SHOPIFY", "Webhook registration failed", {
+        organisationId: parsed.data.organisation_id,
+        cause: err,
+      }),
+    );
+  }
+}
+
+// List the webhooks currently registered on the store, so the admin can confirm
+// what's live. Read-only.
+export async function getRegisteredWebhooks(
+  input: unknown,
+): Promise<ActionResult<{ topic: string; address: string }[]>> {
+  await requireAdmin();
+  const parsed = orgIdSchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid organisation id");
+
+  const integration = await getShopifyIntegration(parsed.data.organisation_id);
+  if (!integration) return fail("Connect the store first");
+  if (!integration.access_token) {
+    return fail("Authorize the store first (the Authorize with Shopify button).");
+  }
+
+  try {
+    const hooks = await listShopifyWebhooks({
+      shopDomain: integration.shop_domain,
+      accessToken: integration.access_token,
+      apiVersion: integration.api_version,
+    });
+    return ok(hooks.map((h) => ({ topic: h.topic, address: h.address })));
+  } catch (err) {
+    if (err instanceof ShopifyApiError) {
+      return fail(`Shopify rejected the request: ${err.message}`);
+    }
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to list webhooks", {
         organisationId: parsed.data.organisation_id,
         cause: err,
       }),
