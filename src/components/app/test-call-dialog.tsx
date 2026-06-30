@@ -35,6 +35,11 @@ import type { VoiceConfig } from "@/types/voice-config";
 
 interface TestCallDialogProps {
   organisationId: string;
+  // Optional controlled mode — lets a parent (e.g. the header menu) own the
+  // open state and render its own trigger. Uncontrolled by default.
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  showTrigger?: boolean;
 }
 
 // Sentinel select-value meaning "use the org's default dialling number".
@@ -46,18 +51,27 @@ const DEFAULT_FROM_VALUE = "__default__";
 // round trip — typing speed during a demo matters.
 const E164 = /^\+[1-9]\d{6,14}$/;
 
-export function TestCallDialog({ organisationId }: TestCallDialogProps) {
-  const [open, setOpen] = React.useState(false);
+export function TestCallDialog({
+  organisationId,
+  open: openProp,
+  onOpenChange,
+  showTrigger = true,
+}: TestCallDialogProps) {
+  const [internalOpen, setInternalOpen] = React.useState(false);
+  const open = openProp ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        render={
-          <Button variant="outline" size="sm">
-            <PhoneCallIcon /> Test call
-          </Button>
-        }
-      />
+      {showTrigger ? (
+        <DialogTrigger
+          render={
+            <Button variant="outline" size="sm">
+              <PhoneCallIcon /> Test call
+            </Button>
+          }
+        />
+      ) : null}
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Test call</DialogTitle>

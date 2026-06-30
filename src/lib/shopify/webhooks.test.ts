@@ -44,8 +44,8 @@ describe("normalizeAbandonedCheckout", () => {
       buyer_accepts_marketing: true,
       customer: { first_name: "Asha", last_name: "Rao", phone: "+919812345678" },
       line_items: [
-        { title: "Kurta", quantity: 2 },
-        { title: "Scarf", quantity: 1 },
+        { title: "Kurta", quantity: 2, price: "40.00" },
+        { title: "Scarf", quantity: 1, line_price: "49.50" },
       ],
     });
     expect(result).not.toBeNull();
@@ -55,9 +55,10 @@ describe("normalizeAbandonedCheckout", () => {
     expect(result!.cartTotal).toBe(129.5);
     expect(result!.currency).toBe("INR");
     expect(result!.marketingConsent).toBe(true);
+    // lineValue prefers line_price, else unit price × quantity (used to rank).
     expect(result!.lineItems).toEqual([
-      { title: "Kurta", quantity: 2 },
-      { title: "Scarf", quantity: 1 },
+      { title: "Kurta", quantity: 2, lineValue: 80 },
+      { title: "Scarf", quantity: 1, lineValue: 49.5 },
     ]);
   });
 

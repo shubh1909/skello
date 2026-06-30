@@ -44,23 +44,35 @@ interface VoiceConfigDialogProps {
   organisationId: string;
   /** Re-runs the parent's data fetch when the dialog mutates the config. */
   onConfigChange?: (config: VoiceConfig) => void;
+  // Optional controlled mode — lets a parent (e.g. the header menu) own the
+  // open state and render its own trigger. Uncontrolled by default.
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  showTrigger?: boolean;
 }
 
 export function VoiceConfigDialog({
   organisationId,
   onConfigChange,
+  open: openProp,
+  onOpenChange,
+  showTrigger = true,
 }: VoiceConfigDialogProps) {
-  const [open, setOpen] = React.useState(false);
+  const [internalOpen, setInternalOpen] = React.useState(false);
+  const open = openProp ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        render={
-          <Button variant="outline" size="sm">
-            <SettingsIcon /> Manage agents &amp; numbers
-          </Button>
-        }
-      />
+      {showTrigger ? (
+        <DialogTrigger
+          render={
+            <Button variant="outline" size="sm">
+              <SettingsIcon /> Manage agents &amp; numbers
+            </Button>
+          }
+        />
+      ) : null}
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Voice agents &amp; dialling numbers</DialogTitle>
