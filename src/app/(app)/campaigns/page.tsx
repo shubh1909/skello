@@ -1,19 +1,9 @@
-import Link from "next/link";
-import {
-  CalendarClockIcon,
-  CheckCheckIcon,
-  LayoutTemplateIcon,
-  RadioIcon,
-  ZapIcon,
-} from "lucide-react";
+import { CalendarClockIcon, CheckCheckIcon, RadioIcon, ZapIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { CampaignUploadDialog } from "@/components/app/campaign-upload-dialog";
+import { CampaignHeaderActions } from "@/components/app/campaign-header-actions";
 import { CampaignsTable } from "@/components/app/campaigns-table";
 import { StatCard } from "@/components/app/stat-card";
-import { TestCallDialog } from "@/components/app/test-call-dialog";
-import { VoiceConfigDialog } from "@/components/app/voice-config-dialog";
 import { listCampaigns } from "@/actions/campaigns";
 import { requireSession } from "@/lib/auth/session";
 
@@ -57,14 +47,7 @@ export default async function CampaignsPage() {
             voice agent.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" render={<Link href="/campaigns/templates" />}>
-            <LayoutTemplateIcon /> Templates
-          </Button>
-          <TestCallDialog organisationId={session.organisation.id} />
-          <VoiceConfigDialog organisationId={session.organisation.id} />
-          <CampaignUploadDialog organisationId={session.organisation.id} />
-        </div>
+        <CampaignHeaderActions organisationId={session.organisation.id} />
       </header>
 
       <section className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">

@@ -2,13 +2,15 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2Icon } from "lucide-react";
+import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import {
+  getShopifyOfferCode,
   listShopifyOffers,
   saveRecoverySettings,
 } from "@/actions/shopify-recovery";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type {
+  ShopifyDiscountKind,
   ShopifyOfferOption,
   ShopifyOfferType,
   ShopifyRecoverySettings,
@@ -32,6 +35,12 @@ const OFFER_TYPE_LABEL: Record<string, string> = {
   free_product: "Free product",
 };
 
+// Human label for a price rule's discount value (badge in the dropdown).
+function discountBadge(o: ShopifyOfferOption): string | null {
+  if (o.value == null || !o.valueType) return null;
+  return o.valueType === "percentage" ? `${o.value}% off` : `${o.value} off`;
+}
+
 interface Props {
   settings: ShopifyRecoverySettings | null;
   connected: boolean;
@@ -41,7 +50,9 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   const router = useRouter();
   const [pending, startTransition] = React.useTransition();
 
-  const [enabled, setEnabled] = React.useState(settings?.enabled ?? false);
+  // Start/Stop lives in the dashboard controls now — settings just preserves the
+  // current running state so saving the offer/timing never flips it.
+  const enabled = settings?.enabled ?? false;
   const [waitMinutes, setWaitMinutes] = React.useState(
     String(settings?.wait_minutes ?? 45),
   );
@@ -57,22 +68,83 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   const [offerLabel, setOfferLabel] = React.useState(settings?.offer_label ?? "");
   const [offerCode, setOfferCode] = React.useState(settings?.offer_code ?? "");
   const [offers, setOffers] = React.useState<ShopifyOfferOption[]>([]);
+  const [loadingOffers, setLoadingOffers] = React.useState(false);
+  const [selectedOfferId, setSelectedOfferId] = React.useState<string>("");
+  // Numeric discount behind the offer — seeded from saved settings, then bound
+  // to whichever Shopify price rule the operator selects below.
+  const [discountValue, setDiscountValue] = React.useState<number | null>(
+    settings?.offer_discount_value ?? null,
+  );
+  const [discountKind, setDiscountKind] = React.useState<ShopifyDiscountKind | null>(
+    settings?.offer_discount_kind ?? null,
+  );
 
-  function onLoadOffers() {
+  const loadOffers = React.useCallback(() => {
+    setLoadingOffers(true);
     startTransition(async () => {
       const res = await listShopifyOffers();
+      setLoadingOffers(false);
       if (!res.success) {
         toast.error(res.error);
         return;
       }
       setOffers(res.data);
-      toast.success(
-        res.data.length > 0
-          ? `Loaded ${res.data.length} offer(s) from Shopify`
-          : "No discount campaigns found on the store",
-      );
+      if (res.data.length === 0) {
+        toast.info("No discount campaigns found on the store");
+      }
+    });
+  }, []);
+
+  // Auto-load the store's discounts the first time a code offer is configured.
+  const autoLoaded = React.useRef(false);
+  React.useEffect(() => {
+    if (
+      connected &&
+      offerType === "discount_code" &&
+      !autoLoaded.current &&
+      offers.length === 0
+    ) {
+      autoLoaded.current = true;
+      loadOffers();
+    }
+  }, [connected, offerType, offers.length, loadOffers]);
+
+  // Picking a discount binds its value/kind and auto-fills the redeemable code
+  // (fetched from the price rule) plus a friendly spoken label.
+  function onSelectOffer(id: string) {
+    const offer = offers.find((o) => o.id === id);
+    if (!offer) return;
+    setSelectedOfferId(id);
+    setDiscountValue(offer.value);
+    setDiscountKind(offer.valueType);
+    if (offer.valueType === "percentage" && offer.value != null) {
+      setOfferLabel(`${offer.value}% off your order`);
+    } else if (offer.valueType === "fixed_amount" && offer.value != null) {
+      setOfferLabel(`${offer.value} off your order`);
+    } else {
+      setOfferLabel(offer.title);
+    }
+    startTransition(async () => {
+      const res = await getShopifyOfferCode(id);
+      if (!res.success) {
+        toast.error(res.error);
+        return;
+      }
+      setOfferCode(res.data.code ?? "");
+      if (!res.data.code) {
+        toast.info(
+          "This discount has no redeemable code (automatic discount) — the code field is left blank.",
+        );
+      }
     });
   }
+
+  const discountHint =
+    offerType !== "none" && discountValue != null && discountKind
+      ? discountKind === "percentage"
+        ? `Discount detected: ${discountValue}% off — the agent will quote the discounted total.`
+        : `Discount detected: ${discountValue} off — the agent will quote the discounted total.`
+      : null;
 
   function onSave(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -85,6 +157,8 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
         offer_type: offerType as ShopifyOfferType,
         offer_label: offerType === "none" ? null : offerLabel.trim() || null,
         offer_code: offerType === "none" ? null : offerCode.trim() || null,
+        offer_discount_value: offerType === "none" ? null : discountValue,
+        offer_discount_kind: offerType === "none" ? null : discountKind,
       });
       if (!res.success) {
         toast.error(res.error);
@@ -98,21 +172,11 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   return (
     <Card className="p-5">
       <form onSubmit={onSave} className="flex flex-col gap-5">
-        <label className="flex items-center gap-3 text-sm">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-            disabled={pending || !connected}
-            className="size-4 accent-foreground"
-          />
-          <span className="font-medium">Cart recovery is {enabled ? "on" : "off"}</span>
-          {!connected ? (
-            <span className="text-xs text-muted-foreground">
-              (connect Shopify first)
-            </span>
-          ) : null}
-        </label>
+        {!connected ? (
+          <p className="text-xs text-muted-foreground">
+            Connect Shopify first to configure recovery.
+          </p>
+        ) : null}
 
         <div className="grid gap-4 md:grid-cols-3">
           <div className="grid gap-1.5">
@@ -175,47 +239,112 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
           </div>
         </div>
 
-        {offerType !== "none" ? (
-          <div className="grid gap-4 md:grid-cols-2">
+        {offerType === "discount_code" ? (
+          <div className="flex flex-col gap-4">
+            {/* Pick the underlying Shopify discount — drives the code + % math. */}
             <div className="grid gap-1.5">
               <div className="flex items-center justify-between">
-                <Label htmlFor="offer-label">What the agent says</Label>
+                <Label htmlFor="shopify-discount">Shopify discount</Label>
                 <Button
                   type="button"
                   size="xs"
-                  variant="outline"
-                  onClick={onLoadOffers}
+                  variant="ghost"
+                  onClick={() => {
+                    autoLoaded.current = true;
+                    loadOffers();
+                  }}
                   disabled={pending || !connected}
+                  className="gap-1.5 text-muted-foreground"
                 >
-                  Load from Shopify
+                  <RefreshCwIcon
+                    className={loadingOffers ? "animate-spin" : undefined}
+                  />
+                  Refresh
                 </Button>
               </div>
-              <Input
-                id="offer-label"
-                list="shopify-offers"
-                placeholder="e.g. 10% off your order"
-                value={offerLabel}
-                onChange={(e) => setOfferLabel(e.target.value)}
-                disabled={pending}
-              />
-              <datalist id="shopify-offers">
-                {offers.map((o) => (
-                  <option key={o.id} value={o.title} />
-                ))}
-              </datalist>
+              <Select
+                value={selectedOfferId}
+                onValueChange={(v) => v && onSelectOffer(v)}
+                disabled={pending || !connected || offers.length === 0}
+              >
+                <SelectTrigger id="shopify-discount">
+                  <SelectValue
+                    placeholder={
+                      loadingOffers
+                        ? "Loading discounts…"
+                        : offers.length === 0
+                          ? "No discounts found on the store"
+                          : "Select a discount campaign"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {offers.map((o) => {
+                    const badge = discountBadge(o);
+                    return (
+                      <SelectItem key={o.id} value={o.id}>
+                        <span className="flex w-full items-center justify-between gap-3">
+                          <span className="truncate">{o.title}</span>
+                          {badge ? (
+                            <Badge variant="secondary">{badge}</Badge>
+                          ) : null}
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              {discountHint ? (
+                <p className="text-xs text-muted-foreground">{discountHint}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Pick a percentage discount so the agent can quote the savings.
+                </p>
+              )}
             </div>
-            {offerType === "discount_code" ? (
+
+            <div className="grid gap-4 sm:grid-cols-2 sm:items-start">
               <div className="grid gap-1.5">
-                <Label htmlFor="offer-code">Discount code</Label>
+                <Label htmlFor="offer-label" className="whitespace-nowrap">
+                  What the agent says
+                </Label>
+                <Input
+                  id="offer-label"
+                  placeholder="e.g. 20% off your order"
+                  value={offerLabel}
+                  onChange={(e) => setOfferLabel(e.target.value)}
+                  disabled={pending}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="offer-code" className="whitespace-nowrap">
+                  Discount code
+                </Label>
                 <Input
                   id="offer-code"
-                  placeholder="e.g. SAVE10"
+                  placeholder="e.g. COMEBACK20"
                   value={offerCode}
                   onChange={(e) => setOfferCode(e.target.value)}
                   disabled={pending}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Auto-filled from the selected discount; edit if your code differs.
+                </p>
               </div>
-            ) : null}
+            </div>
+          </div>
+        ) : offerType === "free_product" ? (
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="offer-label-fp">What the agent says</Label>
+              <Input
+                id="offer-label-fp"
+                placeholder="e.g. a free gift with your order"
+                value={offerLabel}
+                onChange={(e) => setOfferLabel(e.target.value)}
+                disabled={pending}
+              />
+            </div>
           </div>
         ) : null}
 

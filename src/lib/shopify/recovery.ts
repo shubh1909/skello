@@ -7,7 +7,7 @@ import { findOrCreateShopifyLead } from "@/lib/shopify/lead";
 import { normalizeAbandonedCheckout } from "@/lib/shopify/webhooks";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { CallStatus } from "@/types/call";
-import type { ShopifyIntegration } from "@/types/shopify";
+import type { RecoveryCartItem, ShopifyIntegration } from "@/types/shopify";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -26,6 +26,8 @@ interface RecoverySettingsRow {
   offer_type: string;
   offer_code: string | null;
   offer_label: string | null;
+  offer_discount_value: number | null;
+  offer_discount_kind: string | null;
 }
 
 interface BolnaConfigRow {
@@ -42,7 +44,7 @@ async function loadSettings(
   const { data } = await admin
     .from("shopify_recovery_settings")
     .select(
-      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label",
+      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind",
     )
     .eq("organisation_id", organisationId)
     .maybeSingle<RecoverySettingsRow>();
@@ -120,6 +122,7 @@ export async function scheduleRecoveryFromCheckout(input: {
     shop_domain: input.integration.shop_domain,
     checkout_token: checkout.checkoutToken,
     customer_name: checkout.customerName,
+    email: checkout.email,
     phone: checkout.phone,
     cart_total: checkout.cartTotal,
     currency: checkout.currency,
@@ -159,9 +162,11 @@ export async function scheduleRecoveryFromCheckout(input: {
     },
   });
 
-  const offerLabel =
-    settings.offer_type === "none" ? null : settings.offer_label;
-  const offerCode = settings.offer_type === "none" ? null : settings.offer_code;
+  const noOffer = settings.offer_type === "none";
+  const offerLabel = noOffer ? null : settings.offer_label;
+  const offerCode = noOffer ? null : settings.offer_code;
+  const offerDiscountValue = noOffer ? null : settings.offer_discount_value;
+  const offerDiscountKind = noOffer ? null : settings.offer_discount_kind;
   const fromPhone = bolna?.from_phone_number ?? null;
 
   if (existing) {
@@ -176,6 +181,8 @@ export async function scheduleRecoveryFromCheckout(input: {
       retry_interval_seconds: settings.retry_interval_seconds,
       offer_label: offerLabel,
       offer_code: offerCode,
+      offer_discount_value: offerDiscountValue,
+      offer_discount_kind: offerDiscountKind,
       skip_reason: null,
     };
     if (existing.status === "skipped") {
@@ -210,6 +217,8 @@ export async function scheduleRecoveryFromCheckout(input: {
     next_attempt_at: when,
     offer_label: offerLabel,
     offer_code: offerCode,
+    offer_discount_value: offerDiscountValue,
+    offer_discount_kind: offerDiscountKind,
   });
 }
 
@@ -266,6 +275,115 @@ interface DueRecovery {
   cart_items: unknown;
   offer_label: string | null;
   offer_code: string | null;
+  offer_discount_value: number | null;
+  offer_discount_kind: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Conversation context — flatten the cart snapshot into the scalar variables
+// Bolna substitutes into the agent prompt. Every key here must exist as a
+// {placeholder} in the agent's Bolna script for the agent to speak it; keys it
+// doesn't reference are simply ignored. Values are always strings (empty when
+// unknown) so the prompt never renders a literal "{variable}".
+// ---------------------------------------------------------------------------
+
+// Money → speakable string: 2dp, trailing ".00" trimmed (5000, not 5000.00).
+function money(n: number): string {
+  const rounded = Math.round(n * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
+function parseCartItems(raw: unknown): RecoveryCartItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((x) => {
+      const it = x as Partial<RecoveryCartItem>;
+      const title = typeof it.title === "string" ? it.title : null;
+      if (!title) return null;
+      const quantity =
+        typeof it.quantity === "number" && it.quantity > 0 ? it.quantity : 1;
+      const lineValue = typeof it.lineValue === "number" ? it.lineValue : 0;
+      return { title, quantity, lineValue };
+    })
+    .filter((x): x is RecoveryCartItem => x !== null);
+}
+
+// Highest-value product leads; ">1 product" appends "and others".
+function summariseCart(items: RecoveryCartItem[]): {
+  topProduct: string;
+  cartSummary: string;
+  itemCount: number;
+} {
+  if (items.length === 0) {
+    return { topProduct: "", cartSummary: "", itemCount: 0 };
+  }
+  const top = [...items].sort((a, b) => b.lineValue - a.lineValue)[0].title;
+  return {
+    topProduct: top,
+    cartSummary: items.length > 1 ? `${top} and others` : top,
+    itemCount: items.length,
+  };
+}
+
+// cart_total is the original (pre-offer) value; the discount is derived from the
+// snapshotted offer. Returns nulls when there's no usable offer/total.
+function applyOffer(
+  cartTotal: number | null,
+  value: number | null,
+  kind: string | null,
+): { discountAmount: number | null; discountedTotal: number | null; percentLabel: string } {
+  if (cartTotal == null || value == null || value <= 0) {
+    return { discountAmount: null, discountedTotal: null, percentLabel: "" };
+  }
+  if (kind === "percentage") {
+    const amount = Math.min((cartTotal * value) / 100, cartTotal);
+    return {
+      discountAmount: amount,
+      discountedTotal: cartTotal - amount,
+      percentLabel: `${money(value)}%`,
+    };
+  }
+  if (kind === "fixed_amount") {
+    const amount = Math.min(value, cartTotal);
+    return {
+      discountAmount: amount,
+      discountedTotal: cartTotal - amount,
+      percentLabel: "",
+    };
+  }
+  return { discountAmount: null, discountedTotal: null, percentLabel: "" };
+}
+
+// Build the user_data object handed to Bolna (→ {variables} in the agent prompt)
+// plus the internal correlation IDs (unused by the prompt, kept for tracing).
+function buildRecoveryVariables(r: DueRecovery): Record<string, unknown> {
+  const items = parseCartItems(r.cart_items);
+  const { topProduct, cartSummary, itemCount } = summariseCart(items);
+  const { discountAmount, discountedTotal, percentLabel } = applyOffer(
+    r.cart_total,
+    r.offer_discount_value,
+    r.offer_discount_kind,
+  );
+
+  return {
+    // --- Spoken context (must match {placeholders} in the Bolna agent script) ---
+    customer_name: r.customer_name ?? "",
+    top_product: topProduct,
+    cart_summary: cartSummary,
+    item_count: String(itemCount),
+    currency: r.currency ?? "",
+    cart_total: r.cart_total != null ? money(r.cart_total) : "",
+    discount_name: r.offer_label ?? "",
+    discount_code: r.offer_code ?? "",
+    discount_percentage: percentLabel,
+    discount_amount: discountAmount != null ? money(discountAmount) : "",
+    discounted_cart_total: discountedTotal != null ? money(discountedTotal) : "",
+    recovery_url: r.recovery_url ?? "",
+    // --- Internal correlation (not referenced by the prompt) ---
+    organisation_id: r.organisation_id,
+    shopify_recovery_attempt_id: r.id,
+    lead_id: r.lead_id,
+  };
 }
 
 async function reconcileStuckRecoveries(admin: Admin): Promise<void> {
@@ -295,7 +413,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
   const { data, error } = await admin
     .from("shopify_recovery_attempts")
     .select(
-      "id, organisation_id, lead_id, phone, agent_id, from_phone, attempt, max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, cart_items, offer_label, offer_code",
+      "id, organisation_id, lead_id, phone, agent_id, from_phone, attempt, max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, cart_items, offer_label, offer_code, offer_discount_value, offer_discount_kind",
     )
     .eq("status", "pending")
     .lte("next_attempt_at", nowIso)
@@ -364,18 +482,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
         agentId: r.agent_id!,
         recipientPhone: r.phone!,
         fromPhone: fromPhoneForDial,
-        metadata: {
-          organisation_id: r.organisation_id,
-          shopify_recovery_attempt_id: r.id,
-          lead_id: r.lead_id,
-          customer_name: r.customer_name,
-          cart_total: r.cart_total,
-          currency: r.currency,
-          recovery_url: r.recovery_url,
-          cart_items: r.cart_items,
-          offer_label: r.offer_label,
-          offer_code: r.offer_code,
-        },
+        metadata: buildRecoveryVariables(r),
       });
 
       const { data: callRow, error: callErr } = await admin

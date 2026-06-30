@@ -112,10 +112,15 @@ export async function ensureWebhooks(
 interface PriceRuleRow {
   id: number;
   title: string;
+  // Shopify stores the discount as a negative string, e.g. "-10.0".
+  value?: string | null;
+  value_type?: string | null;
 }
 
 // Offer source for the picker: price rules (discount campaigns) on the store.
 // Best-effort — used to help the org pick an offer; manual entry still works.
+// We also surface the numeric value + kind so the recovery agent can quote a
+// real discounted cart total.
 export async function listDiscountOffers(
   cfg: ShopifyClientConfig,
 ): Promise<ShopifyOfferOption[]> {
@@ -124,8 +129,39 @@ export async function listDiscountOffers(
     "GET",
     "/price_rules.json?limit=50",
   );
-  return (json.price_rules ?? []).map((r) => ({
-    id: String(r.id),
-    title: r.title,
-  }));
+  return (json.price_rules ?? []).map((r) => {
+    const kind =
+      r.value_type === "percentage" || r.value_type === "fixed_amount"
+        ? r.value_type
+        : null;
+    // value arrives negative ("-10.0") — magnitude is the discount.
+    const raw = r.value != null ? Math.abs(Number(r.value)) : NaN;
+    return {
+      id: String(r.id),
+      title: r.title,
+      value: kind && Number.isFinite(raw) ? raw : null,
+      valueType: kind,
+    };
+  });
+}
+
+interface DiscountCodeRow {
+  id: number;
+  code: string;
+}
+
+// The redeemable code(s) live on a price rule's child resource — a rule can own
+// several, but recovery only needs one to read out. Returns the first code, or
+// null for an automatic discount (price rule with no codes).
+export async function getDiscountCodeForRule(
+  cfg: ShopifyClientConfig,
+  priceRuleId: string,
+): Promise<string | null> {
+  const json = await request<{ discount_codes?: DiscountCodeRow[] }>(
+    cfg,
+    "GET",
+    `/price_rules/${encodeURIComponent(priceRuleId)}/discount_codes.json`,
+  );
+  const code = json.discount_codes?.[0]?.code;
+  return typeof code === "string" && code.trim() !== "" ? code.trim() : null;
 }

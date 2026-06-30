@@ -30,6 +30,10 @@ export interface ShopifyIntegrationStatus {
 
 export type ShopifyOfferType = "none" | "discount_code" | "free_product";
 
+// How a discount's numeric value is interpreted. Mirrors Shopify price-rule
+// `value_type`: a percentage off, or a fixed currency amount off.
+export type ShopifyDiscountKind = "percentage" | "fixed_amount";
+
 // The org-tunable cart-recovery levers (offer + timing).
 export interface ShopifyRecoverySettings {
   organisation_id: string;
@@ -41,6 +45,11 @@ export interface ShopifyRecoverySettings {
   offer_type: ShopifyOfferType;
   offer_code: string | null;
   offer_label: string | null;
+  // Numeric discount, auto-captured from the chosen Shopify price rule. Drives
+  // the discounted-cart-value math the agent quotes on the call. Null when the
+  // offer isn't a recognised price rule (manual label) or there's no offer.
+  offer_discount_value: number | null;
+  offer_discount_kind: ShopifyDiscountKind | null;
   created_at: string;
   updated_at: string;
 }
@@ -56,6 +65,10 @@ export type RecoveryAttemptStatus =
 export interface RecoveryCartItem {
   title: string;
   quantity: number;
+  // Line order value (unit price × quantity), pre-offer. Used to rank items so
+  // the agent leads with the highest-value product. Not sent to the agent as a
+  // per-item figure — only the cart-level totals are quoted.
+  lineValue: number;
 }
 
 // A row in the cart-recovery activity feed (dashboard-facing subset).
@@ -64,6 +77,7 @@ export interface RecoveryAttemptRow {
   status: RecoveryAttemptStatus;
   skip_reason: string | null;
   customer_name: string | null;
+  email: string | null;
   phone: string | null;
   cart_total: number | null;
   currency: string | null;
@@ -84,7 +98,11 @@ export interface RecoveryMetrics {
 }
 
 // What an org picks from when configuring the offer (fetched from Shopify).
+// value/valueType come from the price rule so we can compute the discounted
+// cart value the agent quotes; null when the rule has no usable numeric value.
 export interface ShopifyOfferOption {
   id: string;
   title: string;
+  value: number | null;
+  valueType: ShopifyDiscountKind | null;
 }

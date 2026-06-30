@@ -102,10 +102,19 @@ export function normalizeAbandonedCheckout(
     .map((li) => {
       const item = li as Json;
       const title = asString(item.title);
+      if (!title) return null;
       const quantity = Number(item.quantity);
-      return title
-        ? { title, quantity: Number.isFinite(quantity) ? quantity : 1 }
-        : null;
+      const qty = Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+      // `line_price` is price × quantity when present; otherwise derive it from
+      // the unit `price`. Either may be a string. Used only to rank items.
+      const linePriceRaw = Number(item.line_price);
+      const unitPriceRaw = Number(item.price);
+      const lineValue = Number.isFinite(linePriceRaw)
+        ? linePriceRaw
+        : Number.isFinite(unitPriceRaw)
+          ? unitPriceRaw * qty
+          : 0;
+      return { title, quantity: qty, lineValue };
     })
     .filter((x): x is RecoveryCartItem => x !== null);
 

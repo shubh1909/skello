@@ -121,11 +121,15 @@ export function CartRecoveryDashboard({
                     <td className="px-4 py-3">
                       <div className="flex min-w-0 flex-col">
                         <span className="truncate font-medium">
-                          {a.customer_name ?? "Unknown"}
+                          {a.customer_name ?? a.email ?? "Unknown"}
                         </span>
                         {a.phone ? (
                           <span className="font-mono text-xs tabular-nums text-muted-foreground">
                             {a.phone}
+                          </span>
+                        ) : a.customer_name && a.email ? (
+                          <span className="truncate text-xs text-muted-foreground">
+                            {a.email}
                           </span>
                         ) : null}
                       </div>
