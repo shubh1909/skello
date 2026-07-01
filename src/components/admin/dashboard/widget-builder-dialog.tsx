@@ -166,7 +166,12 @@ export function WidgetBuilderDialog({
   }
 
   function onSourceChange(value: string) {
-    if (value === "leads" || value === "calls" || value === "campaigns") {
+    if (
+      value === "leads" ||
+      value === "calls" ||
+      value === "campaigns" ||
+      value === "recovery"
+    ) {
       // Switching source invalidates dimension/metric columns. Reset
       // them so the form doesn't carry over a key that doesn't exist
       // on the new source.

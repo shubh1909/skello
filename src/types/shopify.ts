@@ -71,7 +71,7 @@ export interface RecoveryCartItem {
   lineValue: number;
 }
 
-// A row in the cart-recovery activity feed (dashboard-facing subset).
+// A row in the cart-recovery tables (abandoned + converted tabs).
 export interface RecoveryAttemptRow {
   id: string;
   status: RecoveryAttemptStatus;
@@ -79,21 +79,76 @@ export interface RecoveryAttemptRow {
   customer_name: string | null;
   email: string | null;
   phone: string | null;
+  marketing_consent: boolean | null;
   cart_total: number | null;
   currency: string | null;
   cart_items: RecoveryCartItem[];
   offer_label: string | null;
+  offer_code: string | null;
   attempt: number;
+  max_attempts: number;
+  last_status: string | null;
+  created_at: string; // abandoned at
+  scheduled_at: string | null;
+  next_attempt_at: string | null;
+  canceled_at: string | null;
   converted_at: string | null;
+  // Converted tab only: was the conversion attributable to a completed call
+  // that ended before the order (strict ROI attribution)?
+  attributed?: boolean;
+}
+
+// One recovery call, enriched with its cart + lead context for the call-history
+// tab. Extracted fields are null until the post-call webhook fills them.
+export interface RecoveryCallRow {
+  id: string;
+  status: string;
+  direction: string;
+  to_phone: string | null;
+  from_phone: string | null;
   created_at: string;
+  started_at: string | null;
+  answered_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  recording_url: string | null;
+  transcript: string | null;
+  summary: string | null;
+  // Extracted / dynamic call data.
+  name_extracted: string | null;
+  interest: string | null;
+  lead_intent_extracted: string | null;
+  customer_status: string | null;
+  call_outcome: string | null;
+  requested_callback_at: string | null;
+  connect_on_whatsapp: boolean | null;
+  visit_scheduled_at: string | null;
+  lead_data: Record<string, unknown> | null;
+  custom_data: Record<string, unknown> | null;
+  // Cart being recovered (from the attempt snapshot).
+  cart_total: number | null;
+  currency: string | null;
+  cart_items: RecoveryCartItem[];
+  customer_name: string | null;
+  // Persistent lead view, if linked.
+  lead_name: string | null;
+  lead_status: string | null;
+  lead_intent: string | null;
+}
+
+// One page of rows plus the total count for pagination.
+export interface RecoveryPage<T> {
+  rows: T[];
+  total: number;
 }
 
 // Headline metrics for the cart-recovery dashboard.
 export interface RecoveryMetrics {
-  abandoned: number; // attempts created (excludes skipped)
+  abandoned: number; // actioned carts (excludes skipped)
   calls_made: number; // attempts that reached at least one dial
-  recovered: number; // converted_at set
-  revenue_recovered: number; // sum of cart_total for recovered
+  recovered: number; // call-attributed recoveries (reached + converted after)
+  conversions_total: number; // all conversions (incl. organic)
+  revenue_recovered: number; // sum of cart_total for attributed recoveries
   currency: string | null;
 }
 

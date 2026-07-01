@@ -15,7 +15,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { type ActionResult, fail, ok } from "@/types/action";
 import type {
   RecoveryAttemptRow,
+  RecoveryCallRow,
+  RecoveryCartItem,
   RecoveryMetrics,
+  RecoveryPage,
   ShopifyOfferOption,
   ShopifyRecoverySettings,
 } from "@/types/shopify";
@@ -24,14 +27,57 @@ export interface RecoveryOverview {
   connected: boolean;
   settings: ShopifyRecoverySettings | null;
   metrics: RecoveryMetrics;
-  attempts: RecoveryAttemptRow[];
 }
 
 const SETTINGS_COLUMNS =
   "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
-  "id, status, skip_reason, customer_name, email, phone, cart_total, currency, cart_items, offer_label, attempt, converted_at, created_at";
+  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, attempt, max_attempts, last_status, created_at, scheduled_at, next_attempt_at, canceled_at, converted_at";
+
+const CALL_COLUMNS =
+  "id, status, direction, to_phone, from_phone, created_at, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript, summary, name_extracted, interest, lead_intent_extracted, customer_status, call_outcome, requested_callback_at, connect_on_whatsapp, visit_scheduled_at, lead_data, custom_data, shopify_recovery_attempt_id, lead_id";
+
+const PAGE_SIZE = 20;
+
+// Strict ROI attribution: a conversion counts only when a recovery call actually
+// completed (we reached the shopper) AND that call ended before the order was
+// placed. Returns the subset of the given converted attempts that qualify.
+async function attributedAttemptIds(
+  admin: ReturnType<typeof createAdminClient>,
+  converted: Array<{ id: string; converted_at: string | null }>,
+): Promise<Set<string>> {
+  const attributed = new Set<string>();
+  const ids = converted.map((a) => a.id);
+  if (ids.length === 0) return attributed;
+
+  const { data: calls } = await admin
+    .from("calls")
+    .select("shopify_recovery_attempt_id, ended_at")
+    .in("shopify_recovery_attempt_id", ids)
+    .eq("status", "completed")
+    .not("ended_at", "is", null)
+    .returns<
+      Array<{ shopify_recovery_attempt_id: string; ended_at: string }>
+    >();
+
+  // Earliest completed-call end per attempt.
+  const firstEnd = new Map<string, number>();
+  for (const c of calls ?? []) {
+    const t = new Date(c.ended_at).getTime();
+    const prev = firstEnd.get(c.shopify_recovery_attempt_id);
+    if (prev === undefined || t < prev) {
+      firstEnd.set(c.shopify_recovery_attempt_id, t);
+    }
+  }
+  for (const a of converted) {
+    const end = firstEnd.get(a.id);
+    if (a.converted_at && end !== undefined && end <= new Date(a.converted_at).getTime()) {
+      attributed.add(a.id);
+    }
+  }
+  return attributed;
+}
 
 // Dashboard read — settings + headline metrics + recent activity. Org-scoped to
 // the caller's own workspace (resolved from the session, never the client).
@@ -45,10 +91,8 @@ export async function getRecoveryOverview(): Promise<
   const [
     integrationRes,
     settingsRes,
-    attemptsRes,
-    totalRes,
-    callsRes,
-    recoveredRes,
+    abandonedRes,
+    callsMadeRes,
     convertedRes,
   ] = await Promise.all([
     admin
@@ -56,49 +100,54 @@ export async function getRecoveryOverview(): Promise<
       .select("access_token, enabled")
       .eq("organisation_id", orgId)
       .maybeSingle<{ access_token: string | null; enabled: boolean }>(),
-      admin
-        .from("shopify_recovery_settings")
-        .select(SETTINGS_COLUMNS)
-        .eq("organisation_id", orgId)
-        .maybeSingle<ShopifyRecoverySettings>(),
-      admin
-        .from("shopify_recovery_attempts")
-        .select(ATTEMPT_COLUMNS)
-        .eq("organisation_id", orgId)
-        .order("created_at", { ascending: false })
-        .limit(50)
-        .returns<RecoveryAttemptRow[]>(),
-      admin
-        .from("shopify_recovery_attempts")
-        .select("id", { count: "exact", head: true })
-        .eq("organisation_id", orgId),
-      admin
-        .from("shopify_recovery_attempts")
-        .select("id", { count: "exact", head: true })
-        .eq("organisation_id", orgId)
-        .gt("attempt", 0),
-      admin
-        .from("shopify_recovery_attempts")
-        .select("id", { count: "exact", head: true })
-        .eq("organisation_id", orgId)
-        .not("converted_at", "is", null),
-      admin
-        .from("shopify_recovery_attempts")
-        .select("cart_total, currency")
-        .eq("organisation_id", orgId)
-        .not("converted_at", "is", null)
-        .returns<{ cart_total: number | null; currency: string | null }[]>(),
-    ]);
+    admin
+      .from("shopify_recovery_settings")
+      .select(SETTINGS_COLUMNS)
+      .eq("organisation_id", orgId)
+      .maybeSingle<ShopifyRecoverySettings>(),
+    // Actioned carts (excludes skipped) — closer to Shopify's "abandoned".
+    admin
+      .from("shopify_recovery_attempts")
+      .select("id", { count: "exact", head: true })
+      .eq("organisation_id", orgId)
+      .neq("status", "skipped"),
+    admin
+      .from("shopify_recovery_attempts")
+      .select("id", { count: "exact", head: true })
+      .eq("organisation_id", orgId)
+      .gt("attempt", 0),
+    // Every conversion (attributed + organic) — attribution computed below.
+    admin
+      .from("shopify_recovery_attempts")
+      .select("id, cart_total, currency, converted_at")
+      .eq("organisation_id", orgId)
+      .not("converted_at", "is", null)
+      .limit(5000)
+      .returns<
+        Array<{
+          id: string;
+          cart_total: number | null;
+          currency: string | null;
+          converted_at: string | null;
+        }>
+      >(),
+  ]);
 
   const converted = convertedRes.data ?? [];
-  const revenue = converted.reduce((sum, r) => sum + (r.cart_total ?? 0), 0);
+  const attributed = await attributedAttemptIds(admin, converted);
+  const attributedRows = converted.filter((r) => attributed.has(r.id));
+  const revenue = attributedRows.reduce((sum, r) => sum + (r.cart_total ?? 0), 0);
 
   const metrics: RecoveryMetrics = {
-    abandoned: totalRes.count ?? 0,
-    calls_made: callsRes.count ?? 0,
-    recovered: recoveredRes.count ?? 0,
+    abandoned: abandonedRes.count ?? 0,
+    calls_made: callsMadeRes.count ?? 0,
+    recovered: attributedRows.length,
+    conversions_total: converted.length,
     revenue_recovered: revenue,
-    currency: converted.find((r) => r.currency)?.currency ?? null,
+    currency:
+      attributedRows.find((r) => r.currency)?.currency ??
+      converted.find((r) => r.currency)?.currency ??
+      null,
   };
 
   return ok({
@@ -107,8 +156,25 @@ export async function getRecoveryOverview(): Promise<
     ),
     settings: settingsRes.data ?? null,
     metrics,
-    attempts: attemptsRes.data ?? [],
   });
+}
+
+// Cheap flag for the sidebar: is cart recovery switched on for this org? Used to
+// reveal the Cart Recovery sub-item only when the feature is live. Returns false
+// on any error (fail closed — hide the nav item rather than break the layout).
+export async function isCartRecoveryActive(): Promise<boolean> {
+  try {
+    const session = await requireSession();
+    const admin = createAdminClient();
+    const { data } = await admin
+      .from("shopify_recovery_settings")
+      .select("enabled")
+      .eq("organisation_id", session.organisation.id)
+      .maybeSingle<{ enabled: boolean }>();
+    return data?.enabled ?? false;
+  } catch {
+    return false;
+  }
 }
 
 const settingsSchema = z.object({
@@ -385,4 +451,274 @@ export async function exportRecoveryAttempts(): Promise<
   const csv = [header.map(csvField).join(","), ...rows].join("\r\n");
 
   return ok({ csv, filename: "cart-recovery.csv" });
+}
+
+// =============================================================================
+// TAB DATA — paginated feeds for the recovery workspace (abandoned / converted
+// / call history). Each returns one page + a total count for the pager.
+// =============================================================================
+
+const pageInput = z.object({
+  page: z.number().int().min(0).max(100000).optional(),
+  callableOnly: z.boolean().optional(),
+});
+
+function pageRange(page: number): [number, number] {
+  const from = page * PAGE_SIZE;
+  return [from, from + PAGE_SIZE - 1];
+}
+
+// Abandoned = not yet converted (any status). `callableOnly` hides carts we
+// can't dial (skipped / no phone).
+export async function getAbandonedCarts(
+  input: unknown,
+): Promise<ActionResult<RecoveryPage<RecoveryAttemptRow>>> {
+  const session = await requireSession();
+  const parsed = pageInput.safeParse(input ?? {});
+  if (!parsed.success) return fail("Invalid request");
+  const page = parsed.data.page ?? 0;
+  const admin = createAdminClient();
+
+  let query = admin
+    .from("shopify_recovery_attempts")
+    .select(ATTEMPT_COLUMNS, { count: "exact" })
+    .eq("organisation_id", session.organisation.id)
+    .is("converted_at", null);
+  if (parsed.data.callableOnly) {
+    query = query.neq("status", "skipped").not("phone", "is", null);
+  }
+
+  const [from, to] = pageRange(page);
+  const { data, count, error } = await query
+    .order("created_at", { ascending: false })
+    .range(from, to)
+    .returns<RecoveryAttemptRow[]>();
+
+  if (error) {
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to load abandoned carts", {
+        organisationId: session.organisation.id,
+        cause: error,
+      }),
+    );
+  }
+  return ok({ rows: data ?? [], total: count ?? 0 });
+}
+
+// Converted = order placed against the checkout. Each row is flagged as
+// call-attributed (strict) or organic.
+export async function getConvertedCarts(
+  input: unknown,
+): Promise<ActionResult<RecoveryPage<RecoveryAttemptRow>>> {
+  const session = await requireSession();
+  const parsed = pageInput.safeParse(input ?? {});
+  if (!parsed.success) return fail("Invalid request");
+  const page = parsed.data.page ?? 0;
+  const admin = createAdminClient();
+
+  const [from, to] = pageRange(page);
+  const { data, count, error } = await admin
+    .from("shopify_recovery_attempts")
+    .select(ATTEMPT_COLUMNS, { count: "exact" })
+    .eq("organisation_id", session.organisation.id)
+    .not("converted_at", "is", null)
+    .order("converted_at", { ascending: false })
+    .range(from, to)
+    .returns<RecoveryAttemptRow[]>();
+
+  if (error) {
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to load converted carts", {
+        organisationId: session.organisation.id,
+        cause: error,
+      }),
+    );
+  }
+
+  const rows = data ?? [];
+  const attributed = await attributedAttemptIds(
+    admin,
+    rows.map((r) => ({ id: r.id, converted_at: r.converted_at })),
+  );
+  return ok({
+    rows: rows.map((r) => ({ ...r, attributed: attributed.has(r.id) })),
+    total: count ?? 0,
+  });
+}
+
+interface RawCallRow {
+  id: string;
+  status: string;
+  direction: string;
+  to_phone: string | null;
+  from_phone: string | null;
+  created_at: string;
+  started_at: string | null;
+  answered_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  recording_url: string | null;
+  transcript: string | null;
+  summary: string | null;
+  name_extracted: string | null;
+  interest: string | null;
+  lead_intent_extracted: string | null;
+  customer_status: string | null;
+  call_outcome: string | null;
+  requested_callback_at: string | null;
+  connect_on_whatsapp: boolean | null;
+  visit_scheduled_at: string | null;
+  lead_data: Record<string, unknown> | null;
+  custom_data: Record<string, unknown> | null;
+  shopify_recovery_attempt_id: string | null;
+  lead_id: string | null;
+}
+
+// Call history for recovery dials, joined to the cart snapshot + the lead's
+// current view. One row per call (retries show as separate rows).
+export async function getRecoveryCalls(
+  input: unknown,
+): Promise<ActionResult<RecoveryPage<RecoveryCallRow>>> {
+  const session = await requireSession();
+  const parsed = pageInput.safeParse(input ?? {});
+  if (!parsed.success) return fail("Invalid request");
+  const page = parsed.data.page ?? 0;
+  const admin = createAdminClient();
+
+  const [from, to] = pageRange(page);
+  const { data, count, error } = await admin
+    .from("calls")
+    .select(CALL_COLUMNS, { count: "exact" })
+    .eq("organisation_id", session.organisation.id)
+    .not("shopify_recovery_attempt_id", "is", null)
+    .order("created_at", { ascending: false })
+    .range(from, to)
+    .returns<RawCallRow[]>();
+
+  if (error) {
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to load recovery calls", {
+        organisationId: session.organisation.id,
+        cause: error,
+      }),
+    );
+  }
+
+  const calls = data ?? [];
+  // Enrich each call with its cart snapshot + the lead's current view. Neither
+  // relationship is embedded (calls.shopify_recovery_attempt_id has no FK, and
+  // embedding leads proved brittle across schema caches), so we fetch both by id.
+  const attemptIds = Array.from(
+    new Set(
+      calls
+        .map((c) => c.shopify_recovery_attempt_id)
+        .filter((id): id is string => !!id),
+    ),
+  );
+  const leadIds = Array.from(
+    new Set(calls.map((c) => c.lead_id).filter((id): id is string => !!id)),
+  );
+
+  const attemptById = new Map<
+    string,
+    {
+      cart_total: number | null;
+      currency: string | null;
+      cart_items: RecoveryCartItem[];
+      customer_name: string | null;
+    }
+  >();
+  const leadById = new Map<
+    string,
+    { name: string | null; status: string | null; lead_intent: string | null }
+  >();
+
+  const [attsRes, leadsRes] = await Promise.all([
+    attemptIds.length > 0
+      ? admin
+          .from("shopify_recovery_attempts")
+          .select("id, cart_total, currency, cart_items, customer_name")
+          .in("id", attemptIds)
+          .returns<
+            Array<{
+              id: string;
+              cart_total: number | null;
+              currency: string | null;
+              cart_items: RecoveryCartItem[];
+              customer_name: string | null;
+            }>
+          >()
+      : Promise.resolve({ data: [] as never[] }),
+    leadIds.length > 0
+      ? admin
+          .from("leads")
+          .select("id, name, status, lead_intent")
+          .in("id", leadIds)
+          .returns<
+            Array<{
+              id: string;
+              name: string | null;
+              status: string | null;
+              lead_intent: string | null;
+            }>
+          >()
+      : Promise.resolve({ data: [] as never[] }),
+  ]);
+
+  for (const a of attsRes.data ?? []) {
+    attemptById.set(a.id, {
+      cart_total: a.cart_total,
+      currency: a.currency,
+      cart_items: Array.isArray(a.cart_items) ? a.cart_items : [],
+      customer_name: a.customer_name,
+    });
+  }
+  for (const l of leadsRes.data ?? []) {
+    leadById.set(l.id, {
+      name: l.name,
+      status: l.status,
+      lead_intent: l.lead_intent,
+    });
+  }
+
+  const rows: RecoveryCallRow[] = calls.map((c) => {
+    const att = c.shopify_recovery_attempt_id
+      ? attemptById.get(c.shopify_recovery_attempt_id)
+      : undefined;
+    const lead = c.lead_id ? leadById.get(c.lead_id) : undefined;
+    return {
+      id: c.id,
+      status: c.status,
+      direction: c.direction,
+      to_phone: c.to_phone,
+      from_phone: c.from_phone,
+      created_at: c.created_at,
+      started_at: c.started_at,
+      answered_at: c.answered_at,
+      ended_at: c.ended_at,
+      duration_seconds: c.duration_seconds,
+      recording_url: c.recording_url,
+      transcript: c.transcript,
+      summary: c.summary,
+      name_extracted: c.name_extracted,
+      interest: c.interest,
+      lead_intent_extracted: c.lead_intent_extracted,
+      customer_status: c.customer_status,
+      call_outcome: c.call_outcome,
+      requested_callback_at: c.requested_callback_at,
+      connect_on_whatsapp: c.connect_on_whatsapp,
+      visit_scheduled_at: c.visit_scheduled_at,
+      lead_data: c.lead_data,
+      custom_data: c.custom_data,
+      cart_total: att?.cart_total ?? null,
+      currency: att?.currency ?? null,
+      cart_items: att?.cart_items ?? [],
+      customer_name: att?.customer_name ?? null,
+      lead_name: lead?.name ?? null,
+      lead_status: lead?.status ?? null,
+      lead_intent: lead?.lead_intent ?? null,
+    };
+  });
+
+  return ok({ rows, total: count ?? 0 });
 }

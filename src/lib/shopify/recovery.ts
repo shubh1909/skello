@@ -74,10 +74,11 @@ async function loadBolnaConfig(
  * without contact details (skipped) is upgraded to pending once a later update
  * carries a phone + consent.
  *
- * Gating (consented-only, voice-only): we only schedule a call when the cart has
- * a phone, marketing consent, and the org has the voice agent + recovery enabled.
- * Non-actionable carts are recorded as `skipped` (with a reason) for the
- * dashboard, never dialled.
+ * Gating (voice-only): we schedule a call for any cart that has a phone once the
+ * org has the voice agent + recovery enabled. Marketing consent is recorded on
+ * the row but does NOT gate the call. Non-actionable carts (no phone / no voice
+ * agent) are recorded as `skipped` (with a reason) for the dashboard, never
+ * dialled.
  */
 export async function scheduleRecoveryFromCheckout(input: {
   integration: ShopifyIntegration;
@@ -94,11 +95,12 @@ export async function scheduleRecoveryFromCheckout(input: {
 
   const bolna = await loadBolnaConfig(admin, orgId);
 
-  // Decide the eligibility + the skip reason (if any), in priority order.
+  // Decide the eligibility + the skip reason (if any), in priority order. We
+  // call regardless of marketing consent now — only a missing phone or an
+  // unconfigured voice agent makes a cart non-actionable.
   let skipReason: string | null = null;
   if (!bolna || !bolna.enabled) skipReason = "no_voice_agent";
   else if (!checkout.phone) skipReason = "no_phone";
-  else if (!checkout.marketingConsent) skipReason = "no_consent";
 
   const agentId = settings.agent_id?.trim() || bolna?.agent_id?.trim() || null;
   if (!skipReason && !agentId) skipReason = "no_voice_agent";
@@ -124,6 +126,7 @@ export async function scheduleRecoveryFromCheckout(input: {
     customer_name: checkout.customerName,
     email: checkout.email,
     phone: checkout.phone,
+    marketing_consent: checkout.marketingConsent,
     cart_total: checkout.cartTotal,
     currency: checkout.currency,
     recovery_url: checkout.recoveryUrl,
