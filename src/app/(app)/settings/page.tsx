@@ -13,15 +13,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { VoiceAgentStatusCard } from "@/components/app/voice-agent-status-card";
+import { ShopifyStatusCard } from "@/components/app/shopify-status-card";
 import { getBolnaIntegration } from "@/actions/bolna-integrations";
+import { getShopifyStatus } from "@/actions/shopify";
 import { requireSession } from "@/lib/auth/session";
 
 export const metadata = { title: "Settings · Skelo" };
 
 export default async function SettingsPage() {
   const session = await requireSession();
-  const integrationResult = await getBolnaIntegration(session.organisation.id);
+  const [integrationResult, shopifyResult] = await Promise.all([
+    getBolnaIntegration(session.organisation.id),
+    getShopifyStatus(),
+  ]);
   const integration = integrationResult.success ? integrationResult.data : null;
+  const shopifyStatus = shopifyResult.success ? shopifyResult.data : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -61,6 +67,10 @@ export default async function SettingsPage() {
         Voice agents and lead fields are configured by your Skelo onboarding
         team. Reach out to support if you need a change.
       </p>
+
+      <Separator />
+
+      <ShopifyStatusCard status={shopifyStatus} />
 
       <Separator />
 

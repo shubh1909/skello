@@ -168,6 +168,48 @@ const CAMPAIGNS_METRIC_COLUMNS: SourceCatalogColumn[] = [
   },
 ];
 
+// Shopify cart-recovery attempts (table: shopify_recovery_attempts). Kept in
+// sync with the SQL allowlists in migration 20260702000000.
+const RECOVERY_DIMENSIONS: SourceCatalogColumn[] = [
+  { key: "status", label: "Status", data_type: "enum" },
+  { key: "skip_reason", label: "Skip reason", data_type: "enum" },
+  { key: "currency", label: "Currency", data_type: "string" },
+  {
+    key: "created_at",
+    label: "Abandoned at",
+    data_type: "date",
+    time_bucketable: true,
+  },
+  {
+    key: "converted_at",
+    label: "Recovered at",
+    data_type: "date",
+    time_bucketable: true,
+  },
+];
+
+const RECOVERY_FILTERABLES: SourceCatalogColumn[] = [
+  ...RECOVERY_DIMENSIONS,
+  { key: "marketing_consent", label: "Marketing consent", data_type: "boolean" },
+  { key: "cart_total", label: "Cart value", data_type: "number" },
+];
+
+const RECOVERY_METRIC_COLUMNS: SourceCatalogColumn[] = [
+  { key: "id", label: "Cart rows", data_type: "string" },
+  {
+    key: "cart_total",
+    label: "Cart value",
+    data_type: "number",
+    numeric_metric: true,
+  },
+  {
+    key: "attempt",
+    label: "Call attempts",
+    data_type: "number",
+    numeric_metric: true,
+  },
+];
+
 export async function getDashboardSourceCatalog(
   input: unknown,
 ): Promise<ActionResult<SourceCatalogEntry[]>> {
@@ -267,6 +309,15 @@ export async function getDashboardSourceCatalog(
       dimensions: CAMPAIGNS_DIMENSIONS,
       filterables: CAMPAIGNS_FILTERABLES,
       metric_columns: CAMPAIGNS_METRIC_COLUMNS,
+    },
+    {
+      source: "recovery",
+      label: "Cart Recovery",
+      description:
+        "Shopify abandoned-cart recovery attempts (cart value, status, outcomes).",
+      dimensions: RECOVERY_DIMENSIONS,
+      filterables: RECOVERY_FILTERABLES,
+      metric_columns: RECOVERY_METRIC_COLUMNS,
     },
   ];
 

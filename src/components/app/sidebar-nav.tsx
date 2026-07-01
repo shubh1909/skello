@@ -11,6 +11,7 @@ import {
   MessageCircleIcon,
   RadioIcon,
   SettingsIcon,
+  ShoppingCartIcon,
   UsersIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -27,6 +28,14 @@ type NavItem = {
   label: string;
   icon: LucideIcon;
   badgeKey?: "unique_leads";
+  children?: readonly NavItem[];
+};
+
+// The Cart Recovery sub-item is only shown when the feature is switched on.
+const CART_RECOVERY_SUBITEM: NavItem = {
+  href: "/campaigns/templates/cart-recovery",
+  label: "Cart Recovery",
+  icon: ShoppingCartIcon,
 };
 
 type NavSection = {
@@ -77,14 +86,26 @@ export function SidebarNav({
   organisationName,
   organisationSlug,
   uniqueLeadCount,
+  cartRecoveryActive = false,
 }: {
   organisationName: string;
   organisationSlug: string;
   uniqueLeadCount: number;
+  cartRecoveryActive?: boolean;
 }) {
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
   const { collapsed } = useAppShell();
+
+  // Inject the Cart Recovery sub-item under Campaigns only when it's live.
+  const sections: readonly NavSection[] = SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.map((item) =>
+      item.href === "/campaigns" && cartRecoveryActive
+        ? { ...item, children: [CART_RECOVERY_SUBITEM] }
+        : item,
+    ),
+  }));
 
   function onLogout() {
     startTransition(async () => {
@@ -123,7 +144,7 @@ export function SidebarNav({
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 pb-2">
-        {SECTIONS.map((section) => (
+        {sections.map((section) => (
           <div key={section.label} className="mb-4">
             <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
               {section.label}
@@ -163,6 +184,35 @@ export function SidebarNav({
                         </span>
                       ) : null}
                     </Link>
+
+                    {item.children && item.children.length > 0 ? (
+                      <ul className="mt-2 ml-4 space-y-0.5 border-l border-border/50 pl-2">
+                        {item.children.map((child) => {
+                          const childActive =
+                            pathname === child.href ||
+                            pathname.startsWith(child.href);
+                          const ChildIcon = child.icon;
+                          return (
+                            <li key={child.href}>
+                              <Link
+                                href={child.href}
+                                className={cn(
+                                  "flex items-center gap-2.5 rounded-md px-3 py-1.5 text-sm transition-colors",
+                                  childActive
+                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                    : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
+                                )}
+                              >
+                                <ChildIcon className="size-3.5" />
+                                <span className="flex-1 font-medium">
+                                  {child.label}
+                                </span>
+                              </Link>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : null}
                   </li>
                 );
               })}

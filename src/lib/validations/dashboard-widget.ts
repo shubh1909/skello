@@ -13,6 +13,7 @@ export const widgetSourceSchema = z.enum([
   "leads",
   "calls",
   "campaigns",
+  "recovery",
 ]);
 export type WidgetSource = z.infer<typeof widgetSourceSchema>;
 

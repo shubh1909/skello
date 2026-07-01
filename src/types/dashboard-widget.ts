@@ -30,7 +30,7 @@ export interface SourceCatalogColumn {
 }
 
 export interface SourceCatalogEntry {
-  source: "leads" | "calls" | "campaigns";
+  source: "leads" | "calls" | "campaigns" | "recovery";
   label: string;
   description: string;
   // Columns available as dimensions / filters.

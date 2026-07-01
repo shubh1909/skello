@@ -1,4 +1,10 @@
-# Cart Recovery — Plan (plain-English)
+# Cart Recovery
+
+The plain-English sections below explain the feature and the per-client
+**[onboarding process](#going-live-setup-checklist)**. For engineers, the
+**[Technical integration](#technical-integration-how-it-actually-works)** section is
+the authoritative reference for the data flow, the agent variables, and ROI
+attribution.
 
 ## What we're building
 
@@ -20,9 +26,11 @@ finance/BFSI follow-ups).
 The difference from a normal campaign: a normal campaign is a one-time list you
 upload and run. Cart Recovery is **always on** — it quietly watches for abandoned
 carts and calls them automatically. So its page looks like a **live dashboard**
-(how many carts, how many recovered, how much revenue came back), not an
-upload-and-run screen. Each future template can have its own shape; Templates is
-just the shelf they sit on.
+(how many carts, how many recovered, how much revenue came back) with three tabs —
+**Abandoned**, **Converted**, and **Call history** — plus **Start / Stop** and
+**Export** controls, not an upload-and-run screen. Once it's switched on, a **Cart
+Recovery** shortcut also appears under Campaigns in the sidebar. Each future
+template can have its own shape; Templates is just the shelf they sit on.
 
 ## Who sets it up, and who tunes it
 
@@ -52,13 +60,19 @@ the per-client approach is fine to start with.
 
 ## What the shopper hears on the call
 
-The agent knows, and can naturally talk about:
+For every recovery call we hand the voice agent a set of **context values** about
+that specific cart. The agent can naturally talk about:
 
-- The shopper's name.
-- The exact items left in the cart and the cart total.
-- A link to finish the purchase (sent/mentioned as set up).
-- The offer the client picked — for example "10% off with code SAVE10," or "a free
-  gift with your order."
+- The shopper's **name**.
+- The **product they left** — the highest-value item leads; if there's more than
+  one it becomes "…and others."
+- The **cart total**, the **discounted total** after the offer, the **amount they
+  save**, and the **discount name/percentage/code**.
+- A **link to finish** the purchase.
+
+Important: these values are only *spoken* if the agent's script references them.
+See **[Technical integration → Conversation context](#conversation-context-what-we-send-the-agent)**
+for the exact variable names and how to wire them into the agent script.
 
 ## What each client gives us (one-time setup)
 
@@ -86,11 +100,19 @@ On the same admin screen, per client:
 
 ## Who we call (and who we don't)
 
-- We only call shoppers who **left a phone number** and **agreed to be contacted**.
-  Email-only or no-consent shoppers are skipped (and logged), to stay compliant.
+- We call **every cart that left a phone number**, regardless of whether the shopper
+  ticked the marketing/consent box. The consent value **is still recorded** on each
+  row (so it can be filtered/reported on later), it just no longer blocks the call.
+  > ⚠️ Compliance note: calling non-consented shoppers can run into telemarketing /
+  > DND rules (TCPA in the US, DLT/DND in India). This is a deliberate business
+  > choice by the store owner; the consent flag is preserved on every attempt if
+  > you ever need to filter by it.
+- A cart is **skipped** (recorded, not dialled) only for two reasons: **no phone**
+  on the checkout, or **no voice agent** configured/enabled for the org.
 - For the first version we do **voice calls only**. Text/WhatsApp follow-up can be
   added later if wanted.
-- If a shopper already bought, or asked not to be contacted, we don't call.
+- If a shopper already bought, we **cancel** any pending call so we never bother a
+  customer who already purchased.
 
 ## How we keep it safe and reliable
 
@@ -111,17 +133,200 @@ Everything below is implemented end-to-end:
 1. **Connect a store** — the admin screen to enter a client's keys and mark them
    connected.
 2. **Listen for abandoned carts** — receiving the store's notifications safely,
-   with the genuineness check on every message.
+   with the genuineness (signature) check on every message.
 3. **Schedule the recovery** — turning an abandoned cart into a planned call (wait
-   time, consent check, no-double-call rules).
-4. **Make the call** — the agent rings the shopper with the cart details and offer,
-   and retries per the client's settings; it stops if they buy.
-5. **Offers** — the client picks the discount/freebie, with a "load from Shopify"
-   helper.
-6. **Dashboard** — the live view of carts, calls, recoveries, and revenue.
+   time, no-double-call rules). Captures the shopper's name, email, phone, cart, and
+   consent flag. Calls every cart with a phone (consent recorded, not gating).
+4. **Make the call** — the agent rings the shopper with the full cart + offer
+   context (see below), and retries per the client's settings; it stops if they buy.
+5. **Offers** — the client picks the discount from a **Shopify dropdown**; we
+   auto-capture the discount **percentage/amount** from the price rule and
+   auto-fill the redeemable **code**, so the agent can quote a real discounted total.
+6. **Dashboard** — three tabs (**Abandoned / Converted / Call history**) with
+   pagination, a "callable only" filter, per-call detail drawer (recording +
+   transcript + extracted data), and headline stats with **strict ROI attribution**.
+7. **Lifecycle controls** — **Start / Resume / Stop** (Stop also cancels queued
+   calls) and **CSV export**, plus a **Cart Recovery sidebar sub-item** shown only
+   while the feature is switched on.
+8. **Visibility elsewhere** — a read-only **Shopify store** card on the owner's
+   Settings page (store link, API version, scopes, status), and a **Cart Recovery
+   source** in the admin analytics builder for charting abandoned/recovered carts
+   and cart value.
 
 Not yet done: automated tests for the call-retry decisions (the security + cart
 reading are tested), and the optional switch to one shared Skelo app.
+
+## Technical integration (how it actually works)
+
+This section is the engineering reference — the plain-English plan above is the
+"what," this is the "how." Provider naming note: the product always says **"voice
+agent"**; internally the current provider is Bolna (code lives under
+`services/`/`lib/bolna/`).
+
+### End-to-end flow
+
+```
+Shopify store
+   │  checkouts/create · checkouts/update · orders/create   (signed webhooks)
+   ▼
+POST /api/webhooks/shopify        app/api/webhooks/shopify/route.ts
+   │  1. verify HMAC with THAT store's api_secret
+   │  2. resolve org from the shop domain (never the payload)
+   │  3. ack fast, do work in after()
+   ├── checkouts/* → scheduleRecoveryFromCheckout()   lib/shopify/recovery.ts
+   └── orders/create → cancelRecoveryForOrder()        lib/shopify/recovery.ts
+        └─ sets converted_at, cancels a pending/in-flight attempt
+
+scheduleRecoveryFromCheckout()
+   │  normalizeAbandonedCheckout()  lib/shopify/webhooks.ts
+   │    → phone, email, name, cart_total, currency, recovery_url, consent,
+   │      line items {title, quantity, lineValue}
+   │  gate: no phone → skipped(no_phone); no voice agent → skipped(no_voice_agent)
+   │  snapshot the offer (label, code, discount value + kind) from settings
+   │  find-or-create the lead; insert shopify_recovery_attempts row (pending)
+   ▼
+Cron tick  POST /api/cron/campaigns/tick   (x-cron-secret; ~once a minute)
+   │  dispatchDueRecoveries()  lib/shopify/recovery.ts
+   │    CAS-claim the row (pending → in_flight), build the agent variables,
+   │    initiateBolnaCall(user_data), insert a calls row, apply retry rules
+   ▼
+Bolna places the call → post-call webhook → recordOutboundResult()  lib/bolna/outbound.ts
+   │    writes transcript/recording/summary + extracted fields onto the call
+   └─ applyShopifyRecoveryOutcome()  advances the attempt (reached → succeeded)
+```
+
+### Data model
+
+- **`shopify_recovery_settings`** (one row per org) — the levers: `enabled`,
+  `wait_minutes`, `max_attempts`, `retry_interval_seconds`, `agent_id`, and the
+  offer (`offer_type`, `offer_code`, `offer_label`, `offer_discount_value`,
+  `offer_discount_kind`).
+- **`shopify_recovery_attempts`** (one row per `(org, checkout_token)`) — the queue
+  + activity log. Holds the cart snapshot (`customer_name`, `email`, `phone`,
+  `marketing_consent`, `cart_total`, `currency`, `cart_items`, `recovery_url`),
+  the offer snapshot, the state machine (`status`, `attempt`, `next_attempt_at`,
+  `scheduled_at`, `canceled_at`, `converted_at`), and links (`lead_id`,
+  `last_call_id`). `status ∈ pending | in_flight | succeeded | failed | canceled |
+  skipped`. Unique `(organisation_id, checkout_token)` makes webhook retries
+  idempotent (no double-calling).
+- **`calls.shopify_recovery_attempt_id`** — the seam back from the dial pipeline;
+  lets a call outcome advance the recovery attempt.
+
+### Conversation context (what we send the agent)
+
+Built by `buildRecoveryVariables()` in `lib/shopify/recovery.ts` and passed as
+Bolna's `user_data` on `POST /call`. **Each key maps 1:1 to a `{placeholder}` in
+the agent's Bolna prompt** — the agent only speaks a value whose `{name}` is in the
+script; extra keys are ignored. All values are flat strings (empty `""` when
+unknown, so the prompt never renders a literal `{name}`).
+
+| Variable | Example | Notes |
+| --- | --- | --- |
+| `{customer_name}` | `Asha Rao` | from the checkout |
+| `{top_product}` | `Diamond Ring` | highest line value in the cart |
+| `{cart_summary}` | `Diamond Ring and others` | "…and others" when >1 product |
+| `{item_count}` | `3` | distinct products |
+| `{currency}` | `INR` | |
+| `{cart_total}` | `5000` | original cart total |
+| `{discount_name}` | `20% off your order` | offer label |
+| `{discount_code}` | `COMEBACK20` | redeemable code |
+| `{discount_percentage}` | `20%` | percentage offers only |
+| `{discount_amount}` | `1000` | computed from the offer |
+| `{discounted_cart_total}` | `4000` | `cart_total − discount_amount` |
+| `{recovery_url}` | `https://…` | finish-checkout link |
+
+Internal IDs (`organisation_id`, `shopify_recovery_attempt_id`, `lead_id`) are also
+sent for traceability but aren't meant to be spoken.
+
+### The offer discount (auto-sourced)
+
+The client picks a discount from a dropdown of the store's **price rules**
+(`listDiscountOffers`, `lib/shopify/client.ts`). Selecting one:
+
+- captures the numeric **value + kind** (`percentage` / `fixed_amount`) from the
+  price rule and persists them on settings (`offer_discount_value/kind`);
+- auto-fills the redeemable **code** via `getDiscountCodeForRule` /
+  `getShopifyOfferCode`.
+
+At dispatch, `discount_amount` and `discounted_cart_total` are computed from the
+snapshotted value (percentage → `total × pct/100`; fixed → `min(value, total)`).
+A hand-typed label with no matching rule simply has no numeric discount — the agent
+still quotes the cart total, just no "you save X."
+
+### Recovered = strict ROI attribution
+
+A conversion counts toward the **Recovered / revenue** stats only when a recovery
+call actually **completed** (we reached the shopper) **and that call ended before**
+the order was placed (`attributedAttemptIds` in `actions/shopify-recovery.ts`). Any
+other conversion (bought before we called, never connected) is shown as
+**Organic** on the Converted tab and excluded from ROI. `converted_at` itself is
+set by the `orders/create` webhook matching the checkout token.
+
+### The dashboard
+
+- **Stats** (`getRecoveryOverview`): Carts abandoned (actioned, excludes skipped),
+  Calls made, Recovered via call (attributed), Revenue recovered (attributed).
+- **Tabs** (`CartRecoveryWorkspace`), each paginated (`getAbandonedCarts`,
+  `getConvertedCarts`, `getRecoveryCalls`, 20/page):
+  - **Abandoned** — all non-converted carts; "callable only" filter hides
+    skipped/no-phone. Columns include phone, cart value, products, offer, attempts,
+    status, and abandoned / next-call timestamps.
+  - **Converted** — flags each as **Call-driven** vs **Organic**; recovered-at time.
+  - **Call history** — one row per dial; a row opens a **detail drawer** with the
+    recording player, full transcript, extracted lead fields, and the cart.
+- **Controls** (`CartRecoveryControls`): Start/Resume (`setRecoveryRunning(true)`),
+  Stop (`setRecoveryRunning(false)` — also cancels queued attempts), Export CSV
+  (`exportRecoveryAttempts`).
+- **Sidebar**: a **Cart Recovery** sub-item under Campaigns, shown only when
+  `isCartRecoveryActive()` is true (i.e. recovery is switched on).
+
+### Visibility elsewhere in the app
+
+- **Owner Settings → Shopify store** (`components/app/shopify-status-card.tsx`,
+  fed by `getShopifyStatus()` in `actions/shopify.ts`) — a read-only card on the
+  org settings page showing the linked store's general details: **clickable store
+  domain**, API version, granted **access scopes (as badges)**, last-updated, and a
+  status badge (**Connected / Awaiting authorization / Paused / Not connected**).
+  Secrets are redacted; connecting/authorizing stays an admin action.
+- **Admin analytics builder → "Cart Recovery" source** — the dashboard widget
+  builder can chart `shopify_recovery_attempts`. The logical source `recovery`
+  maps to that table in the execution RPC. Available fields:
+  - **Dimensions / group-by:** status, skip reason, currency, abandoned-at
+    (`created_at`), recovered-at (`converted_at`) — the two dates are
+    time-bucketable (day/week/month).
+  - **Filters:** the above + marketing consent, cart value.
+  - **Metrics:** cart rows (count), **cart value** (sum/avg — revenue), call
+    attempts.
+  - Wiring spans the TS catalog (`actions/admin/dashboard-catalog.ts`), the source
+    enum/type, the builder's source guard, and the SQL allowlists +
+    source→table map in migration `20260702000000_dashboard_recovery_source.sql`.
+  - Note: "recovered vs not" is expressed via the **status** dimension/filter
+    (e.g. `succeeded`); there's no boolean "converted" column, and the builder's
+    filter ops don't include is-null/not-null.
+
+### Security & tenancy
+
+- Every webhook HMAC is verified with **that store's own `api_secret`**; the org is
+  resolved from the shop domain server-side, never trusted from the payload.
+- Secrets (`api_secret`, `access_token`, Bolna key) live only in server runtime.
+- `shopify_recovery_settings` / `shopify_recovery_attempts` are owner-readable via
+  RLS; all writes go through the service-role client after ownership checks.
+
+### Files at a glance
+
+| Area | File |
+| --- | --- |
+| Webhook entry | `app/api/webhooks/shopify/route.ts` |
+| Normalize + HMAC | `lib/shopify/webhooks.ts` |
+| Schedule / dispatch / outcome | `lib/shopify/recovery.ts` |
+| Shopify Admin client (price rules, codes, webhooks) | `lib/shopify/client.ts` |
+| Bolna call client | `lib/bolna/client.ts` · `lib/bolna/outbound.ts` |
+| Server actions (settings, tabs, controls, export) | `actions/shopify-recovery.ts` |
+| Org Shopify status (read-only) | `actions/shopify.ts` · `components/app/shopify-status-card.tsx` |
+| Admin analytics source | `actions/admin/dashboard-catalog.ts` · `lib/validations/dashboard-widget.ts` |
+| Dashboard UI | `components/app/cart-recovery-*.tsx`, `recovery-call-detail.tsx` |
+| Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702000000_dashboard_recovery_source.sql` |
 
 ## Going live: setup checklist
 
@@ -131,7 +336,13 @@ reading are tested), and the optional switch to one shared Skelo app.
   address the store approves during Authorize).
 - Set `SHOPIFY_WEBHOOK_ADDRESS` to `https://app.skelo.team/api/webhooks/shopify`
   (the address Shopify sends alerts to; the "Register webhooks" button uses it).
-- Apply the database changes (the migrations).
+- Ensure `CRON_SECRET` is set (guards the once-a-minute dispatch tick).
+- Apply the database changes: `npx supabase db push`. The recovery feature spans
+  the `shopify_*` migrations plus the recent additive ones — offer discount
+  (`offer_discount_value/kind` on settings + attempts), `email`, and
+  `marketing_consent` on `shopify_recovery_attempts` — and
+  `20260702000000_dashboard_recovery_source.sql`, which teaches the admin
+  analytics builder the `recovery` source.
 
 **Per client:**
 
@@ -141,10 +352,14 @@ reading are tested), and the optional switch to one shared Skelo app.
 2. **Register webhooks** (us, one button) — tells Shopify to start sending that
    store's abandoned-cart alerts.
 3. **Tune + turn on** (client) — on their Cart Recovery page, set the wait time and
-   attempts, pick the offer, and switch it on.
-4. **Tweak the agent script** (one-time, per client) — the voice agent's script
-   must mention the shopper's name, cart, link, and offer, otherwise it has the
-   info but won't say it.
+   attempts, pick the offer from the **Shopify dropdown** (so the discount % and
+   code are captured for the call), then hit **Start**.
+4. **Wire the agent script** (one-time, per client) — the voice agent's Bolna
+   prompt must reference the `{placeholders}` from
+   [Conversation context](#conversation-context-what-we-send-the-agent) — e.g.
+   `{customer_name}`, `{cart_summary}`, `{cart_total}`, `{discounted_cart_total}`,
+   `{discount_code}`. We send the data regardless, but the agent only *says* the
+   variables the script mentions.
 
 ## How to test it
 
@@ -163,15 +378,19 @@ to be able to reach us.
    **access token** and **API secret key**.
 3. In our admin → that org's **Cart Recovery** screen → paste the store domain +
    token + secret + API version → **Connect**, then click **Register webhooks**.
-4. On the org's **Cart Recovery** page: turn it **on**, set "wait before calling"
-   to **1 minute** (so you're not waiting around), and pick an offer.
-5. In the dev store, go to checkout, **enter a phone number you can answer**, tick
-   the marketing/consent box, and **leave without paying**.
-6. Within a minute or two a row appears on the dashboard as **Waiting**. On the
-   next background tick (once a minute) the call fires — you should get it. To not
-   wait, trigger the tick by hand (below).
-7. Go back and **complete the purchase** → the row flips to **Recovered** and any
-   pending call is canceled.
+4. On the org's **Cart Recovery** page: hit **Start**, set "wait before calling"
+   to **1 minute** (so you're not waiting around), and pick an offer from the
+   Shopify dropdown (a percentage rule shows a "Discount detected: X% off" hint).
+5. In the dev store, go to checkout, **enter a phone number you can answer**, and
+   **leave without paying**. (Consent no longer matters — any cart with a phone is
+   dialled.)
+6. Within a minute or two a row appears on the **Abandoned** tab as **Waiting**. On
+   the next background tick (once a minute) the call fires — you should get it. To
+   not wait, trigger the tick by hand (below).
+7. Go back and **complete the purchase** → it moves to the **Converted** tab, and any
+   pending call is canceled. It only counts as **Recovered** in the ROI stats if a
+   call actually reached you *before* the purchase (otherwise it shows as
+   **Organic**).
 
 **Trigger the call immediately (skip the wait):** the calls are placed by a
 once-a-minute background job. To run it on demand, send it a nudge:
@@ -181,18 +400,21 @@ curl -X POST https://app.skelo.team/api/cron/campaigns/tick \
   -H "x-cron-secret: <the CRON_SECRET value>"
 ```
 
-**What to watch on the dashboard:** rows move **Waiting → Calling →
-Reached/Recovered**. A **Skipped** row with a reason (`no phone` / `no consent`)
-means the cart wasn't eligible — handy for confirming the consent rule works. If
-checkouts come in but everything is "skipped: no consent," the store's checkout
-isn't collecting a consent tick.
+**What to watch on the dashboard:** on the Abandoned tab rows move **Waiting →
+Calling → Reached**; on conversion they move to **Converted**. A **Skipped** row
+with a reason (`no phone` / `no voice agent`) means the cart wasn't eligible. If
+checkouts arrive but everything is "skipped: no phone," the store's checkout isn't
+collecting a phone number.
 
 ## Still to confirm
 
-- Do the clients' checkouts actually **capture phone numbers and consent**? That
-  decides how many abandoned carts we can legally call.
-- Each client's voice agent script needs a **one-time tweak** so it naturally
-  mentions the cart items and the offer.
+- Do the clients' checkouts actually **capture phone numbers**? That decides how
+  many abandoned carts we can call at all.
+- Compliance sign-off for calling **non-consented** shoppers per client/region
+  (TCPA / DND). The consent flag is recorded on every row if a client wants to
+  re-introduce gating.
+- Each client's voice agent script needs a **one-time wiring** of the
+  `{placeholders}` so it naturally mentions the cart items and the offer.
 - For the offer, do we start with **discount codes only**, or also **free products**
   from day one?
 
