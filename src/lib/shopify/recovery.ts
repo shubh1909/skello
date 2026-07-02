@@ -127,6 +127,7 @@ export async function scheduleRecoveryFromCheckout(input: {
     email: checkout.email,
     phone: checkout.phone,
     marketing_consent: checkout.marketingConsent,
+    abandoned_at: checkout.abandonedAt,
     cart_total: checkout.cartTotal,
     currency: checkout.currency,
     recovery_url: checkout.recoveryUrl,
