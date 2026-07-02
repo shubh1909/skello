@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import { Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -9,6 +10,7 @@ import {
   getConvertedCarts,
   getRecoveryCalls,
 } from "@/actions/shopify-recovery";
+import { createClient } from "@/lib/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -39,16 +41,19 @@ const STATUS_META: Record<RecoveryAttemptStatus, { label: string; className: str
 };
 
 interface Props {
+  organisationId: string;
   initialAbandoned: RecoveryPage<RecoveryAttemptRow>;
   initialConverted: RecoveryPage<RecoveryAttemptRow>;
   initialCalls: RecoveryPage<RecoveryCallRow>;
 }
 
 export function CartRecoveryWorkspace({
+  organisationId,
   initialAbandoned,
   initialConverted,
   initialCalls,
 }: Props) {
+  const router = useRouter();
   const [tab, setTab] = React.useState<TabKey>("abandoned");
   const [pending, startTransition] = React.useTransition();
 
@@ -68,6 +73,86 @@ export function CartRecoveryWorkspace({
 
   const [activeCall, setActiveCall] = React.useState<RecoveryCallRow | null>(null);
   const [detailOpen, setDetailOpen] = React.useState(false);
+
+  // Read-through refs so the realtime callback always sees the current page /
+  // filter without rebuilding the subscription. A tab that the user has paged
+  // past keeps its rows (we only refresh its count); a tab on page 0 gets its
+  // rows replaced live.
+  const abandonedPageRef = React.useRef(abandonedPage);
+  const convertedPageRef = React.useRef(convertedPage);
+  const callsPageRef = React.useRef(callsPage);
+  const callableOnlyRef = React.useRef(callableOnly);
+  React.useEffect(() => {
+    abandonedPageRef.current = abandonedPage;
+    convertedPageRef.current = convertedPage;
+    callsPageRef.current = callsPage;
+    callableOnlyRef.current = callableOnly;
+  });
+
+  // Re-pull page 0 of each tab (respecting the callable filter) + refresh the
+  // server-rendered stat cards. Called on realtime activity.
+  const refreshTabs = React.useCallback(() => {
+    startTransition(async () => {
+      const [a, c, ca] = await Promise.all([
+        getAbandonedCarts({ page: 0, callableOnly: callableOnlyRef.current }),
+        getConvertedCarts({ page: 0 }),
+        getRecoveryCalls({ page: 0 }),
+      ]);
+      if (a.success) {
+        setAbandonedTotal(a.data.total);
+        if (abandonedPageRef.current === 0) setAbandoned(a.data.rows);
+      }
+      if (c.success) {
+        setConvertedTotal(c.data.total);
+        if (convertedPageRef.current === 0) setConverted(c.data.rows);
+      }
+      if (ca.success) {
+        setCallsTotal(ca.data.total);
+        if (callsPageRef.current === 0) setCalls(ca.data.rows);
+      }
+    });
+    router.refresh();
+  }, [router]);
+
+  // Live updates: recovery attempts + their calls, scoped to this org. Debounced
+  // so an in-flight call's rapid status flips coalesce into one refresh.
+  React.useEffect(() => {
+    if (!organisationId) return;
+    const supabase = createClient();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const queue = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(refreshTabs, 400);
+    };
+    const channel = supabase
+      .channel(`cart-recovery:${organisationId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "shopify_recovery_attempts",
+          filter: `organisation_id=eq.${organisationId}`,
+        },
+        queue,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "calls",
+          filter: `organisation_id=eq.${organisationId}`,
+        },
+        queue,
+      )
+      .subscribe();
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
+  }, [organisationId, refreshTabs]);
 
   function loadMoreAbandoned() {
     const next = abandonedPage + 1;
@@ -355,7 +440,7 @@ function CartTable({
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">
                     <div className="flex flex-col">
-                      <span>{formatDateTime(r.created_at)}</span>
+                      <span>{formatDateTime(r.abandoned_at ?? r.created_at)}</span>
                       {isConverted ? (
                         <span>recovered: {formatDateTime(r.converted_at)}</span>
                       ) : r.status === "pending" && r.next_attempt_at ? (

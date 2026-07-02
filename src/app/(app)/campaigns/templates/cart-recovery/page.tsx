@@ -13,6 +13,7 @@ import {
   getRecoveryCalls,
   getRecoveryOverview,
 } from "@/actions/shopify-recovery";
+import { requireSession } from "@/lib/auth/session";
 import type {
   RecoveryAttemptRow,
   RecoveryCallRow,
@@ -24,12 +25,14 @@ export const metadata = { title: "Cart Recovery · Skelo" };
 const EMPTY_PAGE: RecoveryPage<never> = { rows: [], total: 0 };
 
 export default async function CartRecoveryTemplatePage() {
-  const [overview, abandonedRes, convertedRes, callsRes] = await Promise.all([
-    getRecoveryOverview(),
-    getAbandonedCarts({ page: 0 }),
-    getConvertedCarts({ page: 0 }),
-    getRecoveryCalls({ page: 0 }),
-  ]);
+  const [session, overview, abandonedRes, convertedRes, callsRes] =
+    await Promise.all([
+      requireSession(),
+      getRecoveryOverview(),
+      getAbandonedCarts({ page: 0 }),
+      getConvertedCarts({ page: 0 }),
+      getRecoveryCalls({ page: 0 }),
+    ]);
 
   if (!overview.success) {
     return (
@@ -95,6 +98,7 @@ export default async function CartRecoveryTemplatePage() {
       </section>
 
       <CartRecoveryWorkspace
+        organisationId={session.organisation.id}
         initialAbandoned={abandoned}
         initialConverted={converted}
         initialCalls={calls}

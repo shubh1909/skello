@@ -6,6 +6,40 @@ The plain-English sections below explain the feature and the per-client
 the authoritative reference for the data flow, the agent variables, and ROI
 attribution.
 
+## Contents
+
+**Overview & plan**
+
+- [What we're building](#what-were-building)
+- [Where it lives in the app](#where-it-lives-in-the-app)
+- [Who sets it up, and who tunes it](#who-sets-it-up-and-who-tunes-it)
+- [How it works, step by step](#how-it-works-step-by-step)
+- [What the shopper hears on the call](#what-the-shopper-hears-on-the-call)
+- [What each client gives us (one-time setup)](#what-each-client-gives-us-one-time-setup)
+- [What each client can configure](#what-each-client-can-configure)
+- [Who we call (and who we don't)](#who-we-call-and-who-we-dont)
+- [How we keep it safe and reliable](#how-we-keep-it-safe-and-reliable)
+- [What's built (all of it)](#whats-built-all-of-it)
+
+**Technical integration** — [overview](#technical-integration-how-it-actually-works)
+
+- [End-to-end flow](#end-to-end-flow)
+- [Data model](#data-model)
+- [Conversation context (agent variables)](#conversation-context-what-we-send-the-agent)
+- [The offer discount (auto-sourced)](#the-offer-discount-auto-sourced)
+- [Recovered = strict ROI attribution](#recovered--strict-roi-attribution)
+- [The dashboard](#the-dashboard)
+- [Visibility elsewhere in the app](#visibility-elsewhere-in-the-app)
+- [Security & tenancy](#security--tenancy)
+- [Files at a glance](#files-at-a-glance)
+
+**Onboarding & operations**
+
+- [Going live: setup checklist](#going-live-setup-checklist)
+- [How to test it](#how-to-test-it)
+- [Still to confirm](#still-to-confirm)
+- [A couple of terms, explained](#a-couple-of-terms-explained)
+
 ## What we're building
 
 When a shopper on a client's Shopify store adds items, starts to buy, but leaves

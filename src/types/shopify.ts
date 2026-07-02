@@ -88,7 +88,8 @@ export interface RecoveryAttemptRow {
   attempt: number;
   max_attempts: number;
   last_status: string | null;
-  created_at: string; // abandoned at
+  created_at: string; // when we recorded the cart (webhook receipt)
+  abandoned_at: string | null; // Shopify's checkout-created time (true abandonment)
   scheduled_at: string | null;
   next_attempt_at: string | null;
   canceled_at: string | null;

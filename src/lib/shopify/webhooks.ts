@@ -63,6 +63,9 @@ export interface NormalizedCheckout {
   recoveryUrl: string | null;
   lineItems: RecoveryCartItem[];
   marketingConsent: boolean;
+  // Shopify's own checkout-created timestamp (ISO, store tz) — the true
+  // abandonment time, distinct from when our webhook processed it.
+  abandonedAt: string | null;
 }
 
 // Pull the abandoned-checkout fields from a checkouts/{create,update} payload.
@@ -135,6 +138,7 @@ export function normalizeAbandonedCheckout(
     recoveryUrl: asString(p.abandoned_checkout_url),
     lineItems,
     marketingConsent,
+    abandonedAt: asString(p.created_at),
   };
 }
 
