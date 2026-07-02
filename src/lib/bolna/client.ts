@@ -1,5 +1,7 @@
 import "server-only";
 
+import { coerceToE164 } from "@/lib/phone";
+
 const DEFAULT_BASE = "https://api.bolna.ai";
 
 export class BolnaApiError extends Error {
@@ -110,31 +112,19 @@ export async function pingBolna(input: {
   };
 }
 
-/**
- * Bolna's /call API rejects numbers without the leading `+`. Our internal
- * stores keep phones digit-only (campaign_contacts.phone enforces 5..15
- * digits) so we have to coerce on the way out. Anything that already starts
- * with `+` is passed through unchanged after we strip whitespace and other
- * formatting (spaces, dashes, parens).
- */
-function toE164(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const digits = raw.replace(/[^0-9]/g, "");
-  if (digits.length === 0) return null;
-  return `+${digits}`;
-}
-
 export async function initiateBolnaCall(
   input: InitiateCallInput,
 ): Promise<InitiateCallResult> {
-  const recipient = toE164(input.recipientPhone);
+  // Coerce to E.164 with a default country code — Bolna rejects bare local
+  // numbers (common in Shopify checkout phones). See lib/phone.ts.
+  const recipient = coerceToE164(input.recipientPhone);
   if (!recipient) {
     throw new BolnaApiError(
       400,
       "Recipient phone is empty or contains no digits",
     );
   }
-  const fromPhone = toE164(input.fromPhone);
+  const fromPhone = coerceToE164(input.fromPhone);
 
   const requestBody = {
     agent_id: input.agentId,

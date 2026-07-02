@@ -36,7 +36,7 @@ const ATTEMPT_COLUMNS =
   "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at";
 
 const CALL_COLUMNS =
-  "id, status, direction, to_phone, from_phone, created_at, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript, summary, name_extracted, interest, lead_intent_extracted, customer_status, call_outcome, requested_callback_at, connect_on_whatsapp, visit_scheduled_at, lead_data, custom_data, shopify_recovery_attempt_id, lead_id";
+  "id, status, direction, to_phone, from_phone, error_message, bolna_call_id, created_at, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript, transcript_url, summary, name_extracted, interest, lead_intent_extracted, customer_status, call_outcome, requested_callback_at, connect_on_whatsapp, visit_scheduled_at, lead_data, custom_data, shopify_recovery_attempt_id, lead_id";
 
 const PAGE_SIZE = 20;
 
@@ -552,6 +552,8 @@ interface RawCallRow {
   direction: string;
   to_phone: string | null;
   from_phone: string | null;
+  error_message: string | null;
+  bolna_call_id: string | null;
   created_at: string;
   started_at: string | null;
   answered_at: string | null;
@@ -559,6 +561,7 @@ interface RawCallRow {
   duration_seconds: number | null;
   recording_url: string | null;
   transcript: string | null;
+  transcript_url: string | null;
   summary: string | null;
   name_extracted: string | null;
   interest: string | null;
@@ -692,6 +695,8 @@ export async function getRecoveryCalls(
       direction: c.direction,
       to_phone: c.to_phone,
       from_phone: c.from_phone,
+      error_message: c.error_message,
+      bolna_call_id: c.bolna_call_id,
       created_at: c.created_at,
       started_at: c.started_at,
       answered_at: c.answered_at,
@@ -699,6 +704,7 @@ export async function getRecoveryCalls(
       duration_seconds: c.duration_seconds,
       recording_url: c.recording_url,
       transcript: c.transcript,
+      transcript_url: c.transcript_url,
       summary: c.summary,
       name_extracted: c.name_extracted,
       interest: c.interest,

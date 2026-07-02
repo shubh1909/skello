@@ -1,5 +1,7 @@
 "use client";
 
+import { InfoIcon } from "lucide-react";
+
 import {
   Sheet,
   SheetContent,
@@ -8,6 +10,11 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   formatDateTime,
   formatDuration,
@@ -56,6 +63,7 @@ export function RecoveryCallDetail({
     ...jsonEntries(call.lead_data),
     ...jsonEntries(call.custom_data),
   ];
+  const isFailed = call.status === "failed" || !!call.error_message;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -65,8 +73,35 @@ export function RecoveryCallDetail({
           <SheetDescription className="font-mono tabular-nums">
             {call.to_phone ?? "no phone"}
           </SheetDescription>
-          <div className="mt-1 flex flex-wrap gap-1.5">
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <Badge variant="secondary">{call.status}</Badge>
+            {isFailed ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label="Why it failed"
+                      className="inline-flex cursor-help text-muted-foreground hover:text-foreground"
+                    />
+                  }
+                >
+                  <InfoIcon className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>
+                    {call.bolna_call_id
+                      ? "The call was placed but failed at the telephony layer (carrier couldn't connect / route the number)."
+                      : "The call was never placed — the voice provider rejected the request."}
+                  </p>
+                  {call.error_message ? (
+                    <p className="mt-1.5 rounded bg-muted/60 p-1.5 font-mono wrap-break-word">
+                      {call.error_message}
+                    </p>
+                  ) : null}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
             {call.call_outcome ? (
               <Badge variant="outline">{call.call_outcome}</Badge>
             ) : null}
@@ -74,6 +109,7 @@ export function RecoveryCallDetail({
         </SheetHeader>
 
         <div className="flex flex-col gap-5 p-4">
+
           {call.recording_url ? (
             <div className="flex flex-col gap-1.5">
               <span className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -152,9 +188,19 @@ export function RecoveryCallDetail({
               <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-xs leading-relaxed">
                 {call.transcript}
               </pre>
+            ) : call.transcript_url ? (
+              <a
+                href={call.transcript_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-primary underline-offset-4 hover:underline"
+              >
+                Open transcript
+              </a>
             ) : (
               <p className="text-sm text-muted-foreground">
-                No transcript captured for this call.
+                No transcript captured yet — it appears here once the call
+                completes.
               </p>
             )}
           </div>
