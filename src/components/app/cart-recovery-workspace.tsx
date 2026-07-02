@@ -367,7 +367,7 @@ function CartTable({
   onLoadMore: () => void;
 }) {
   const isConverted = variant === "converted";
-  const colSpan = 8;
+  const colSpan = 9;
   return (
     <Card className="overflow-hidden p-0">
       <div className="overflow-x-auto">
@@ -383,8 +383,9 @@ function CartTable({
               <th className="px-4 py-3 font-medium">
                 {isConverted ? "Recovery" : "Status"}
               </th>
+              <th className="px-4 py-3 font-medium">Abandoned</th>
               <th className="px-4 py-3 font-medium">
-                {isConverted ? "Abandoned / Recovered" : "Abandoned / Next call"}
+                {isConverted ? "Recovered" : "Next call"}
               </th>
             </tr>
           </thead>
@@ -439,14 +440,14 @@ function CartTable({
                     )}
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">
-                    <div className="flex flex-col">
-                      <span>{formatDateTime(r.abandoned_at ?? r.created_at)}</span>
-                      {isConverted ? (
-                        <span>recovered: {formatDateTime(r.converted_at)}</span>
-                      ) : r.status === "pending" && r.next_attempt_at ? (
-                        <span>next: {formatDateTime(r.next_attempt_at)}</span>
-                      ) : null}
-                    </div>
+                    {formatDateTime(r.abandoned_at ?? r.created_at)}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">
+                    {isConverted
+                      ? formatDateTime(r.converted_at)
+                      : r.status === "pending" && r.next_attempt_at
+                        ? formatDateTime(r.next_attempt_at)
+                        : "—"}
                   </td>
                 </tr>
               ))

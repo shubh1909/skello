@@ -107,6 +107,10 @@ export interface RecoveryCallRow {
   direction: string;
   to_phone: string | null;
   from_phone: string | null;
+  // Failure diagnostics. error_message is set when initiation fails (call never
+  // placed); bolna_call_id present means the provider accepted the dial.
+  error_message: string | null;
+  bolna_call_id: string | null;
   created_at: string;
   started_at: string | null;
   answered_at: string | null;
@@ -114,6 +118,7 @@ export interface RecoveryCallRow {
   duration_seconds: number | null;
   recording_url: string | null;
   transcript: string | null;
+  transcript_url: string | null;
   summary: string | null;
   // Extracted / dynamic call data.
   name_extracted: string | null;
