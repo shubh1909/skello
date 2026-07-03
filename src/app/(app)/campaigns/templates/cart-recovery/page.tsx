@@ -7,6 +7,7 @@ import { CartRecoveryControls } from "@/components/app/cart-recovery-controls";
 import { CartRecoveryDashboard } from "@/components/app/cart-recovery-dashboard";
 import { CartRecoverySettingsForm } from "@/components/app/cart-recovery-settings-form";
 import { CartRecoveryWorkspace } from "@/components/app/cart-recovery-workspace";
+import { RecoveryAgentCard } from "@/components/app/recovery-agent-card";
 import {
   getAbandonedCarts,
   getConvertedCarts,
@@ -42,7 +43,7 @@ export default async function CartRecoveryTemplatePage() {
     );
   }
 
-  const { connected, settings, metrics } = overview.data;
+  const { connected, settings, metrics, voiceAgent } = overview.data;
   const abandoned: RecoveryPage<RecoveryAttemptRow> = abandonedRes.success
     ? abandonedRes.data
     : EMPTY_PAGE;
@@ -93,7 +94,8 @@ export default async function CartRecoveryTemplatePage() {
 
       <CartRecoveryDashboard metrics={metrics} />
 
-      <section className="space-y-3">
+      <section className="grid gap-3">
+        <RecoveryAgentCard voiceAgent={voiceAgent} />
         <CartRecoverySettingsForm settings={settings} connected={connected} />
       </section>
 

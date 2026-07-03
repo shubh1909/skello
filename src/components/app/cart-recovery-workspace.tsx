@@ -14,6 +14,10 @@ import { createClient } from "@/lib/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  CallStatusBadge,
+  CartOutcomeBadge,
+} from "@/components/app/recovery-badges";
 import { RecoveryCallDetail } from "@/components/app/recovery-call-detail";
 import {
   formatDateTime,
@@ -71,8 +75,18 @@ export function CartRecoveryWorkspace({
   const [callsTotal, setCallsTotal] = React.useState(initialCalls.total);
   const [callsPage, setCallsPage] = React.useState(0);
 
+  // The row clicked to open the drawer — kept as a fallback snapshot for when
+  // the call has been paged out of the loaded `calls` list.
   const [activeCall, setActiveCall] = React.useState<RecoveryCallRow | null>(null);
   const [detailOpen, setDetailOpen] = React.useState(false);
+
+  // Keep the open detail sheet live: when realtime refreshes the calls page the
+  // held snapshot goes stale (status, duration, transcript, …). Derive the
+  // displayed call from the freshest loaded row, falling back to the snapshot.
+  const displayedCall = React.useMemo(() => {
+    if (!activeCall) return null;
+    return calls.find((c) => c.id === activeCall.id) ?? activeCall;
+  }, [activeCall, calls]);
 
   // Read-through refs so the realtime callback always sees the current page /
   // filter without rebuilding the subscription. A tab that the user has paged
@@ -216,7 +230,7 @@ export function CartRecoveryWorkspace({
   }
 
   const tabs: { key: TabKey; label: string; count: number }[] = [
-    { key: "abandoned", label: "Abandoned", count: abandonedTotal },
+    { key: "abandoned", label: "All carts", count: abandonedTotal },
     { key: "converted", label: "Converted", count: convertedTotal },
     { key: "calls", label: "Call history", count: callsTotal },
   ];
@@ -286,7 +300,7 @@ export function CartRecoveryWorkspace({
       )}
 
       <RecoveryCallDetail
-        call={activeCall}
+        call={displayedCall}
         open={detailOpen}
         onOpenChange={setDetailOpen}
       />
@@ -367,7 +381,7 @@ function CartTable({
   onLoadMore: () => void;
 }) {
   const isConverted = variant === "converted";
-  const colSpan = 9;
+  const colSpan = isConverted ? 9 : 10;
   return (
     <Card className="overflow-hidden p-0">
       <div className="overflow-x-auto">
@@ -380,6 +394,9 @@ function CartTable({
               <th className="px-4 py-3 font-medium">Products</th>
               <th className="px-4 py-3 font-medium">Offer</th>
               <th className="px-4 py-3 font-medium">Attempts</th>
+              {!isConverted ? (
+                <th className="px-4 py-3 font-medium">Cart</th>
+              ) : null}
               <th className="px-4 py-3 font-medium">
                 {isConverted ? "Recovery" : "Status"}
               </th>
@@ -392,9 +409,7 @@ function CartTable({
           <tbody className="divide-y divide-border/60">
             {rows.length === 0 ? (
               <EmptyRow colSpan={colSpan}>
-                {isConverted
-                  ? "No recovered carts yet."
-                  : "No abandoned carts to show."}
+                {isConverted ? "No recovered carts yet." : "No carts to show."}
               </EmptyRow>
             ) : (
               rows.map((r) => (
@@ -417,6 +432,14 @@ function CartTable({
                   <td className="px-4 py-3 tabular-nums text-muted-foreground">
                     {r.attempt}/{r.max_attempts}
                   </td>
+                  {!isConverted ? (
+                    <td className="px-4 py-3">
+                      <CartOutcomeBadge
+                        convertedAt={r.converted_at}
+                        attributed={r.attributed}
+                      />
+                    </td>
+                  ) : null}
                   <td className="px-4 py-3">
                     {isConverted ? (
                       r.attributed ? (
@@ -507,7 +530,7 @@ function CallTable({
                     {c.to_phone ?? "—"}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge variant="secondary">{c.status}</Badge>
+                    <CallStatusBadge status={c.status} />
                   </td>
                   <td className="px-4 py-3 tabular-nums text-muted-foreground">
                     {formatDuration(c.duration_seconds)}

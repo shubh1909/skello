@@ -3,9 +3,14 @@ import "server-only";
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
 import { isTerminalCallStatus } from "@/lib/callbacks/outcome-decision";
 import { pooledMap } from "@/lib/campaigns/dispatch";
+import {
+  isWithinCallWindow,
+  nextCallWindowOpen,
+} from "@/lib/shopify/call-window";
 import { findOrCreateShopifyLead } from "@/lib/shopify/lead";
 import { normalizeAbandonedCheckout } from "@/lib/shopify/webhooks";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { APP_TIMEZONE } from "@/lib/time";
 import type { CallStatus } from "@/types/call";
 import type { RecoveryCartItem, ShopifyIntegration } from "@/types/shopify";
 
@@ -420,6 +425,10 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
       "id, organisation_id, lead_id, phone, agent_id, from_phone, attempt, max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, cart_items, offer_label, offer_code, offer_discount_value, offer_discount_kind",
     )
     .eq("status", "pending")
+    // Never dial a cart that already converted. cancelRecoveryForOrder normally
+    // flips these to `canceled`, but guard here too so an order landing mid-tick
+    // can't slip a dial through against a shopper who already bought.
+    .is("converted_at", null)
     .lte("next_attempt_at", nowIso)
     .order("next_attempt_at", { ascending: true })
     .limit(BATCH_LIMIT)
@@ -436,23 +445,74 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
   if (queue.length === 0) return { processed: 0, fired: 0 };
 
   const orgIds = Array.from(new Set(queue.map((r) => r.organisation_id)));
-  const { data: integrations } = await admin
-    .from("bolna_integrations")
-    .select("organisation_id, api_key, from_phone_number, enabled")
-    .in("organisation_id", orgIds)
-    .returns<
-      Array<{
-        organisation_id: string;
-        api_key: string;
-        from_phone_number: string | null;
-        enabled: boolean;
-      }>
-    >();
+  const [{ data: integrations }, { data: windowRows }] = await Promise.all([
+    admin
+      .from("bolna_integrations")
+      .select("organisation_id, api_key, from_phone_number, enabled")
+      .in("organisation_id", orgIds)
+      .returns<
+        Array<{
+          organisation_id: string;
+          api_key: string;
+          from_phone_number: string | null;
+          enabled: boolean;
+        }>
+      >(),
+    admin
+      .from("shopify_recovery_settings")
+      .select("organisation_id, call_window_start, call_window_end")
+      .in("organisation_id", orgIds)
+      .returns<
+        Array<{
+          organisation_id: string;
+          call_window_start: string | null;
+          call_window_end: string | null;
+        }>
+      >(),
+  ]);
   const integrationByOrg = new Map(
     (integrations ?? []).map((i) => [i.organisation_id, i] as const),
   );
+  const windowByOrg = new Map(
+    (windowRows ?? []).map(
+      (w) =>
+        [
+          w.organisation_id,
+          { start: w.call_window_start, end: w.call_window_end },
+        ] as const,
+    ),
+  );
 
-  const fired = await pooledMap(queue, CONCURRENCY, async (r) => {
+  // Calling-window gate: rows whose org is outside its configured dial window
+  // are deferred to the next window open (in APP_TIMEZONE) rather than dialled.
+  const now = new Date();
+  const dialable: DueRecovery[] = [];
+  const deferrals: Array<{ id: string; next: string }> = [];
+  for (const r of queue) {
+    const w = windowByOrg.get(r.organisation_id);
+    if (!w || isWithinCallWindow(now, w.start, w.end, APP_TIMEZONE)) {
+      dialable.push(r);
+    } else {
+      deferrals.push({
+        id: r.id,
+        next: nextCallWindowOpen(now, w.start, APP_TIMEZONE).toISOString(),
+      });
+    }
+  }
+  if (deferrals.length > 0) {
+    await Promise.all(
+      deferrals.map((d) =>
+        admin
+          .from("shopify_recovery_attempts")
+          .update({ next_attempt_at: d.next })
+          .eq("id", d.id)
+          .eq("status", "pending"),
+      ),
+    );
+  }
+  if (dialable.length === 0) return { processed: 0, fired: 0 };
+
+  const fired = await pooledMap(dialable, CONCURRENCY, async (r) => {
     const integration = integrationByOrg.get(r.organisation_id);
     if (!integration || !integration.enabled) {
       await admin
@@ -571,7 +631,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
   const okCount = fired.filter(
     (f) => f.status === "fulfilled" && f.value.ok,
   ).length;
-  return { processed: queue.length, fired: okCount };
+  return { processed: dialable.length, fired: okCount };
 }
 
 // =============================================================================
@@ -593,7 +653,15 @@ export async function applyShopifyRecoveryOutcome(input: {
   callId: string;
   callStatus: CallStatus;
 }): Promise<void> {
-  if (!isTerminalCallStatus(input.callStatus)) return;
+  // "Connected" = the shopper actually picked up. A call is answered
+  // (`in_progress`) before it `completed`; either signal means we reached them.
+  // Reaching the customer once is the whole job — from here we never re-dial,
+  // regardless of how the call later ends. Non-connect statuses (no_answer /
+  // busy / failed-to-initiate / canceled) carry a retry verdict; ringing /
+  // initiated carry none.
+  const connected =
+    input.callStatus === "in_progress" || input.callStatus === "completed";
+  if (!connected && !isTerminalCallStatus(input.callStatus)) return;
 
   const admin = createAdminClient();
   const { data: attempt } = await admin
@@ -608,8 +676,12 @@ export async function applyShopifyRecoveryOutcome(input: {
     last_status: input.callStatus,
   };
 
-  if (input.callStatus === "completed") {
-    patch.status = "succeeded"; // we reached the shopper
+  if (connected) {
+    // Reached the shopper — done. Stamp the connect (first answer wins, since
+    // the CAS below only fires while the row is still in_flight) so we have an
+    // explicit "we spoke to them" marker and never queue another dial.
+    patch.status = "succeeded";
+    patch.connected_at = new Date().toISOString();
   } else if (attempt.attempt >= attempt.max_attempts) {
     patch.status = "failed";
   } else {

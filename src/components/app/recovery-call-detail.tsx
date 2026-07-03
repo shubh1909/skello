@@ -10,6 +10,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
+import { CallStatusBadge } from "@/components/app/recovery-badges";
 import {
   Tooltip,
   TooltipContent,
@@ -74,7 +75,7 @@ export function RecoveryCallDetail({
             {call.to_phone ?? "no phone"}
           </SheetDescription>
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <Badge variant="secondary">{call.status}</Badge>
+            <CallStatusBadge status={call.status} />
             {isFailed ? (
               <Tooltip>
                 <TooltipTrigger
