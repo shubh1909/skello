@@ -64,6 +64,13 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   const [retryMinutes, setRetryMinutes] = React.useState(
     String(Math.round((settings?.retry_interval_seconds ?? 1800) / 60)),
   );
+  // Calling window (IST). DB stores "HH:MM:SS"; <input type="time"> wants "HH:MM".
+  const [windowStart, setWindowStart] = React.useState(
+    settings?.call_window_start?.slice(0, 5) ?? "",
+  );
+  const [windowEnd, setWindowEnd] = React.useState(
+    settings?.call_window_end?.slice(0, 5) ?? "",
+  );
   const [offerType, setOfferType] = React.useState<string>(
     settings?.offer_type ?? "none",
   );
@@ -153,12 +160,20 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
 
   function onSave(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (Boolean(windowStart) !== Boolean(windowEnd)) {
+      toast.error(
+        "Set both a start and end time for the calling window, or leave both blank to call any time.",
+      );
+      return;
+    }
     startTransition(async () => {
       const res = await saveRecoverySettings({
         enabled,
         wait_minutes: Number(waitMinutes),
         max_attempts: Number(maxAttempts),
         retry_interval_seconds: Number(retryMinutes) * 60,
+        call_window_start: windowStart || null,
+        call_window_end: windowEnd || null,
         offer_type: offerType as ShopifyOfferType,
         offer_label: offerType === "none" ? null : offerLabel.trim() || null,
         offer_code: offerType === "none" ? null : offerCode.trim() || null,
@@ -237,6 +252,49 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
                 disabled={pending}
               />
             </div>
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label>Calling window (IST)</Label>
+            <div className="flex flex-wrap items-center gap-3">
+              <Input
+                type="time"
+                aria-label="Calling window start"
+                value={windowStart}
+                onChange={(e) => setWindowStart(e.target.value)}
+                disabled={pending}
+                className="w-auto"
+              />
+              <span className="text-sm text-muted-foreground">to</span>
+              <Input
+                type="time"
+                aria-label="Calling window end"
+                value={windowEnd}
+                onChange={(e) => setWindowEnd(e.target.value)}
+                disabled={pending}
+                className="w-auto"
+              />
+              {windowStart || windowEnd ? (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => {
+                    setWindowStart("");
+                    setWindowEnd("");
+                  }}
+                  disabled={pending}
+                  className="text-muted-foreground"
+                >
+                  Clear
+                </Button>
+              ) : null}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Shoppers are only called within this window (times in IST). A call
+              due outside it waits until the window next opens. Leave both blank
+              to call any time.
+            </p>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">

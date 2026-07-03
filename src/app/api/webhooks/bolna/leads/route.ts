@@ -18,6 +18,7 @@ import {
   applyCallStatusUpdate,
   mapBolnaStatus,
 } from "@/lib/bolna/status-update";
+import { isTerminalCallStatus } from "@/lib/campaigns/outcome-decision";
 import { logSkeloError, warnSkelo } from "@/lib/errors";
 
 export const runtime = "nodejs";
@@ -138,10 +139,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Only stamp ended_at once the call has actually reached a terminal state.
+    // Mid-call events (ringing / answered / in-progress) carry an `updated_at`
+    // too, and stamping it as ended_at made a live call render a bogus
+    // "Ended …/ 0s" in the UI while it was still connected.
+    const terminal = isTerminalCallStatus(mapped);
     const result = await applyCallStatusUpdate({
       bolnaCallId: externalId,
       status: mapped,
-      endedAt: parsed.data.updated_at,
+      endedAt: terminal ? parsed.data.updated_at : null,
       durationSeconds:
         typeof parsed.data.conversation_duration === "number"
           ? Math.round(parsed.data.conversation_duration)

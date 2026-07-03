@@ -50,8 +50,20 @@ export interface ShopifyRecoverySettings {
   // offer isn't a recognised price rule (manual label) or there's no offer.
   offer_discount_value: number | null;
   offer_discount_kind: ShopifyDiscountKind | null;
+  // Daily calling window (tz-naive wall clock, evaluated in APP_TIMEZONE / IST).
+  // Both null → dial around the clock. Stored as "HH:MM:SS".
+  call_window_start: string | null;
+  call_window_end: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// Read-only view of the voice agent wired to recovery, for the dashboard. Never
+// names the underlying provider — product copy says "voice agent".
+export interface RecoveryVoiceAgent {
+  name: string | null; // friendly agent label
+  callerNumber: string | null; // the number calls are placed from
+  configured: boolean; // an agent is set and enabled
 }
 
 export type RecoveryAttemptStatus =

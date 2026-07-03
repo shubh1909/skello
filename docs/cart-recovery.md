@@ -87,9 +87,12 @@ the per-client approach is fine to start with.
 3. We save that shopper as a lead, along with what was in their cart.
 4. We **wait a set amount of time** (for example, 30–60 minutes) in case they come
    back on their own.
-5. If they still haven't bought, our voice agent **calls them**, mentions the items
+5. If they still haven't bought, our voice agent **calls them** — but only within
+   the client's **calling window** if one is set (see below) — mentions the items
    they left, and offers the deal the client chose.
-6. If the shopper completes their purchase at any point, the store tells us, and we
+6. **The moment we actually reach the shopper** (they answer the call), we mark
+   them contacted and **don't call again**, even if more retries were scheduled.
+7. If the shopper completes their purchase at any point, the store tells us, and we
    **cancel the call** so we never bother a customer who already bought.
 
 ## What the shopper hears on the call
@@ -128,6 +131,9 @@ On the same admin screen, per client:
 
 - **How long to wait** before the recovery call.
 - **How many times to try** if the first call isn't answered, and how far apart.
+- **The calling window** — an optional daily time range (in **IST**) so shoppers are
+  only called during set hours; a call that falls due outside it waits until the
+  window next opens. Leave it blank to call any time.
 - **The offer** to give — chosen from the client's own Shopify data, either:
   - a **discount code** (e.g. SAVE10), or
   - a **free product** from their catalogue.
@@ -156,6 +162,9 @@ On the same admin screen, per client:
 - **No double-calling.** Even if the store sends us the same notice twice, we only
   ever schedule one recovery per cart, and we cancel it the instant the order
   completes.
+- **Reach once, then stop.** As soon as a shopper actually answers, the attempt is
+  marked contacted (`connected_at`) and no further calls go out — reaching them is
+  the whole job, so retries never dial a customer we've already spoken to.
 - **Built on what we already have.** The calling, scheduling, and retry machinery is
   the same proven system we already use for our other call features — we're plugging
   Shopify into it, not building a second system.
@@ -176,19 +185,26 @@ Everything below is implemented end-to-end:
 5. **Offers** — the client picks the discount from a **Shopify dropdown**; we
    auto-capture the discount **percentage/amount** from the price rule and
    auto-fill the redeemable **code**, so the agent can quote a real discounted total.
-6. **Dashboard** — three tabs (**Abandoned / Converted / Call history**) with
+6. **Dashboard** — three tabs (**All carts / Converted / Call history**) with
    pagination, a "callable only" filter, per-call detail drawer (recording +
    transcript + extracted data), and headline stats with **strict ROI attribution**.
+   The **All carts** tab carries a **Cart** column badging each cart's outcome
+   (**Abandoned / Recovered · by us / Recovered · organic**), and call statuses use
+   **event-based colors** (green = in call, blue = connected, red = failed, etc.).
 7. **Lifecycle controls** — **Start / Resume / Stop** (Stop also cancels queued
    calls) and **CSV export**, plus a **Cart Recovery sidebar sub-item** shown only
    while the feature is switched on.
-8. **Visibility elsewhere** — a read-only **Shopify store** card on the owner's
-   Settings page (store link, API version, scopes, status), and a **Cart Recovery
-   source** in the admin analytics builder for charting abandoned/recovered carts
-   and cart value.
+8. **Calling window** — an optional per-org daily time range (IST); the dispatcher
+   defers out-of-window calls to the next window open instead of dropping them.
+9. **Voice agent card** — a read-only summary on the recovery page showing the
+   connected agent's name and the number calls are placed from.
+10. **Visibility elsewhere** — a read-only **Shopify store** card on the owner's
+    Settings page (store link, API version, scopes, status), and a **Cart Recovery
+    source** in the admin analytics builder for charting abandoned/recovered carts
+    and cart value.
 
-Not yet done: automated tests for the call-retry decisions (the security + cart
-reading are tested), and the optional switch to one shared Skelo app.
+Not yet done: automated tests for the call-retry decisions (the calling-window,
+security + cart reading are tested), and the optional switch to one shared Skelo app.
 
 ## Technical integration (how it actually works)
 
@@ -221,28 +237,37 @@ scheduleRecoveryFromCheckout()
    ▼
 Cron tick  POST /api/cron/campaigns/tick   (x-cron-secret; ~once a minute)
    │  dispatchDueRecoveries()  lib/shopify/recovery.ts
+   │    calling-window gate: rows outside their org's window are deferred to the
+   │      next window open (isWithinCallWindow / nextCallWindowOpen, IST)
    │    CAS-claim the row (pending → in_flight), build the agent variables,
    │    initiateBolnaCall(user_data), insert a calls row, apply retry rules
    ▼
-Bolna places the call → post-call webhook → recordOutboundResult()  lib/bolna/outbound.ts
-   │    writes transcript/recording/summary + extracted fields onto the call
-   └─ applyShopifyRecoveryOutcome()  advances the attempt (reached → succeeded)
+Bolna places the call → status + post-call webhooks
+   │  applyCallStatusUpdate()  lib/bolna/status-update.ts   (lifecycle events)
+   │  recordOutboundResult()   lib/bolna/outbound.ts        (final: transcript…)
+   └─ applyShopifyRecoveryOutcome()  advances the attempt:
+        · connect (answered OR completed) → succeeded + connected_at, never re-dialled
+        · technical miss (no_answer / busy / failed) → retries under the cap
+        · order placed (orders/create) → canceled + converted_at
 ```
 
 ### Data model
 
 - **`shopify_recovery_settings`** (one row per org) — the levers: `enabled`,
-  `wait_minutes`, `max_attempts`, `retry_interval_seconds`, `agent_id`, and the
+  `wait_minutes`, `max_attempts`, `retry_interval_seconds`, `agent_id`, the
   offer (`offer_type`, `offer_code`, `offer_label`, `offer_discount_value`,
-  `offer_discount_kind`).
+  `offer_discount_kind`), and the optional **calling window**
+  (`call_window_start`, `call_window_end` — tz-naive `time`s evaluated in
+  `APP_TIMEZONE`/IST; both null → dial around the clock).
 - **`shopify_recovery_attempts`** (one row per `(org, checkout_token)`) — the queue
   + activity log. Holds the cart snapshot (`customer_name`, `email`, `phone`,
   `marketing_consent`, `cart_total`, `currency`, `cart_items`, `recovery_url`),
   the offer snapshot, the state machine (`status`, `attempt`, `next_attempt_at`,
-  `scheduled_at`, `canceled_at`, `converted_at`), and links (`lead_id`,
-  `last_call_id`). `status ∈ pending | in_flight | succeeded | failed | canceled |
-  skipped`. Unique `(organisation_id, checkout_token)` makes webhook retries
-  idempotent (no double-calling).
+  `scheduled_at`, `canceled_at`, `converted_at`, `connected_at`), and links
+  (`lead_id`, `last_call_id`). `status ∈ pending | in_flight | succeeded | failed |
+  canceled | skipped`; `connected_at` is stamped the first time a dial is answered
+  or completes (→ `succeeded`, no further dials). Unique `(organisation_id,
+  checkout_token)` makes webhook retries idempotent (no double-calling).
 - **`calls.shopify_recovery_attempt_id`** — the seam back from the dial pipeline;
   lets a call outcome advance the recovery attempt.
 
@@ -296,18 +321,35 @@ other conversion (bought before we called, never connected) is shown as
 **Organic** on the Converted tab and excluded from ROI. `converted_at` itself is
 set by the `orders/create` webhook matching the checkout token.
 
+**Reach-once, then stop** (`applyShopifyRecoveryOutcome`): "connected" means the
+dial was **answered** (`in_progress`) or **completed** — either signal stamps
+`connected_at`, flips the attempt to `succeeded`, and stops all further dials. Only
+genuine non-connects (`no_answer` / `busy` / initiation `failed`) re-arm for a
+retry under the cap. Keying the stop on *answered* (not just a clean `completed`)
+means an answered-then-dropped call still counts as reached. A converted cart is
+likewise never re-dialled — `cancelRecoveryForOrder` cancels the pending attempt,
+and the dispatcher additionally skips any row with `converted_at` set.
+
 ### The dashboard
 
 - **Stats** (`getRecoveryOverview`): Carts abandoned (actioned, excludes skipped),
   Calls made, Recovered via call (attributed), Revenue recovered (attributed).
+  `getRecoveryOverview` also returns a read-only **voice agent** summary (agent
+  label from `voice_agents`, caller number from `bolna_integrations`) rendered by
+  `RecoveryAgentCard` — never names the provider.
 - **Tabs** (`CartRecoveryWorkspace`), each paginated (`getAbandonedCarts`,
-  `getConvertedCarts`, `getRecoveryCalls`, 20/page):
-  - **Abandoned** — all non-converted carts; "callable only" filter hides
+  `getConvertedCarts`, `getRecoveryCalls`, 20/page) and **live** (Supabase
+  realtime on `shopify_recovery_attempts` + `calls`, debounced):
+  - **All carts** — every cart (converted or not); "callable only" filter hides
     skipped/no-phone. Columns include phone, cart value, products, offer, attempts,
-    status, and abandoned / next-call timestamps.
+    the pipeline **Status**, a **Cart** outcome badge (**Abandoned / Recovered · by
+    us / Recovered · organic**, via `CartOutcomeBadge` + `attributedAttemptIds`),
+    and abandoned / next-call timestamps.
   - **Converted** — flags each as **Call-driven** vs **Organic**; recovered-at time.
-  - **Call history** — one row per dial; a row opens a **detail drawer** with the
-    recording player, full transcript, extracted lead fields, and the cart.
+  - **Call history** — one row per dial, status shown with an event-based colored
+    badge (`CallStatusBadge`); a row opens a **detail drawer** with the recording
+    player, full transcript, extracted lead fields, and the cart. The drawer stays
+    live while open (re-derives from the refreshed row).
 - **Controls** (`CartRecoveryControls`): Start/Resume (`setRecoveryRunning(true)`),
   Stop (`setRecoveryRunning(false)` — also cancels queued attempts), Export CSV
   (`exportRecoveryAttempts`).
@@ -353,14 +395,16 @@ set by the `orders/create` webhook matching the checkout token.
 | Webhook entry | `app/api/webhooks/shopify/route.ts` |
 | Normalize + HMAC | `lib/shopify/webhooks.ts` |
 | Schedule / dispatch / outcome | `lib/shopify/recovery.ts` |
+| Calling-window logic (+ tests) | `lib/shopify/call-window.ts` · `call-window.test.ts` |
 | Shopify Admin client (price rules, codes, webhooks) | `lib/shopify/client.ts` |
-| Bolna call client | `lib/bolna/client.ts` · `lib/bolna/outbound.ts` |
+| Bolna call client + lifecycle | `lib/bolna/client.ts` · `lib/bolna/outbound.ts` · `lib/bolna/status-update.ts` |
 | Server actions (settings, tabs, controls, export) | `actions/shopify-recovery.ts` |
 | Org Shopify status (read-only) | `actions/shopify.ts` · `components/app/shopify-status-card.tsx` |
 | Admin analytics source | `actions/admin/dashboard-catalog.ts` · `lib/validations/dashboard-widget.ts` |
 | Dashboard UI | `components/app/cart-recovery-*.tsx`, `recovery-call-detail.tsx` |
+| Status/outcome badges · voice agent card | `components/app/recovery-badges.tsx` · `recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
-| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702000000_dashboard_recovery_source.sql` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql` |
 
 ## Going live: setup checklist
 
@@ -374,9 +418,12 @@ set by the `orders/create` webhook matching the checkout token.
 - Apply the database changes: `npx supabase db push`. The recovery feature spans
   the `shopify_*` migrations plus the recent additive ones — offer discount
   (`offer_discount_value/kind` on settings + attempts), `email`, and
-  `marketing_consent` on `shopify_recovery_attempts` — and
-  `20260702000000_dashboard_recovery_source.sql`, which teaches the admin
-  analytics builder the `recovery` source.
+  `marketing_consent` on `shopify_recovery_attempts`;
+  `20260702000000_dashboard_recovery_source.sql` (admin analytics `recovery`
+  source); `20260702000001_recovery_realtime.sql` (publishes the tables for live
+  dashboard updates); `20260703000000_recovery_connected_at.sql` (the reach-once
+  marker); and `20260703000001_recovery_call_window.sql` (the calling-window
+  columns).
 
 **Per client:**
 

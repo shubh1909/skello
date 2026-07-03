@@ -19,6 +19,7 @@ import type {
   RecoveryCartItem,
   RecoveryMetrics,
   RecoveryPage,
+  RecoveryVoiceAgent,
   ShopifyOfferOption,
   ShopifyRecoverySettings,
 } from "@/types/shopify";
@@ -27,10 +28,11 @@ export interface RecoveryOverview {
   connected: boolean;
   settings: ShopifyRecoverySettings | null;
   metrics: RecoveryMetrics;
+  voiceAgent: RecoveryVoiceAgent | null;
 }
 
 const SETTINGS_COLUMNS =
-  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, created_at, updated_at";
+  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
   "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at";
@@ -91,6 +93,7 @@ export async function getRecoveryOverview(): Promise<
   const [
     integrationRes,
     settingsRes,
+    bolnaRes,
     abandonedRes,
     callsMadeRes,
     convertedRes,
@@ -105,6 +108,16 @@ export async function getRecoveryOverview(): Promise<
       .select(SETTINGS_COLUMNS)
       .eq("organisation_id", orgId)
       .maybeSingle<ShopifyRecoverySettings>(),
+    // Voice-agent wiring for the read-only card (caller number + default agent).
+    admin
+      .from("bolna_integrations")
+      .select("agent_id, from_phone_number, enabled")
+      .eq("organisation_id", orgId)
+      .maybeSingle<{
+        agent_id: string | null;
+        from_phone_number: string | null;
+        enabled: boolean;
+      }>(),
     // Actioned carts (excludes skipped) — closer to Shopify's "abandoned".
     admin
       .from("shopify_recovery_attempts")
@@ -138,6 +151,26 @@ export async function getRecoveryOverview(): Promise<
   const attributedRows = converted.filter((r) => attributed.has(r.id));
   const revenue = attributedRows.reduce((sum, r) => sum + (r.cart_total ?? 0), 0);
 
+  // Resolve the voice agent recovery dials from: the recovery override, else the
+  // org's default agent. Its friendly name comes from the voice_agents registry.
+  const bolna = bolnaRes.data;
+  const effectiveAgentId =
+    settingsRes.data?.agent_id?.trim() || bolna?.agent_id?.trim() || null;
+  let agentName: string | null = null;
+  if (effectiveAgentId) {
+    const { data: agentRow } = await admin
+      .from("voice_agents")
+      .select("label")
+      .eq("agent_id", effectiveAgentId)
+      .maybeSingle<{ label: string | null }>();
+    agentName = agentRow?.label ?? null;
+  }
+  const voiceAgent: RecoveryVoiceAgent = {
+    name: agentName,
+    callerNumber: bolna?.from_phone_number ?? null,
+    configured: Boolean(effectiveAgentId && bolna?.enabled),
+  };
+
   const metrics: RecoveryMetrics = {
     abandoned: abandonedRes.count ?? 0,
     calls_made: callsMadeRes.count ?? 0,
@@ -156,6 +189,7 @@ export async function getRecoveryOverview(): Promise<
     ),
     settings: settingsRes.data ?? null,
     metrics,
+    voiceAgent,
   });
 }
 
@@ -190,6 +224,17 @@ const settingsSchema = z.object({
   // quotes the cart total without a discounted figure.
   offer_discount_value: z.number().min(0).nullable().optional(),
   offer_discount_kind: z.enum(["percentage", "fixed_amount"]).nullable().optional(),
+  // Daily calling window (IST). "HH:MM" from the UI; both null → no restriction.
+  call_window_start: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM")
+    .nullable()
+    .optional(),
+  call_window_end: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM")
+    .nullable()
+    .optional(),
 });
 
 // The org tunes its own offer + timing. Org resolved from the session; the
@@ -226,6 +271,15 @@ export async function saveRecoverySettings(
           parsed.data.offer_type === "none"
             ? null
             : parsed.data.offer_discount_kind ?? null,
+        // Window is both-or-neither: a partial range means "no restriction".
+        call_window_start:
+          parsed.data.call_window_start && parsed.data.call_window_end
+            ? parsed.data.call_window_start
+            : null,
+        call_window_end:
+          parsed.data.call_window_start && parsed.data.call_window_end
+            ? parsed.data.call_window_end
+            : null,
       },
       { onConflict: "organisation_id" },
     )
@@ -468,8 +522,9 @@ function pageRange(page: number): [number, number] {
   return [from, from + PAGE_SIZE - 1];
 }
 
-// Abandoned = not yet converted (any status). `callableOnly` hides carts we
-// can't dial (skipped / no phone).
+// The carts view — every cart we recorded, converted or not, so the table can
+// show each one's outcome (still abandoned / recovered by us / recovered
+// organically). `callableOnly` hides carts we can't dial (skipped / no phone).
 export async function getAbandonedCarts(
   input: unknown,
 ): Promise<ActionResult<RecoveryPage<RecoveryAttemptRow>>> {
@@ -482,8 +537,7 @@ export async function getAbandonedCarts(
   let query = admin
     .from("shopify_recovery_attempts")
     .select(ATTEMPT_COLUMNS, { count: "exact" })
-    .eq("organisation_id", session.organisation.id)
-    .is("converted_at", null);
+    .eq("organisation_id", session.organisation.id);
   if (parsed.data.callableOnly) {
     query = query.neq("status", "skipped").not("phone", "is", null);
   }
@@ -502,7 +556,21 @@ export async function getAbandonedCarts(
       }),
     );
   }
-  return ok({ rows: data ?? [], total: count ?? 0 });
+
+  // Flag the converted rows on this page as call-attributed (strict ROI) or
+  // organic, so the table's cart-status column can distinguish "recovered by us".
+  const rows = data ?? [];
+  const convertedOnPage = rows.filter((r) => r.converted_at);
+  const attributed = await attributedAttemptIds(
+    admin,
+    convertedOnPage.map((r) => ({ id: r.id, converted_at: r.converted_at })),
+  );
+  return ok({
+    rows: rows.map((r) =>
+      r.converted_at ? { ...r, attributed: attributed.has(r.id) } : r,
+    ),
+    total: count ?? 0,
+  });
 }
 
 // Converted = order placed against the checkout. Each row is flagged as
