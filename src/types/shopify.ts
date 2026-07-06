@@ -54,8 +54,51 @@ export interface ShopifyRecoverySettings {
   // Both null → dial around the clock. Stored as "HH:MM:SS".
   call_window_start: string | null;
   call_window_end: string | null;
+  // Channels. Defaults reproduce voice-only behaviour (voice on, WhatsApp off).
+  // first_channel goes first; the other escalates after escalation_gap_minutes
+  // if the cart hasn't converted.
+  voice_enabled: boolean;
+  whatsapp_enabled: boolean;
+  first_channel: RecoveryChannel;
+  escalation_gap_minutes: number;
+  // Optional per-org template override; null → the integration's default.
+  whatsapp_template_name: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type RecoveryChannel = "whatsapp" | "voice";
+
+// Read-only view of the WhatsApp channel for the dashboard card. Never names the
+// underlying provider — product copy says "WhatsApp".
+export interface RecoveryWhatsAppStatus {
+  configured: boolean; // integration present, enabled, and a template is set
+  enabled: boolean; // whatsapp_enabled in recovery settings
+  sender: string | null;
+  templateName: string | null;
+}
+
+export type RecoveryMessageStatus =
+  | "queued"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed";
+
+// One WhatsApp send for a cart (the whatsapp equivalent of a RecoveryCallRow),
+// shown in the cart detail drawer timeline.
+export interface RecoveryMessageRow {
+  id: string;
+  to_phone: string | null;
+  template_name: string | null;
+  provider: string;
+  provider_message_id: string | null;
+  status: RecoveryMessageStatus;
+  error_message: string | null;
+  sent_at: string | null;
+  delivered_at: string | null;
+  read_at: string | null;
+  created_at: string;
 }
 
 // Read-only view of the voice agent wired to recovery, for the dashboard. Never
@@ -106,10 +149,22 @@ export interface RecoveryAttemptRow {
   next_attempt_at: string | null;
   canceled_at: string | null;
   converted_at: string | null;
+  // WhatsApp channel track (parallel to the voice status/attempt fields above).
+  whatsapp_status: RecoveryWhatsAppTrackStatus;
+  whatsapp_sent_at: string | null;
   // Converted tab only: was the conversion attributable to a completed call
   // that ended before the order (strict ROI attribution)?
   attributed?: boolean;
 }
+
+export type RecoveryWhatsAppTrackStatus =
+  | "none"
+  | "pending"
+  | "in_flight"
+  | "sent"
+  | "failed"
+  | "skipped"
+  | "canceled";
 
 // One recovery call, enriched with its cart + lead context for the call-history
 // tab. Extracted fields are null until the post-call webhook fills them.

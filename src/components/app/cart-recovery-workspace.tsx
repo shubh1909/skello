@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2Icon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -15,10 +15,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
+  AttemptStatusBadge,
   CallStatusBadge,
   CartOutcomeBadge,
+  WhatsAppStatusBadge,
 } from "@/components/app/recovery-badges";
 import { RecoveryCallDetail } from "@/components/app/recovery-call-detail";
+import { RecoveryCartDetail } from "@/components/app/recovery-cart-detail";
 import {
   formatDateTime,
   formatDuration,
@@ -28,21 +31,11 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   RecoveryAttemptRow,
-  RecoveryAttemptStatus,
   RecoveryCallRow,
   RecoveryPage,
 } from "@/types/shopify";
 
 type TabKey = "abandoned" | "converted" | "calls";
-
-const STATUS_META: Record<RecoveryAttemptStatus, { label: string; className: string }> = {
-  pending: { label: "Waiting", className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300" },
-  in_flight: { label: "Calling", className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300" },
-  succeeded: { label: "Reached", className: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" },
-  failed: { label: "Not reached", className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300" },
-  canceled: { label: "Stopped", className: "bg-muted text-muted-foreground" },
-  skipped: { label: "Skipped", className: "bg-muted text-muted-foreground" },
-};
 
 interface Props {
   organisationId: string;
@@ -65,7 +58,9 @@ export function CartRecoveryWorkspace({
   const [abandoned, setAbandoned] = React.useState(initialAbandoned.rows);
   const [abandonedTotal, setAbandonedTotal] = React.useState(initialAbandoned.total);
   const [abandonedPage, setAbandonedPage] = React.useState(0);
-  const [callableOnly, setCallableOnly] = React.useState(false);
+  const [abandonedSort, setAbandonedSort] = React.useState<"asc" | "desc">(
+    "desc",
+  );
 
   const [converted, setConverted] = React.useState(initialConverted.rows);
   const [convertedTotal, setConvertedTotal] = React.useState(initialConverted.total);
@@ -79,6 +74,12 @@ export function CartRecoveryWorkspace({
   // the call has been paged out of the loaded `calls` list.
   const [activeCall, setActiveCall] = React.useState<RecoveryCallRow | null>(null);
   const [detailOpen, setDetailOpen] = React.useState(false);
+
+  // Cart-level drawer (opened from an All carts / Converted row).
+  const [activeCart, setActiveCart] = React.useState<RecoveryAttemptRow | null>(
+    null,
+  );
+  const [cartDetailOpen, setCartDetailOpen] = React.useState(false);
 
   // Keep the open detail sheet live: when realtime refreshes the calls page the
   // held snapshot goes stale (status, duration, transcript, …). Derive the
@@ -95,12 +96,12 @@ export function CartRecoveryWorkspace({
   const abandonedPageRef = React.useRef(abandonedPage);
   const convertedPageRef = React.useRef(convertedPage);
   const callsPageRef = React.useRef(callsPage);
-  const callableOnlyRef = React.useRef(callableOnly);
+  const abandonedSortRef = React.useRef(abandonedSort);
   React.useEffect(() => {
     abandonedPageRef.current = abandonedPage;
     convertedPageRef.current = convertedPage;
     callsPageRef.current = callsPage;
-    callableOnlyRef.current = callableOnly;
+    abandonedSortRef.current = abandonedSort;
   });
 
   // Re-pull page 0 of each tab (respecting the callable filter) + refresh the
@@ -108,7 +109,7 @@ export function CartRecoveryWorkspace({
   const refreshTabs = React.useCallback(() => {
     startTransition(async () => {
       const [a, c, ca] = await Promise.all([
-        getAbandonedCarts({ page: 0, callableOnly: callableOnlyRef.current }),
+        getAbandonedCarts({ page: 0, sort: abandonedSortRef.current }),
         getConvertedCarts({ page: 0 }),
         getRecoveryCalls({ page: 0 }),
       ]);
@@ -171,7 +172,7 @@ export function CartRecoveryWorkspace({
   function loadMoreAbandoned() {
     const next = abandonedPage + 1;
     startTransition(async () => {
-      const res = await getAbandonedCarts({ page: next, callableOnly });
+      const res = await getAbandonedCarts({ page: next, sort: abandonedSort });
       if (!res.success) {
         toast.error(res.error);
         return;
@@ -182,10 +183,11 @@ export function CartRecoveryWorkspace({
     });
   }
 
-  function toggleCallable(value: boolean) {
-    setCallableOnly(value);
+  function toggleAbandonedSort() {
+    const nextSort = abandonedSort === "desc" ? "asc" : "desc";
+    setAbandonedSort(nextSort);
     startTransition(async () => {
-      const res = await getAbandonedCarts({ page: 0, callableOnly: value });
+      const res = await getAbandonedCarts({ page: 0, sort: nextSort });
       if (!res.success) {
         toast.error(res.error);
         return;
@@ -229,8 +231,13 @@ export function CartRecoveryWorkspace({
     setDetailOpen(true);
   }
 
+  function openCart(cart: RecoveryAttemptRow) {
+    setActiveCart(cart);
+    setCartDetailOpen(true);
+  }
+
   const tabs: { key: TabKey; label: string; count: number }[] = [
-    { key: "abandoned", label: "All carts", count: abandonedTotal },
+    { key: "abandoned", label: "Carts", count: abandonedTotal },
     { key: "converted", label: "Converted", count: convertedTotal },
     { key: "calls", label: "Call history", count: callsTotal },
   ];
@@ -259,18 +266,6 @@ export function CartRecoveryWorkspace({
           ))}
         </div>
 
-        {tab === "abandoned" ? (
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={callableOnly}
-              onChange={(e) => toggleCallable(e.target.checked)}
-              disabled={pending}
-              className="size-4 accent-foreground"
-            />
-            Callable only
-          </label>
-        ) : null}
       </div>
 
       {tab === "abandoned" ? (
@@ -280,6 +275,9 @@ export function CartRecoveryWorkspace({
           total={abandonedTotal}
           pending={pending}
           onLoadMore={loadMoreAbandoned}
+          onOpen={openCart}
+          sort={abandonedSort}
+          onToggleSort={toggleAbandonedSort}
         />
       ) : tab === "converted" ? (
         <CartTable
@@ -288,6 +286,7 @@ export function CartRecoveryWorkspace({
           total={convertedTotal}
           pending={pending}
           onLoadMore={loadMoreConverted}
+          onOpen={openCart}
         />
       ) : (
         <CallTable
@@ -298,6 +297,13 @@ export function CartRecoveryWorkspace({
           onOpen={openCall}
         />
       )}
+
+      <RecoveryCartDetail
+        cart={activeCart}
+        open={cartDetailOpen}
+        onOpenChange={setCartDetailOpen}
+        onOpenCall={openCall}
+      />
 
       <RecoveryCallDetail
         call={displayedCall}
@@ -373,12 +379,18 @@ function CartTable({
   total,
   pending,
   onLoadMore,
+  onOpen,
+  sort,
+  onToggleSort,
 }: {
   rows: RecoveryAttemptRow[];
   variant: "abandoned" | "converted";
   total: number;
   pending: boolean;
   onLoadMore: () => void;
+  onOpen: (cart: RecoveryAttemptRow) => void;
+  sort?: "asc" | "desc";
+  onToggleSort?: () => void;
 }) {
   const isConverted = variant === "converted";
   const colSpan = isConverted ? 9 : 10;
@@ -400,7 +412,24 @@ function CartTable({
               <th className="px-4 py-3 font-medium">
                 {isConverted ? "Recovery" : "Status"}
               </th>
-              <th className="px-4 py-3 font-medium">Abandoned</th>
+              <th className="px-4 py-3 font-medium">
+                {!isConverted && onToggleSort ? (
+                  <button
+                    type="button"
+                    onClick={onToggleSort}
+                    className="inline-flex items-center gap-1 font-medium uppercase tracking-wider transition-colors hover:text-foreground"
+                  >
+                    Abandoned
+                    {sort === "asc" ? (
+                      <ArrowUpIcon className="size-3.5" />
+                    ) : (
+                      <ArrowDownIcon className="size-3.5" />
+                    )}
+                  </button>
+                ) : (
+                  "Abandoned"
+                )}
+              </th>
               <th className="px-4 py-3 font-medium">
                 {isConverted ? "Recovered" : "Next call"}
               </th>
@@ -413,7 +442,11 @@ function CartTable({
               </EmptyRow>
             ) : (
               rows.map((r) => (
-                <tr key={r.id} className="align-middle">
+                <tr
+                  key={r.id}
+                  className="cursor-pointer align-middle hover:bg-muted/30"
+                  onClick={() => onOpen(r)}
+                >
                   <td className="px-4 py-3">
                     <Shopper row={r} />
                   </td>
@@ -450,16 +483,17 @@ function CartTable({
                         <Badge variant="secondary">Organic</Badge>
                       )
                     ) : (
-                      <>
-                        <Badge className={STATUS_META[r.status].className}>
-                          {STATUS_META[r.status].label}
-                        </Badge>
-                        {r.status === "skipped" && r.skip_reason ? (
-                          <span className="ml-2 text-[11px] text-muted-foreground">
-                            {r.skip_reason.replace(/_/g, " ")}
-                          </span>
-                        ) : null}
-                      </>
+                      <div className="flex flex-col items-start gap-1">
+                        <div className="flex items-center gap-1.5">
+                          <AttemptStatusBadge status={r.status} />
+                          {r.status === "skipped" && r.skip_reason ? (
+                            <span className="text-[11px] text-muted-foreground">
+                              {r.skip_reason.replace(/_/g, " ")}
+                            </span>
+                          ) : null}
+                        </div>
+                        <WhatsAppStatusBadge status={r.whatsapp_status} />
+                      </div>
                     )}
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">

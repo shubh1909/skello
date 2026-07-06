@@ -8,6 +8,7 @@ import { CartRecoveryDashboard } from "@/components/app/cart-recovery-dashboard"
 import { CartRecoverySettingsForm } from "@/components/app/cart-recovery-settings-form";
 import { CartRecoveryWorkspace } from "@/components/app/cart-recovery-workspace";
 import { RecoveryAgentCard } from "@/components/app/recovery-agent-card";
+import { RecoveryWhatsAppCard } from "@/components/app/recovery-whatsapp-card";
 import {
   getAbandonedCarts,
   getConvertedCarts,
@@ -43,7 +44,7 @@ export default async function CartRecoveryTemplatePage() {
     );
   }
 
-  const { connected, settings, metrics, voiceAgent } = overview.data;
+  const { connected, settings, metrics, voiceAgent, whatsApp } = overview.data;
   const abandoned: RecoveryPage<RecoveryAttemptRow> = abandonedRes.success
     ? abandonedRes.data
     : EMPTY_PAGE;
@@ -82,6 +83,7 @@ export default async function CartRecoveryTemplatePage() {
           running={settings?.enabled ?? false}
           hasHistory={metrics.abandoned > 0}
           connected={connected}
+          whatsAppReady={Boolean(whatsApp?.configured && whatsApp?.enabled)}
         />
       </header>
 
@@ -95,7 +97,10 @@ export default async function CartRecoveryTemplatePage() {
       <CartRecoveryDashboard metrics={metrics} />
 
       <section className="grid gap-3">
-        <RecoveryAgentCard voiceAgent={voiceAgent} />
+        <div className="grid gap-3 md:grid-cols-2">
+          <RecoveryAgentCard voiceAgent={voiceAgent} />
+          <RecoveryWhatsAppCard whatsApp={whatsApp} />
+        </div>
         <CartRecoverySettingsForm settings={settings} connected={connected} />
       </section>
 

@@ -270,6 +270,57 @@ Bolna places the call → status + post-call webhooks
   checkout_token)` makes webhook retries idempotent (no double-calling).
 - **`calls.shopify_recovery_attempt_id`** — the seam back from the dial pipeline;
   lets a call outcome advance the recovery attempt.
+- **`whatsapp_integrations`** (one row per org) — the WhatsApp BSP connection:
+  `provider` (default `kwikengage`), `api_token`, `base_url`, `sender_id`,
+  `template_name`, `enabled`. RLS with no authenticated policies (service-role
+  only), like `bolna_integrations`.
+- **`shopify_recovery_messages`** (WhatsApp send ledger, the WhatsApp analogue of
+  `calls`) — `shopify_recovery_attempt_id` seam, `to_phone`, `template_name`,
+  `provider`, `provider_message_id`, `status ∈ queued|sent|delivered|read|failed`,
+  timestamps. Unique `(organisation_id, provider_message_id)` makes delivery
+  webhooks idempotent.
+
+### Channels: voice + WhatsApp
+
+Cart recovery can work a cart over **two channels on the same attempt row** — a
+voice call (Bolna) and a WhatsApp message (KwikEngage BSP). WhatsApp is a
+**parallel track** on `shopify_recovery_attempts` (`whatsapp_status`,
+`whatsapp_attempt`, `whatsapp_next_at`, `whatsapp_sent_at`,
+`last_whatsapp_message_id`, `whatsapp_skip_reason`), drained by
+`dispatchDueWhatsAppRecoveries()` (`lib/shopify/whatsapp-recovery.ts`) on the
+same cron tick. The voice state machine is untouched.
+
+- **Config** (`shopify_recovery_settings`): `voice_enabled`, `whatsapp_enabled`
+  (default off — existing orgs stay voice-only), `first_channel`
+  (`whatsapp`|`voice`), `escalation_gap_minutes`, `whatsapp_template_name`
+  (optional override of the integration default).
+- **Scheduling** (`scheduleRecoveryFromCheckout`): the first channel fires at
+  `now + wait_minutes`; the second escalates by `escalation_gap_minutes` — but
+  only if the cart hasn't converted. On a WhatsApp send the voice follow-up is
+  re-anchored to gap-after-send (CAS-guarded on `status='pending'`).
+- **Template-gated & configurable:** WhatsApp needs a Meta-approved template.
+  Until `template_name` is set the WhatsApp track is `skipped` (`no_template`)
+  and voice still runs. The send call is wired to **Tellephant** (the API behind
+  KwikEngage/Kwikchat): `POST {base}/v1/send-message` with `apikey` in the body
+  (+ `X-api-key` header), `to` as bare digits, and body variables mapped into
+  Meta-style `components`. The endpoint/payload + positional variable order
+  (`TEMPLATE_VARIABLE_ORDER`) live in ONE place — `lib/kwikengage/client.ts`
+  `buildTemplateRequest()`. Variables come from the shared
+  `buildRecoveryVariables()`. Base URL default `https://api.tellephant.com`
+  (override per-org via the integration's `base_url`).
+- **Provider-agnostic:** a `provider` column + `lib/whatsapp/registry.ts` mean a
+  different org can use a different BSP later — add an adapter + webhook route,
+  no schema change.
+- **Consent:** message everyone with a phone (consent recorded, not gating) —
+  same policy as voice. `delivered`/`read` are informational; only `converted_at`
+  (the order webhook) stops the sequence, which also cancels the WhatsApp track.
+- **Triggers:** automatic (cron, like voice) **and** a manual bulk
+  `sendWhatsAppToAbandonedCarts()` ("Send WhatsApp" control) that queues eligible
+  carts for the next tick.
+- **Delivery webhook:** `POST /api/webhooks/kwikengage` (shared secret via
+  `x-kwikengage-signature` header or `?secret=`) → `applyWhatsAppDeliveryUpdate()`
+  advances the ledger row + track (monotonic, idempotent by
+  `provider_message_id`). Inbound replies are out of scope for v1.
 
 ### Conversation context (what we send the agent)
 
@@ -395,6 +446,11 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Webhook entry | `app/api/webhooks/shopify/route.ts` |
 | Normalize + HMAC | `lib/shopify/webhooks.ts` |
 | Schedule / dispatch / outcome | `lib/shopify/recovery.ts` |
+| WhatsApp dispatch + delivery outcome | `lib/shopify/whatsapp-recovery.ts` |
+| WhatsApp provider seam + registry | `lib/whatsapp/provider.ts` · `lib/whatsapp/registry.ts` |
+| KwikEngage client + webhook parse (+ test) | `lib/kwikengage/client.ts` · `webhook.ts` · `ip-allowlist.ts` |
+| WhatsApp delivery webhook | `app/api/webhooks/kwikengage/route.ts` |
+| WhatsApp integration (connect) | `actions/whatsapp-integrations.ts` · `components/app/whatsapp-integration-card.tsx` |
 | Calling-window logic (+ tests) | `lib/shopify/call-window.ts` · `call-window.test.ts` |
 | Shopify Admin client (price rules, codes, webhooks) | `lib/shopify/client.ts` |
 | Bolna call client + lifecycle | `lib/bolna/client.ts` · `lib/bolna/outbound.ts` · `lib/bolna/status-update.ts` |
@@ -404,7 +460,7 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Dashboard UI | `components/app/cart-recovery-*.tsx`, `recovery-call-detail.tsx` |
 | Status/outcome badges · voice agent card | `components/app/recovery-badges.tsx` · `recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
-| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql` |
 
 ## Going live: setup checklist
 
@@ -415,6 +471,8 @@ and the dispatcher additionally skips any row with `converted_at` set.
 - Set `SHOPIFY_WEBHOOK_ADDRESS` to `https://app.skelo.team/api/webhooks/shopify`
   (the address Shopify sends alerts to; the "Register webhooks" button uses it).
 - Ensure `CRON_SECRET` is set (guards the once-a-minute dispatch tick).
+- For WhatsApp: set `KWIKENGAGE_WEBHOOK_SECRET` (the delivery-webhook shared
+  secret); optionally `KWIKENGAGE_API_BASE_URL` and `KWIKENGAGE_WEBHOOK_ALLOWED_IPS`.
 - Apply the database changes: `npx supabase db push`. The recovery feature spans
   the `shopify_*` migrations plus the recent additive ones — offer discount
   (`offer_discount_value/kind` on settings + attempts), `email`, and
@@ -441,6 +499,15 @@ and the dispatcher additionally skips any row with `converted_at` set.
    `{customer_name}`, `{cart_summary}`, `{cart_total}`, `{discounted_cart_total}`,
    `{discount_code}`. We send the data regardless, but the agent only *says* the
    variables the script mentions.
+5. **WhatsApp (optional channel)** — in **Settings → WhatsApp**, connect the API
+   token, sender, and the **Meta-approved template name**. In the BSP dashboard
+   (KwikEngage → Integrations → Webhook), point the delivery webhook at
+   `https://app.skelo.team/api/webhooks/kwikengage?secret=<KWIKENGAGE_WEBHOOK_SECRET>`.
+   Then on the Cart Recovery page enable **WhatsApp** under Channels, pick the
+   order (WhatsApp-first or Call-first) and the escalation gap. Without an
+   approved template the WhatsApp track is skipped and voice still runs. The
+   template's positional variable order is set in `lib/kwikengage/client.ts`
+   (`TEMPLATE_VARIABLE_ORDER`).
 
 ## How to test it
 

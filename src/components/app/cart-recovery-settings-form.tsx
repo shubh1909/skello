@@ -71,6 +71,22 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   const [windowEnd, setWindowEnd] = React.useState(
     settings?.call_window_end?.slice(0, 5) ?? "",
   );
+  // Channels.
+  const [voiceEnabled, setVoiceEnabled] = React.useState(
+    settings?.voice_enabled ?? true,
+  );
+  const [whatsappEnabled, setWhatsappEnabled] = React.useState(
+    settings?.whatsapp_enabled ?? false,
+  );
+  const [firstChannel, setFirstChannel] = React.useState<string>(
+    settings?.first_channel ?? "whatsapp",
+  );
+  const [escalationGap, setEscalationGap] = React.useState(
+    String(settings?.escalation_gap_minutes ?? 30),
+  );
+  const [whatsappTemplate, setWhatsappTemplate] = React.useState(
+    settings?.whatsapp_template_name ?? "",
+  );
   const [offerType, setOfferType] = React.useState<string>(
     settings?.offer_type ?? "none",
   );
@@ -174,6 +190,11 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
         retry_interval_seconds: Number(retryMinutes) * 60,
         call_window_start: windowStart || null,
         call_window_end: windowEnd || null,
+        voice_enabled: voiceEnabled,
+        whatsapp_enabled: whatsappEnabled,
+        first_channel: firstChannel as "whatsapp" | "voice",
+        escalation_gap_minutes: Number(escalationGap),
+        whatsapp_template_name: whatsappTemplate.trim() || null,
         offer_type: offerType as ShopifyOfferType,
         offer_label: offerType === "none" ? null : offerLabel.trim() || null,
         offer_code: offerType === "none" ? null : offerCode.trim() || null,
@@ -295,6 +316,84 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
               due outside it waits until the window next opens. Leave both blank
               to call any time.
             </p>
+          </div>
+
+          <div className="grid gap-3 rounded-md border border-border/60 p-4">
+            <span className="text-sm font-medium">Channels</span>
+            <div className="flex flex-wrap gap-5">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={voiceEnabled}
+                  onChange={(e) => setVoiceEnabled(e.target.checked)}
+                  disabled={pending}
+                  className="size-4 accent-foreground"
+                />
+                Voice call
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={whatsappEnabled}
+                  onChange={(e) => setWhatsappEnabled(e.target.checked)}
+                  disabled={pending}
+                  className="size-4 accent-foreground"
+                />
+                WhatsApp
+              </label>
+            </div>
+
+            {voiceEnabled && whatsappEnabled ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label>Which goes first</Label>
+                  <Select
+                    value={firstChannel}
+                    onValueChange={(v) => v && setFirstChannel(v)}
+                    disabled={pending}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="whatsapp">WhatsApp first</SelectItem>
+                      <SelectItem value="voice">Call first</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="esc-gap">Escalate after (minutes)</Label>
+                  <Input
+                    id="esc-gap"
+                    type="number"
+                    min={1}
+                    max={10080}
+                    value={escalationGap}
+                    onChange={(e) => setEscalationGap(e.target.value)}
+                    disabled={pending}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {whatsappEnabled ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="wa-template-override">
+                  WhatsApp template (optional override)
+                </Label>
+                <Input
+                  id="wa-template-override"
+                  placeholder="Leave blank to use the connected default"
+                  value={whatsappTemplate}
+                  onChange={(e) => setWhatsappTemplate(e.target.value)}
+                  disabled={pending}
+                />
+                <p className="text-xs text-muted-foreground">
+                  The Meta-approved template name. Blank uses the one set on the
+                  WhatsApp connection in Settings.
+                </p>
+              </div>
+            ) : null}
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">

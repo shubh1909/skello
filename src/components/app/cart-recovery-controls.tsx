@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   DownloadIcon,
   Loader2Icon,
+  MessageCircleIcon,
   PlayIcon,
   SquareIcon,
 } from "lucide-react";
@@ -12,6 +13,7 @@ import { toast } from "sonner";
 
 import {
   exportRecoveryAttempts,
+  sendWhatsAppToAbandonedCarts,
   setRecoveryRunning,
 } from "@/actions/shopify-recovery";
 import { Button } from "@/components/ui/button";
@@ -21,12 +23,42 @@ interface Props {
   // Whether the org has any prior recovery activity — picks Start vs Resume.
   hasHistory: boolean;
   connected: boolean;
+  // WhatsApp connected + enabled + a template set — gates the bulk-send button.
+  whatsAppReady: boolean;
 }
 
-export function CartRecoveryControls({ running, hasHistory, connected }: Props) {
+export function CartRecoveryControls({
+  running,
+  hasHistory,
+  connected,
+  whatsAppReady,
+}: Props) {
   const router = useRouter();
   const [pending, startTransition] = React.useTransition();
   const [exporting, setExporting] = React.useState(false);
+
+  function onSendWhatsApp() {
+    if (
+      !confirm(
+        "Queue a WhatsApp message to every eligible abandoned cart? They'll send on the next cycle.",
+      )
+    ) {
+      return;
+    }
+    startTransition(async () => {
+      const res = await sendWhatsAppToAbandonedCarts();
+      if (!res.success) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success(
+        res.data.queued > 0
+          ? `Queued WhatsApp for ${res.data.queued} cart${res.data.queued === 1 ? "" : "s"}`
+          : "No eligible carts to message",
+      );
+      router.refresh();
+    });
+  }
 
   function toggle(next: boolean) {
     startTransition(async () => {
@@ -95,6 +127,23 @@ export function CartRecoveryControls({ running, hasHistory, connected }: Props) 
           {hasHistory ? "Resume" : "Start"}
         </Button>
       )}
+
+      {whatsAppReady ? (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onSendWhatsApp}
+          disabled={pending}
+          className="gap-1.5"
+        >
+          {pending ? (
+            <Loader2Icon className="animate-spin" />
+          ) : (
+            <MessageCircleIcon />
+          )}
+          Send WhatsApp
+        </Button>
+      ) : null}
 
       <Button
         type="button"

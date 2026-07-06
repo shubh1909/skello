@@ -6,6 +6,7 @@ import {
   ChevronRightIcon,
   GaugeIcon,
   HeadphonesIcon,
+  MessageCircleIcon,
   ShoppingCartIcon,
   SlidersHorizontalIcon,
   TargetIcon,
@@ -18,8 +19,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { OrgInfoForm } from "@/components/admin/org-info-form";
 import { VoiceAgentForm } from "@/components/admin/voice-agent-form";
+import { WhatsAppForm } from "@/components/admin/whatsapp-form";
 import { getOrganisationAdmin } from "@/actions/admin/organisations";
 import { getVoiceAgentAdmin } from "@/actions/admin/voice-agent";
+import { getWhatsAppAdmin } from "@/actions/admin/whatsapp";
 import { formatDateTime, formatRelative } from "@/lib/format";
 
 export const metadata = { title: "Organisation · Admin · Skelo" };
@@ -33,9 +36,10 @@ export default async function AdminOrganisationDetailPage({
 }: PageProps) {
   const { id } = await params;
 
-  const [orgResult, integrationResult] = await Promise.all([
+  const [orgResult, integrationResult, whatsappResult] = await Promise.all([
     getOrganisationAdmin(id),
     getVoiceAgentAdmin(id),
+    getWhatsAppAdmin(id),
   ]);
 
   if (!orgResult.success) {
@@ -48,6 +52,7 @@ export default async function AdminOrganisationDetailPage({
   }
   const org = orgResult.data;
   const integration = integrationResult.success ? integrationResult.data : null;
+  const whatsapp = whatsappResult.success ? whatsappResult.data : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -109,6 +114,28 @@ export default async function AdminOrganisationDetailPage({
               <p className="mt-3 text-[11px] text-muted-foreground">
                 Connected {formatDateTime(integration.created_at)}, last
                 updated {formatRelative(integration.updated_at)}.
+              </p>
+            ) : null}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <MessageCircleIcon className="size-4 text-muted-foreground" />
+              <CardTitle>WhatsApp</CardTitle>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Connect the WhatsApp channel for cart recovery. The owner sees a
+              read-only status card in Settings — all config lives here.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <WhatsAppForm organisationId={org.id} integration={whatsapp} />
+            {whatsapp ? (
+              <p className="mt-3 text-[11px] text-muted-foreground">
+                Connected {formatDateTime(whatsapp.created_at)}, last updated{" "}
+                {formatRelative(whatsapp.updated_at)}.
               </p>
             ) : null}
           </CardContent>

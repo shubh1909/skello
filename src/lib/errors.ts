@@ -67,14 +67,7 @@ export function logSkeloError(
 ): string {
   const tagged = `[SKELO:${tag}]`;
   const { cause, ...rest } = ctx;
-  const causeMessage =
-    cause instanceof Error
-      ? cause.message
-      : typeof cause === "string"
-        ? cause
-        : cause
-          ? safeStringify(cause)
-          : null;
+  const causeMessage = extractCause(cause);
 
   console.error(tagged, userMessage, {
     ...rest,
@@ -93,6 +86,32 @@ export function warnSkelo(
   ctx: SkeloErrorContext = {},
 ): void {
   console.warn(`[SKELO:${tag}]`, message, ctx);
+}
+
+// Supabase/Postgrest errors are plain objects with NON-enumerable props, so
+// JSON.stringify yields "{}". Pull message/code/details explicitly so the log
+// is actually useful (e.g. "column ... does not exist code=42703").
+function extractCause(cause: unknown): string | null {
+  if (!cause) return null;
+  if (cause instanceof Error) return cause.message;
+  if (typeof cause === "string") return cause;
+  if (typeof cause === "object") {
+    const c = cause as {
+      message?: unknown;
+      code?: unknown;
+      details?: unknown;
+      hint?: unknown;
+    };
+    if (typeof c.message === "string" && c.message.length > 0) {
+      const parts = [c.message];
+      if (c.code) parts.push(`code=${String(c.code)}`);
+      if (c.details) parts.push(`details=${String(c.details)}`);
+      if (c.hint) parts.push(`hint=${String(c.hint)}`);
+      return parts.join(" ");
+    }
+    return safeStringify(cause);
+  }
+  return safeStringify(cause);
 }
 
 function safeStringify(v: unknown): string {

@@ -1,4 +1,45 @@
 import { Badge } from "@/components/ui/badge";
+import type {
+  RecoveryAttemptStatus,
+  RecoveryMessageStatus,
+  RecoveryWhatsAppTrackStatus,
+} from "@/types/shopify";
+
+// The recovery attempt's pipeline status (queue → dial → outcome).
+const ATTEMPT_STATUS_META: Record<
+  RecoveryAttemptStatus,
+  { label: string; className: string }
+> = {
+  pending: {
+    label: "Waiting",
+    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  },
+  in_flight: {
+    label: "Calling",
+    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+  },
+  succeeded: {
+    label: "Reached",
+    className:
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+  },
+  failed: {
+    label: "Not reached",
+    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+  },
+  canceled: { label: "Stopped", className: "bg-muted text-muted-foreground" },
+  skipped: { label: "Skipped", className: "bg-muted text-muted-foreground" },
+};
+
+export function AttemptStatusBadge({
+  status,
+}: {
+  status: RecoveryAttemptStatus;
+}) {
+  const meta = ATTEMPT_STATUS_META[status];
+  if (!meta) return <Badge variant="secondary">{status}</Badge>;
+  return <Badge className={meta.className}>{meta.label}</Badge>;
+}
 
 // Event-based colours for a recovery call's lifecycle status. Green = live call,
 // blue = connected/finished, red = failed, amber/orange = dialing / not reached.
@@ -44,6 +85,84 @@ export function CallStatusBadge({ status }: { status: string }) {
 }
 
 // The cart's real-world outcome, independent of the dial pipeline status.
+// The WhatsApp channel track on a cart. 'none' (no WhatsApp for this cart)
+// renders nothing so voice-only carts stay clean.
+const WHATSAPP_TRACK_META: Record<
+  RecoveryWhatsAppTrackStatus,
+  { label: string; className: string } | null
+> = {
+  none: null,
+  pending: {
+    label: "WhatsApp queued",
+    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  },
+  in_flight: {
+    label: "WhatsApp sending",
+    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+  },
+  sent: {
+    label: "WhatsApp sent",
+    className:
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+  },
+  failed: {
+    label: "WhatsApp failed",
+    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+  },
+  skipped: { label: "WhatsApp skipped", className: "bg-muted text-muted-foreground" },
+  canceled: { label: "WhatsApp stopped", className: "bg-muted text-muted-foreground" },
+};
+
+export function WhatsAppStatusBadge({
+  status,
+}: {
+  status: RecoveryWhatsAppTrackStatus;
+}) {
+  const meta = WHATSAPP_TRACK_META[status];
+  if (!meta) return null;
+  return <Badge className={meta.className}>{meta.label}</Badge>;
+}
+
+// A single WhatsApp message's delivery status (ledger row) for the timeline.
+const MESSAGE_STATUS_META: Record<
+  RecoveryMessageStatus,
+  { label: string; className: string }
+> = {
+  queued: {
+    label: "Queued",
+    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  },
+  sent: {
+    label: "Sent",
+    className: "bg-slate-100 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300",
+  },
+  delivered: {
+    label: "Delivered",
+    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+  },
+  read: {
+    label: "Read",
+    className:
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+  },
+  failed: {
+    label: "Failed",
+    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+  },
+};
+
+export function MessageStatusBadge({
+  status,
+}: {
+  status: RecoveryMessageStatus;
+}) {
+  const meta = MESSAGE_STATUS_META[status] ?? {
+    label: status,
+    className: "bg-muted text-muted-foreground",
+  };
+  return <Badge className={meta.className}>{meta.label}</Badge>;
+}
+
 export function CartOutcomeBadge({
   convertedAt,
   attributed,
@@ -63,7 +182,7 @@ export function CartOutcomeBadge({
   }
   return (
     <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300">
-      Recovered · organic
+      Recovered
     </Badge>
   );
 }
