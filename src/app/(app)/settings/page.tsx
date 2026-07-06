@@ -14,7 +14,9 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { VoiceAgentStatusCard } from "@/components/app/voice-agent-status-card";
 import { ShopifyStatusCard } from "@/components/app/shopify-status-card";
+import { WhatsAppStatusCard } from "@/components/app/whatsapp-status-card";
 import { getBolnaIntegration } from "@/actions/bolna-integrations";
+import { getWhatsAppIntegration } from "@/actions/whatsapp-integrations";
 import { getShopifyStatus } from "@/actions/shopify";
 import { requireSession } from "@/lib/auth/session";
 
@@ -22,11 +24,15 @@ export const metadata = { title: "Settings · Skelo" };
 
 export default async function SettingsPage() {
   const session = await requireSession();
-  const [integrationResult, shopifyResult] = await Promise.all([
+  const [integrationResult, whatsappResult, shopifyResult] = await Promise.all([
     getBolnaIntegration(session.organisation.id),
+    getWhatsAppIntegration(session.organisation.id),
     getShopifyStatus(),
   ]);
   const integration = integrationResult.success ? integrationResult.data : null;
+  const whatsappIntegration = whatsappResult.success
+    ? whatsappResult.data
+    : null;
   const shopifyStatus = shopifyResult.success ? shopifyResult.data : null;
 
   return (
@@ -67,6 +73,10 @@ export default async function SettingsPage() {
         Voice agents and lead fields are configured by your Skelo onboarding
         team. Reach out to support if you need a change.
       </p>
+
+      <Separator />
+
+      <WhatsAppStatusCard integration={whatsappIntegration} />
 
       <Separator />
 

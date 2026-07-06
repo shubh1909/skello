@@ -134,6 +134,11 @@ export async function enrichOutboundCall(
   const endedAt = parseProviderTimestamp(execution.updated_at);
   if (endedAt) patch.ended_at = endedAt;
   if (execution.error_message) patch.error_message = execution.error_message;
+  // For outbound, `from_number` is the caller-ID we dialled from. Persist it —
+  // dispatch may have inserted the row without one (the number lives on the
+  // provider's agent config), so this is often the only place we learn it.
+  const fromNumber = execution.telephony_data?.from_number?.trim() || null;
+  if (fromNumber) patch.from_phone = fromNumber;
   if (Object.keys(patch).length > 0) {
     const { error } = await admin
       .from("calls")

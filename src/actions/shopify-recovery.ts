@@ -17,9 +17,11 @@ import type {
   RecoveryAttemptRow,
   RecoveryCallRow,
   RecoveryCartItem,
+  RecoveryMessageRow,
   RecoveryMetrics,
   RecoveryPage,
   RecoveryVoiceAgent,
+  RecoveryWhatsAppStatus,
   ShopifyOfferOption,
   ShopifyRecoverySettings,
 } from "@/types/shopify";
@@ -29,13 +31,17 @@ export interface RecoveryOverview {
   settings: ShopifyRecoverySettings | null;
   metrics: RecoveryMetrics;
   voiceAgent: RecoveryVoiceAgent | null;
+  whatsApp: RecoveryWhatsAppStatus | null;
 }
 
 const SETTINGS_COLUMNS =
-  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, created_at, updated_at";
+  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, first_channel, escalation_gap_minutes, whatsapp_template_name, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
-  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at";
+  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at";
+
+const MESSAGE_COLUMNS =
+  "id, to_phone, template_name, provider, provider_message_id, status, error_message, sent_at, delivered_at, read_at, created_at";
 
 const CALL_COLUMNS =
   "id, status, direction, to_phone, from_phone, error_message, bolna_call_id, created_at, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript, transcript_url, summary, name_extracted, interest, lead_intent_extracted, customer_status, call_outcome, requested_callback_at, connect_on_whatsapp, visit_scheduled_at, lead_data, custom_data, shopify_recovery_attempt_id, lead_id";
@@ -94,6 +100,7 @@ export async function getRecoveryOverview(): Promise<
     integrationRes,
     settingsRes,
     bolnaRes,
+    whatsappRes,
     abandonedRes,
     callsMadeRes,
     convertedRes,
@@ -111,11 +118,22 @@ export async function getRecoveryOverview(): Promise<
     // Voice-agent wiring for the read-only card (caller number + default agent).
     admin
       .from("bolna_integrations")
-      .select("agent_id, from_phone_number, enabled")
+      .select("agent_id, from_phone_number, from_phone_numbers, enabled")
       .eq("organisation_id", orgId)
       .maybeSingle<{
         agent_id: string | null;
         from_phone_number: string | null;
+        from_phone_numbers: string[] | null;
+        enabled: boolean;
+      }>(),
+    // WhatsApp wiring for the read-only card.
+    admin
+      .from("whatsapp_integrations")
+      .select("sender_id, template_name, enabled")
+      .eq("organisation_id", orgId)
+      .maybeSingle<{
+        sender_id: string | null;
+        template_name: string | null;
         enabled: boolean;
       }>(),
     // Actioned carts (excludes skipped) — closer to Shopify's "abandoned".
@@ -165,10 +183,41 @@ export async function getRecoveryOverview(): Promise<
       .maybeSingle<{ label: string | null }>();
     agentName = agentRow?.label ?? null;
   }
+  // The caller-ID: the org's configured default/pool if set, else the number
+  // actually used on the most recent recovery dial (backfilled from the provider
+  // on call completion — the number often lives only on the agent config).
+  let callerNumber =
+    bolna?.from_phone_number?.trim() || bolna?.from_phone_numbers?.[0] || null;
+  if (!callerNumber) {
+    const { data: lastCall } = await admin
+      .from("calls")
+      .select("from_phone")
+      .eq("organisation_id", orgId)
+      .not("shopify_recovery_attempt_id", "is", null)
+      .not("from_phone", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle<{ from_phone: string | null }>();
+    callerNumber = lastCall?.from_phone ?? null;
+  }
   const voiceAgent: RecoveryVoiceAgent = {
     name: agentName,
-    callerNumber: bolna?.from_phone_number ?? null,
+    callerNumber,
     configured: Boolean(effectiveAgentId && bolna?.enabled),
+  };
+
+  // WhatsApp channel status for the read-only card. A template (settings override
+  // or integration default) is required before anything can send.
+  const waRow = whatsappRes.data;
+  const waTemplate =
+    settingsRes.data?.whatsapp_template_name?.trim() ||
+    waRow?.template_name?.trim() ||
+    null;
+  const whatsApp: RecoveryWhatsAppStatus = {
+    configured: Boolean(waRow?.enabled && waTemplate),
+    enabled: settingsRes.data?.whatsapp_enabled ?? false,
+    sender: waRow?.sender_id ?? null,
+    templateName: waTemplate,
   };
 
   const metrics: RecoveryMetrics = {
@@ -190,6 +239,7 @@ export async function getRecoveryOverview(): Promise<
     settings: settingsRes.data ?? null,
     metrics,
     voiceAgent,
+    whatsApp,
   });
 }
 
@@ -235,6 +285,13 @@ const settingsSchema = z.object({
     .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM")
     .nullable()
     .optional(),
+  // Channels. Optional so older callers/forms stay valid; defaults reproduce
+  // voice-only behaviour.
+  voice_enabled: z.boolean().optional(),
+  whatsapp_enabled: z.boolean().optional(),
+  first_channel: z.enum(["whatsapp", "voice"]).optional(),
+  escalation_gap_minutes: z.number().int().min(1).max(10080).optional(),
+  whatsapp_template_name: z.string().trim().max(200).nullable().optional(),
 });
 
 // The org tunes its own offer + timing. Org resolved from the session; the
@@ -280,6 +337,23 @@ export async function saveRecoverySettings(
           parsed.data.call_window_start && parsed.data.call_window_end
             ? parsed.data.call_window_end
             : null,
+        // Channels — only write when provided so a legacy form save doesn't
+        // clobber the org's channel config.
+        ...(parsed.data.voice_enabled !== undefined
+          ? { voice_enabled: parsed.data.voice_enabled }
+          : {}),
+        ...(parsed.data.whatsapp_enabled !== undefined
+          ? { whatsapp_enabled: parsed.data.whatsapp_enabled }
+          : {}),
+        ...(parsed.data.first_channel !== undefined
+          ? { first_channel: parsed.data.first_channel }
+          : {}),
+        ...(parsed.data.escalation_gap_minutes !== undefined
+          ? { escalation_gap_minutes: parsed.data.escalation_gap_minutes }
+          : {}),
+        ...(parsed.data.whatsapp_template_name !== undefined
+          ? { whatsapp_template_name: parsed.data.whatsapp_template_name }
+          : {}),
       },
       { onConflict: "organisation_id" },
     )
@@ -411,10 +485,133 @@ export async function setRecoveryRunning(
       .update({ status: "canceled", canceled_at: nowIso })
       .eq("organisation_id", orgId)
       .eq("status", "pending");
+    // Same hard stop for the WhatsApp track.
+    await admin
+      .from("shopify_recovery_attempts")
+      .update({ whatsapp_status: "canceled", whatsapp_next_at: null })
+      .eq("organisation_id", orgId)
+      .eq("whatsapp_status", "pending");
   }
 
   revalidatePath("/campaigns/templates/cart-recovery");
   return ok({ running: parsed.data });
+}
+
+// Manual bulk send — queue the WhatsApp template for every eligible cart so the
+// next cron tick sends it (reuses the drainer's concurrency/retry/window). Only
+// queues carts that aren't converted, have a phone, and whose WhatsApp track is
+// idle (none / previously skipped / failed). Requires WhatsApp enabled + a
+// connected integration + an approved template.
+const BULK_WHATSAPP_LIMIT = 2000;
+
+export async function sendWhatsAppToAbandonedCarts(): Promise<
+  ActionResult<{ queued: number }>
+> {
+  const session = await requireSession();
+  const orgId = session.organisation.id;
+  const admin = createAdminClient();
+
+  const [{ data: settings }, { data: integration }] = await Promise.all([
+    admin
+      .from("shopify_recovery_settings")
+      .select("whatsapp_enabled, whatsapp_template_name")
+      .eq("organisation_id", orgId)
+      .maybeSingle<{
+        whatsapp_enabled: boolean;
+        whatsapp_template_name: string | null;
+      }>(),
+    admin
+      .from("whatsapp_integrations")
+      .select("template_name, enabled")
+      .eq("organisation_id", orgId)
+      .maybeSingle<{ template_name: string | null; enabled: boolean }>(),
+  ]);
+
+  if (!settings?.whatsapp_enabled) {
+    return fail("WhatsApp isn't enabled for cart recovery.");
+  }
+  if (!integration?.enabled) {
+    return fail("WhatsApp isn't connected for this workspace yet.");
+  }
+  const template =
+    settings.whatsapp_template_name?.trim() ||
+    integration.template_name?.trim() ||
+    null;
+  if (!template) {
+    return fail("No approved WhatsApp template is set yet.");
+  }
+
+  // Bounded select then queue — avoids an unbounded UPDATE.
+  const { data: rows, error } = await admin
+    .from("shopify_recovery_attempts")
+    .select("id")
+    .eq("organisation_id", orgId)
+    .is("converted_at", null)
+    .not("phone", "is", null)
+    .in("whatsapp_status", ["none", "skipped", "failed"])
+    .limit(BULK_WHATSAPP_LIMIT)
+    .returns<Array<{ id: string }>>();
+  if (error) {
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to select carts for WhatsApp", {
+        organisationId: orgId,
+        cause: error,
+      }),
+    );
+  }
+  const ids = (rows ?? []).map((r) => r.id);
+  if (ids.length === 0) return ok({ queued: 0 });
+
+  const nowIso = new Date().toISOString();
+  const { error: upErr } = await admin
+    .from("shopify_recovery_attempts")
+    .update({
+      whatsapp_status: "pending",
+      whatsapp_next_at: nowIso,
+      whatsapp_attempt: 0,
+      whatsapp_skip_reason: null,
+    })
+    .in("id", ids);
+  if (upErr) {
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to queue WhatsApp sends", {
+        organisationId: orgId,
+        cause: upErr,
+      }),
+    );
+  }
+
+  revalidatePath("/campaigns/templates/cart-recovery");
+  return ok({ queued: ids.length });
+}
+
+// WhatsApp message history for one cart (mirrors getRecoveryCallsForAttempt) —
+// powers the timeline in the cart detail drawer.
+export async function getRecoveryMessagesForAttempt(
+  attemptId: unknown,
+): Promise<ActionResult<RecoveryMessageRow[]>> {
+  const session = await requireSession();
+  const parsed = z.string().uuid().safeParse(attemptId);
+  if (!parsed.success) return fail("Invalid request");
+  const admin = createAdminClient();
+
+  const { data, error } = await admin
+    .from("shopify_recovery_messages")
+    .select(MESSAGE_COLUMNS)
+    .eq("organisation_id", session.organisation.id)
+    .eq("shopify_recovery_attempt_id", parsed.data)
+    .order("created_at", { ascending: true })
+    .returns<RecoveryMessageRow[]>();
+
+  if (error) {
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to load cart WhatsApp messages", {
+        organisationId: session.organisation.id,
+        cause: error,
+      }),
+    );
+  }
+  return ok(data ?? []);
 }
 
 // CSV export of the org's recovery activity. Bounded (keyset would be overkill
@@ -514,7 +711,8 @@ export async function exportRecoveryAttempts(): Promise<
 
 const pageInput = z.object({
   page: z.number().int().min(0).max(100000).optional(),
-  callableOnly: z.boolean().optional(),
+  // Abandoned/carts tab only — sort direction on the abandoned timestamp.
+  sort: z.enum(["asc", "desc"]).optional(),
 });
 
 function pageRange(page: number): [number, number] {
@@ -522,9 +720,11 @@ function pageRange(page: number): [number, number] {
   return [from, from + PAGE_SIZE - 1];
 }
 
-// The carts view — every cart we recorded, converted or not, so the table can
-// show each one's outcome (still abandoned / recovered by us / recovered
-// organically). `callableOnly` hides carts we can't dial (skipped / no phone).
+// The carts view — every *callable* cart we recorded (has a phone, not skipped),
+// converted or not, so the table can show each one's outcome (still abandoned /
+// recovered by us / recovered organically). Non-callable carts (no phone / no
+// voice agent) are intentionally excluded here; they're still counted in the
+// dashboard stats.
 export async function getAbandonedCarts(
   input: unknown,
 ): Promise<ActionResult<RecoveryPage<RecoveryAttemptRow>>> {
@@ -534,17 +734,21 @@ export async function getAbandonedCarts(
   const page = parsed.data.page ?? 0;
   const admin = createAdminClient();
 
-  let query = admin
+  // Sort on the abandoned timestamp the column displays (abandoned_at, falling
+  // back to created_at for rows without Shopify's checkout time). Default newest
+  // first. created_at is the stable tiebreaker.
+  const ascending = parsed.data.sort === "asc";
+  const query = admin
     .from("shopify_recovery_attempts")
     .select(ATTEMPT_COLUMNS, { count: "exact" })
-    .eq("organisation_id", session.organisation.id);
-  if (parsed.data.callableOnly) {
-    query = query.neq("status", "skipped").not("phone", "is", null);
-  }
+    .eq("organisation_id", session.organisation.id)
+    .neq("status", "skipped")
+    .not("phone", "is", null);
 
   const [from, to] = pageRange(page);
   const { data, count, error } = await query
-    .order("created_at", { ascending: false })
+    .order("abandoned_at", { ascending, nullsFirst: false })
+    .order("created_at", { ascending })
     .range(from, to)
     .returns<RecoveryAttemptRow[]>();
 
@@ -675,10 +879,18 @@ export async function getRecoveryCalls(
     );
   }
 
-  const calls = data ?? [];
-  // Enrich each call with its cart snapshot + the lead's current view. Neither
-  // relationship is embedded (calls.shopify_recovery_attempt_id has no FK, and
-  // embedding leads proved brittle across schema caches), so we fetch both by id.
+  const rows = await enrichRecoveryCalls(admin, data ?? []);
+  return ok({ rows, total: count ?? 0 });
+}
+
+// Enrich raw call rows with each call's cart snapshot + the lead's current view.
+// Neither relationship is embedded (calls.shopify_recovery_attempt_id has no FK,
+// and embedding leads proved brittle across schema caches), so we fetch both by
+// id. Shared by the paged call-history tab and the per-cart call history.
+async function enrichRecoveryCalls(
+  admin: ReturnType<typeof createAdminClient>,
+  calls: RawCallRow[],
+): Promise<RecoveryCallRow[]> {
   const attemptIds = Array.from(
     new Set(
       calls
@@ -752,7 +964,7 @@ export async function getRecoveryCalls(
     });
   }
 
-  const rows: RecoveryCallRow[] = calls.map((c) => {
+  return calls.map((c) => {
     const att = c.shopify_recovery_attempt_id
       ? attemptById.get(c.shopify_recovery_attempt_id)
       : undefined;
@@ -793,6 +1005,36 @@ export async function getRecoveryCalls(
       lead_intent: lead?.lead_intent ?? null,
     };
   });
+}
 
-  return ok({ rows, total: count ?? 0 });
+// Every recovery call for one cart (attempt), chronological. Powers the call
+// history shown inside the cart detail drawer. Bounded by max_attempts, so no
+// pagination. Org-scoped from the session, and the attempt is verified to belong
+// to the caller's org before its calls are returned.
+export async function getRecoveryCallsForAttempt(
+  attemptId: unknown,
+): Promise<ActionResult<RecoveryCallRow[]>> {
+  const session = await requireSession();
+  const parsed = z.string().uuid().safeParse(attemptId);
+  if (!parsed.success) return fail("Invalid request");
+  const admin = createAdminClient();
+
+  const { data, error } = await admin
+    .from("calls")
+    .select(CALL_COLUMNS)
+    .eq("organisation_id", session.organisation.id)
+    .eq("shopify_recovery_attempt_id", parsed.data)
+    .order("created_at", { ascending: true })
+    .returns<RawCallRow[]>();
+
+  if (error) {
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to load cart call history", {
+        organisationId: session.organisation.id,
+        cause: error,
+      }),
+    );
+  }
+
+  return ok(await enrichRecoveryCalls(admin, data ?? []));
 }

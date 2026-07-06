@@ -33,12 +33,23 @@ interface RecoverySettingsRow {
   offer_label: string | null;
   offer_discount_value: number | null;
   offer_discount_kind: string | null;
+  voice_enabled: boolean;
+  whatsapp_enabled: boolean;
+  first_channel: string;
+  escalation_gap_minutes: number;
+  whatsapp_template_name: string | null;
 }
 
 interface BolnaConfigRow {
   agent_id: string;
   api_key: string;
   from_phone_number: string | null;
+  enabled: boolean;
+}
+
+interface WhatsAppConfigRow {
+  provider: string;
+  template_name: string | null;
   enabled: boolean;
 }
 
@@ -49,7 +60,7 @@ async function loadSettings(
   const { data } = await admin
     .from("shopify_recovery_settings")
     .select(
-      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind",
+      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, voice_enabled, whatsapp_enabled, first_channel, escalation_gap_minutes, whatsapp_template_name",
     )
     .eq("organisation_id", organisationId)
     .maybeSingle<RecoverySettingsRow>();
@@ -65,6 +76,18 @@ async function loadBolnaConfig(
     .select("agent_id, api_key, from_phone_number, enabled")
     .eq("organisation_id", organisationId)
     .maybeSingle<BolnaConfigRow>();
+  return data ?? null;
+}
+
+async function loadWhatsAppConfig(
+  admin: Admin,
+  organisationId: string,
+): Promise<WhatsAppConfigRow | null> {
+  const { data } = await admin
+    .from("whatsapp_integrations")
+    .select("provider, template_name, enabled")
+    .eq("organisation_id", organisationId)
+    .maybeSingle<WhatsAppConfigRow>();
   return data ?? null;
 }
 
@@ -99,18 +122,21 @@ export async function scheduleRecoveryFromCheckout(input: {
   if (!settings || !settings.enabled) return; // feature off → do nothing
 
   const bolna = await loadBolnaConfig(admin, orgId);
+  const wa = await loadWhatsAppConfig(admin, orgId);
 
-  // Decide the eligibility + the skip reason (if any), in priority order. We
-  // call regardless of marketing consent now — only a missing phone or an
-  // unconfigured voice agent makes a cart non-actionable.
-  let skipReason: string | null = null;
-  if (!bolna || !bolna.enabled) skipReason = "no_voice_agent";
-  else if (!checkout.phone) skipReason = "no_phone";
-
+  // Per-channel eligibility. We message regardless of marketing consent (it's
+  // recorded, not gating) — only a missing phone or an unconfigured channel
+  // makes it non-actionable. Voice and WhatsApp are independent.
+  const hasPhone = !!checkout.phone;
   const agentId = settings.agent_id?.trim() || bolna?.agent_id?.trim() || null;
-  if (!skipReason && !agentId) skipReason = "no_voice_agent";
+  const voiceActionable =
+    settings.voice_enabled && !!bolna?.enabled && !!agentId && hasPhone;
+  const waTemplate =
+    settings.whatsapp_template_name?.trim() || wa?.template_name?.trim() || null;
+  const whatsappActionable =
+    settings.whatsapp_enabled && !!wa?.enabled && !!waTemplate && hasPhone;
 
-  // Don't disturb a row that's already acting or finalised.
+  // Don't disturb a row whose voice track is already acting or finalised.
   const { data: existing } = await admin
     .from("shopify_recovery_attempts")
     .select("id, status")
@@ -139,25 +165,43 @@ export async function scheduleRecoveryFromCheckout(input: {
     cart_items: checkout.lineItems,
   };
 
-  // --- Not actionable → record/keep a skipped row (idempotent) ---------------
-  if (skipReason) {
+  // Per-channel skip reasons, surfaced in the dashboard.
+  const voiceSkip = !hasPhone
+    ? "no_phone"
+    : !settings.voice_enabled
+      ? "voice_off"
+      : "no_voice_agent";
+  const whatsappSkip = !settings.whatsapp_enabled
+    ? null
+    : !hasPhone
+      ? "no_phone"
+      : !wa?.enabled
+        ? "no_whatsapp"
+        : "no_template";
+  const waSkipStatus = settings.whatsapp_enabled ? "skipped" : "none";
+
+  // --- Neither channel actionable → record/keep a skipped row (idempotent) ---
+  if (!voiceActionable && !whatsappActionable) {
+    const skipPatch = {
+      ...baseFields,
+      status: "skipped",
+      skip_reason: voiceSkip,
+      whatsapp_status: waSkipStatus,
+      whatsapp_skip_reason: whatsappSkip,
+    };
     if (existing) {
       await admin
         .from("shopify_recovery_attempts")
-        .update({ ...baseFields, status: "skipped", skip_reason: skipReason })
+        .update(skipPatch)
         .eq("id", existing.id)
         .eq("status", "skipped");
       return;
     }
-    await admin.from("shopify_recovery_attempts").insert({
-      ...baseFields,
-      status: "skipped",
-      skip_reason: skipReason,
-    });
+    await admin.from("shopify_recovery_attempts").insert(skipPatch);
     return;
   }
 
-  // --- Actionable → schedule (or promote a skipped row to) pending -----------
+  // --- At least one channel actionable → schedule ----------------------------
   const leadId = await findOrCreateShopifyLead({
     organisationId: orgId,
     phone: checkout.phone,
@@ -178,57 +222,95 @@ export async function scheduleRecoveryFromCheckout(input: {
   const offerDiscountKind = noOffer ? null : settings.offer_discount_kind;
   const fromPhone = bolna?.from_phone_number ?? null;
 
-  if (existing) {
-    // Keep an already-pending row's timer; only refresh context + offer. A
-    // skipped row that's now eligible gets a fresh schedule.
-    const patch: Record<string, unknown> = {
-      ...baseFields,
-      lead_id: leadId,
-      agent_id: agentId,
-      from_phone: fromPhone,
-      max_attempts: settings.max_attempts,
-      retry_interval_seconds: settings.retry_interval_seconds,
-      offer_label: offerLabel,
-      offer_code: offerCode,
-      offer_discount_value: offerDiscountValue,
-      offer_discount_kind: offerDiscountKind,
-      skip_reason: null,
-    };
-    if (existing.status === "skipped") {
-      const when = new Date(
-        Date.now() + settings.wait_minutes * 60_000,
-      ).toISOString();
-      patch.status = "pending";
-      patch.scheduled_at = when;
-      patch.next_attempt_at = when;
-      patch.attempt = 0;
-    }
-    await admin
-      .from("shopify_recovery_attempts")
-      .update(patch)
-      .eq("id", existing.id);
-    return;
-  }
+  // Timing: the first channel fires at now+wait; the second escalates by the gap
+  // (only when both channels will actually run).
+  const nowMs = Date.now();
+  const iso = (ms: number) => new Date(nowMs + ms).toISOString();
+  const waitMs = settings.wait_minutes * 60_000;
+  const gapMs = settings.escalation_gap_minutes * 60_000;
+  const bothRun = voiceActionable && whatsappActionable;
+  const voiceWhen =
+    settings.first_channel === "whatsapp" && bothRun
+      ? iso(waitMs + gapMs)
+      : iso(waitMs);
+  const waWhen =
+    settings.first_channel === "voice" && bothRun
+      ? iso(waitMs + gapMs)
+      : iso(waitMs);
 
-  const when = new Date(
-    Date.now() + settings.wait_minutes * 60_000,
-  ).toISOString();
-  await admin.from("shopify_recovery_attempts").insert({
-    ...baseFields,
-    lead_id: leadId,
-    status: "pending",
-    agent_id: agentId,
-    from_phone: fromPhone,
-    attempt: 0,
-    max_attempts: settings.max_attempts,
-    retry_interval_seconds: settings.retry_interval_seconds,
-    scheduled_at: when,
-    next_attempt_at: when,
+  const offerFields = {
     offer_label: offerLabel,
     offer_code: offerCode,
     offer_discount_value: offerDiscountValue,
     offer_discount_kind: offerDiscountKind,
-  });
+  };
+
+  // Voice track (top-level status). When voice isn't actionable but WhatsApp is,
+  // keep the row active (pending) with no agent so the voice dispatcher skips it.
+  const voiceFields = voiceActionable
+    ? {
+        status: "pending",
+        agent_id: agentId,
+        from_phone: fromPhone,
+        max_attempts: settings.max_attempts,
+        retry_interval_seconds: settings.retry_interval_seconds,
+        scheduled_at: voiceWhen,
+        next_attempt_at: voiceWhen,
+        skip_reason: null,
+      }
+    : {
+        status: "pending",
+        agent_id: null,
+        max_attempts: settings.max_attempts,
+        retry_interval_seconds: settings.retry_interval_seconds,
+        skip_reason: "no_voice_agent",
+      };
+
+  const waFields = whatsappActionable
+    ? {
+        whatsapp_status: "pending",
+        whatsapp_next_at: waWhen,
+        whatsapp_skip_reason: null,
+      }
+    : { whatsapp_status: waSkipStatus, whatsapp_skip_reason: whatsappSkip };
+
+  if (existing && existing.status !== "skipped") {
+    // Already active — refresh context/offer only; keep the running timers +
+    // channel statuses so we never restart the clock mid-flight.
+    await admin
+      .from("shopify_recovery_attempts")
+      .update({
+        ...baseFields,
+        lead_id: leadId,
+        agent_id: voiceActionable ? agentId : null,
+        from_phone: fromPhone,
+        max_attempts: settings.max_attempts,
+        retry_interval_seconds: settings.retry_interval_seconds,
+        ...offerFields,
+        skip_reason: voiceActionable ? null : "no_voice_agent",
+      })
+      .eq("id", existing.id);
+    return;
+  }
+
+  const activation = {
+    ...baseFields,
+    lead_id: leadId,
+    ...offerFields,
+    ...voiceFields,
+    ...waFields,
+    attempt: 0,
+    whatsapp_attempt: 0,
+  };
+
+  if (existing) {
+    await admin
+      .from("shopify_recovery_attempts")
+      .update(activation)
+      .eq("id", existing.id);
+    return;
+  }
+  await admin.from("shopify_recovery_attempts").insert(activation);
 }
 
 // =============================================================================
@@ -244,18 +326,29 @@ export async function cancelRecoveryForOrder(input: {
 
   const { data: attempt } = await admin
     .from("shopify_recovery_attempts")
-    .select("id, status, converted_at")
+    .select("id, status, whatsapp_status, converted_at")
     .eq("organisation_id", input.integration.organisation_id)
     .eq("checkout_token", input.checkoutToken)
-    .maybeSingle<{ id: string; status: string; converted_at: string | null }>();
+    .maybeSingle<{
+      id: string;
+      status: string;
+      whatsapp_status: string;
+      converted_at: string | null;
+    }>();
   if (!attempt) return;
 
   const now = new Date().toISOString();
   const patch: Record<string, unknown> = { converted_at: attempt.converted_at ?? now };
-  // Stop a pending/in-flight recovery — they already bought.
+  // Stop a pending/in-flight recovery on both channels — they already bought.
   if (attempt.status === "pending" || attempt.status === "in_flight") {
     patch.status = "canceled";
     patch.canceled_at = now;
+  }
+  if (
+    attempt.whatsapp_status === "pending" ||
+    attempt.whatsapp_status === "in_flight"
+  ) {
+    patch.whatsapp_status = "canceled";
   }
   await admin
     .from("shopify_recovery_attempts")
@@ -363,9 +456,28 @@ function applyOffer(
   return { discountAmount: null, discountedTotal: null, percentLabel: "" };
 }
 
-// Build the user_data object handed to Bolna (→ {variables} in the agent prompt)
+// The cart/offer fields buildRecoveryVariables reads. DueRecovery (voice) and
+// the WhatsApp due row both satisfy this, so both channels share one flattener.
+export interface RecoveryVariableSource {
+  id: string;
+  organisation_id: string;
+  lead_id: string | null;
+  customer_name: string | null;
+  cart_total: number | null;
+  currency: string | null;
+  recovery_url: string | null;
+  cart_items: unknown;
+  offer_label: string | null;
+  offer_code: string | null;
+  offer_discount_value: number | null;
+  offer_discount_kind: string | null;
+}
+
+// Build the flat scalar context (→ Bolna {variables} / WhatsApp template params)
 // plus the internal correlation IDs (unused by the prompt, kept for tracing).
-function buildRecoveryVariables(r: DueRecovery): Record<string, unknown> {
+export function buildRecoveryVariables(
+  r: RecoveryVariableSource,
+): Record<string, unknown> {
   const items = parseCartItems(r.cart_items);
   const { topProduct, cartSummary, itemCount } = summariseCart(items);
   const { discountAmount, discountedTotal, percentLabel } = applyOffer(

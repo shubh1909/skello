@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { dispatchDueCallbacks } from "@/lib/callbacks/dispatch";
 import { dispatchDueCampaignContacts } from "@/lib/campaigns/dispatch";
 import { dispatchDueRecoveries } from "@/lib/shopify/recovery";
+import { dispatchDueWhatsAppRecoveries } from "@/lib/shopify/whatsapp-recovery";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,16 +32,19 @@ export async function POST(request: NextRequest) {
   try {
     // All drains share the tick. Each runs independently so one subsystem
     // throwing can't starve the others.
-    const [campaigns, callbacks, recoveries] = await Promise.allSettled([
-      dispatchDueCampaignContacts(),
-      dispatchDueCallbacks(),
-      dispatchDueRecoveries(),
-    ]);
+    const [campaigns, callbacks, recoveries, whatsapp] =
+      await Promise.allSettled([
+        dispatchDueCampaignContacts(),
+        dispatchDueCallbacks(),
+        dispatchDueRecoveries(),
+        dispatchDueWhatsAppRecoveries(),
+      ]);
 
     if (
       campaigns.status === "rejected" &&
       callbacks.status === "rejected" &&
-      recoveries.status === "rejected"
+      recoveries.status === "rejected" &&
+      whatsapp.status === "rejected"
     ) {
       const message =
         campaigns.reason instanceof Error
@@ -63,6 +67,10 @@ export async function POST(request: NextRequest) {
           recoveries.status === "fulfilled"
             ? recoveries.value
             : { error: String(recoveries.reason) },
+        whatsapp:
+          whatsapp.status === "fulfilled"
+            ? whatsapp.value
+            : { error: String(whatsapp.reason) },
       },
       { status: 200 },
     );
