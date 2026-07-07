@@ -194,7 +194,7 @@ export function WhatsAppForm({ organisationId, integration }: Props) {
         <Label htmlFor="wa-base-url">API base URL (optional)</Label>
         <Input
           id="wa-base-url"
-          placeholder="Blank uses the default (api.tellephant.com)"
+          placeholder="Blank uses the default (api.kwikengage.ai)"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
           autoComplete="off"

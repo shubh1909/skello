@@ -57,17 +57,34 @@ export async function POST(request: NextRequest) {
     return tooManyRequestsResponse(rl.retryAfterSeconds);
   }
 
+  const rawBody = await request.text();
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(rawBody);
   } catch {
+    console.warn("[kwikengage] webhook: invalid JSON", {
+      rawBody: rawBody.slice(0, 2000),
+    });
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  // The provider's delivery-webhook schema isn't documented, so during
+  // onboarding we log the raw body to discover its real shape. Set
+  // KWIKENGAGE_WEBHOOK_DEBUG=1 to log EVERY payload; otherwise we log only the
+  // ones our parser can't read (so unknown shapes are never silently dropped).
+  if (process.env.KWIKENGAGE_WEBHOOK_DEBUG === "1") {
+    console.log("[kwikengage] webhook raw", rawBody.slice(0, 2000));
   }
 
   const parsed = parseKwikEngageWebhook(body);
   if (!parsed) {
-    // Ack so the provider doesn't retry forever — nothing actionable here
-    // (e.g. an inbound-reply event, which is out of scope for v1).
+    // Ack so the provider doesn't retry forever, but log the full body so we can
+    // calibrate parseKwikEngageWebhook() to the real field names. This also
+    // covers inbound-reply events, which are out of scope for v1.
+    console.warn(
+      "[kwikengage] webhook: unrecognised payload — paste this to calibrate the parser",
+      { rawBody: rawBody.slice(0, 2000) },
+    );
     return NextResponse.json(
       { ok: true, ignored: "no actionable delivery status" },
       { status: 200 },

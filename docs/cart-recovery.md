@@ -300,13 +300,14 @@ same cron tick. The voice state machine is untouched.
   re-anchored to gap-after-send (CAS-guarded on `status='pending'`).
 - **Template-gated & configurable:** WhatsApp needs a Meta-approved template.
   Until `template_name` is set the WhatsApp track is `skipped` (`no_template`)
-  and voice still runs. The send call is wired to **Tellephant** (the API behind
-  KwikEngage/Kwikchat): `POST {base}/v1/send-message` with `apikey` in the body
-  (+ `X-api-key` header), `to` as bare digits, and body variables mapped into
-  Meta-style `components`. The endpoint/payload + positional variable order
+  and voice still runs. The send call is wired to **KwikEngage**:
+  `POST {base}/send-message/v2` with `Authorization: <api key>` (raw), `to` as
+  the international number without `+`, `type:"template"`, and body variables
+  mapped into Meta-style `content.template.components`. Response is
+  `{success, messageId}`. The endpoint/payload + positional variable order
   (`TEMPLATE_VARIABLE_ORDER`) live in ONE place — `lib/kwikengage/client.ts`
   `buildTemplateRequest()`. Variables come from the shared
-  `buildRecoveryVariables()`. Base URL default `https://api.tellephant.com`
+  `buildRecoveryVariables()`. Base URL default `https://api.kwikengage.ai`
   (override per-org via the integration's `base_url`).
 - **Provider-agnostic:** a `provider` column + `lib/whatsapp/registry.ts` mean a
   different org can use a different BSP later — add an adapter + webhook route,
