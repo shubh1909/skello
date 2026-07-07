@@ -8,10 +8,10 @@ import {
   type WhatsAppSendResult,
 } from "@/lib/whatsapp/provider";
 
-// KwikEngage (GoKwik / Kwikchat) WhatsApp BSP adapter. Under the hood this is
-// Tellephant (api.tellephant.com). Internal only — product UI says "WhatsApp",
-// never the vendor name.
-const DEFAULT_BASE = "https://api.tellephant.com";
+// KwikEngage (GoKwik) WhatsApp BSP adapter — their own API at
+// api.kwikengage.ai. Internal only — product UI says "WhatsApp", never the
+// vendor name.
+const DEFAULT_BASE = "https://api.kwikengage.ai";
 
 function baseUrl(override?: string | null): string {
   const url = override?.trim() || process.env.KWIKENGAGE_API_BASE_URL?.trim();
@@ -32,11 +32,16 @@ export const TEMPLATE_VARIABLE_ORDER = [
 ] as const;
 
 // ===========================================================================
-// PROVIDER PAYLOAD SEAM — Tellephant (KwikEngage/Kwikchat) send-message API.
-// POST {base}/v1/send-message. Auth is the `apikey` body field; the partner
-// (MoEngage) path also accepts an `X-api-key` header, so we send both. Body
-// variables map into Meta-style template `components`. This is the ONLY place
-// the real request shape lives — the rest of the pipeline is provider-agnostic.
+// PROVIDER PAYLOAD SEAM — KwikEngage send-message API (confirmed from docs).
+//   POST {base}/send-message/v2
+//   Header: Authorization: <api key>   (raw key, no "Bearer")
+//   Body: { to, channel:"whatsapp", content:{ type:"template",
+//           template:{ template_id, language, components:[{type:"body",
+//           parameters:[{type:"text",text}]}] } } }
+//   Response: { success, messageId }.
+// The `template_id` is whatever the org configures as the template name (that's
+// the value KwikEngage matches). `language` must match the approved template's
+// language code. This is the ONE place the provider request shape lives.
 // ===========================================================================
 const TEMPLATE_LANGUAGE = "en";
 
@@ -44,28 +49,26 @@ function buildTemplateRequest(
   input: WhatsAppSendInput,
   recipient: string,
 ): { url: string; headers: Record<string, string>; body: string } {
-  // Tellephant wants `to` as bare digits (no leading +).
-  const toDigits = recipient.replace(/\D/g, "");
+  // KwikEngage `to` is a string; send the international number without the +.
+  const to = recipient.replace(/^\+/, "");
   const parameters = TEMPLATE_VARIABLE_ORDER.map((k) => ({
     type: "text",
     text: input.variables[k] ?? "",
   }));
 
   return {
-    url: `${baseUrl(input.baseUrl)}/v1/send-message`,
+    url: `${baseUrl(input.baseUrl)}/send-message/v2`,
     headers: {
       "Content-Type": "application/json",
-      Accept: "application/json",
-      "X-api-key": input.apiToken,
+      Authorization: input.apiToken,
     },
     body: JSON.stringify({
-      apikey: input.apiToken,
-      to: Number(toDigits),
-      channels: ["whatsapp"],
-      whatsapp: {
-        contentType: "template",
+      to,
+      channel: "whatsapp",
+      content: {
+        type: "template",
         template: {
-          templateId: input.templateName,
+          template_id: input.templateName,
           language: TEMPLATE_LANGUAGE,
           components: [{ type: "body", parameters }],
         },
