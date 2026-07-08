@@ -18,7 +18,7 @@ import {
   AttemptStatusBadge,
   CallStatusBadge,
   CartOutcomeBadge,
-  WhatsAppStatusBadge,
+  WhatsAppSentBadge,
 } from "@/components/app/recovery-badges";
 import { RecoveryCallDetail } from "@/components/app/recovery-call-detail";
 import { RecoveryCartDetail } from "@/components/app/recovery-cart-detail";
@@ -393,7 +393,7 @@ function CartTable({
   onToggleSort?: () => void;
 }) {
   const isConverted = variant === "converted";
-  const colSpan = isConverted ? 9 : 10;
+  const colSpan = isConverted ? 10 : 11;
   return (
     <Card className="overflow-hidden p-0">
       <div className="overflow-x-auto">
@@ -412,6 +412,7 @@ function CartTable({
               <th className="px-4 py-3 font-medium">
                 {isConverted ? "Recovery" : "Status"}
               </th>
+              <th className="px-4 py-3 font-medium">WhatsApp</th>
               <th className="px-4 py-3 font-medium">
                 {!isConverted && onToggleSort ? (
                   <button
@@ -483,18 +484,25 @@ function CartTable({
                         <Badge variant="secondary">Organic</Badge>
                       )
                     ) : (
-                      <div className="flex flex-col items-start gap-1">
-                        <div className="flex items-center gap-1.5">
-                          <AttemptStatusBadge status={r.status} />
-                          {r.status === "skipped" && r.skip_reason ? (
-                            <span className="text-[11px] text-muted-foreground">
-                              {r.skip_reason.replace(/_/g, " ")}
-                            </span>
-                          ) : null}
-                        </div>
-                        <WhatsAppStatusBadge status={r.whatsapp_status} />
+                      <div className="flex items-center gap-1.5">
+                        <AttemptStatusBadge status={r.status} />
+                        {r.status === "skipped" && r.skip_reason ? (
+                          <span className="text-[11px] text-muted-foreground">
+                            {r.skip_reason.replace(/_/g, " ")}
+                          </span>
+                        ) : null}
                       </div>
                     )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col items-start gap-0.5">
+                      <WhatsAppSentBadge status={r.whatsapp_status} />
+                      {r.whatsapp_status === "sent" && r.whatsapp_sent_at ? (
+                        <span className="text-[11px] text-muted-foreground">
+                          {formatDateTime(r.whatsapp_sent_at)}
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">
                     {formatDateTime(r.abandoned_at ?? r.created_at)}

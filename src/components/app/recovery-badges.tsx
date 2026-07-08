@@ -123,6 +123,47 @@ export function WhatsAppStatusBadge({
   return <Badge className={meta.className}>{meta.label}</Badge>;
 }
 
+// Concise variant for the dedicated "WhatsApp" table column + the cart drawer
+// header. Unlike WhatsAppStatusBadge it never returns null — `none` renders an
+// explicit "Not sent" so the column always answers "did we WhatsApp them?".
+const WHATSAPP_SENT_META: Record<
+  RecoveryWhatsAppTrackStatus,
+  { label: string; className: string }
+> = {
+  none: { label: "Not sent", className: "bg-muted text-muted-foreground" },
+  pending: {
+    label: "Queued",
+    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  },
+  in_flight: {
+    label: "Sending",
+    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+  },
+  sent: {
+    label: "Sent",
+    className:
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+  },
+  failed: {
+    label: "Failed",
+    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+  },
+  skipped: { label: "Skipped", className: "bg-muted text-muted-foreground" },
+  canceled: { label: "Stopped", className: "bg-muted text-muted-foreground" },
+};
+
+export function WhatsAppSentBadge({
+  status,
+}: {
+  status: RecoveryWhatsAppTrackStatus;
+}) {
+  const meta = WHATSAPP_SENT_META[status] ?? {
+    label: status,
+    className: "bg-muted text-muted-foreground",
+  };
+  return <Badge className={meta.className}>{meta.label}</Badge>;
+}
+
 // A single WhatsApp message's delivery status (ledger row) for the timeline.
 const MESSAGE_STATUS_META: Record<
   RecoveryMessageStatus,

@@ -100,20 +100,26 @@ export async function POST(request: NextRequest) {
   try {
     body = JSON.parse(rawBody);
   } catch {
-    console.error("[inbound webhook] invalid JSON", { rawBody });
+    // Never log rawBody — it carries the shopper's phone, name, recording URL,
+    // and a live Shopify recovery URL (with a checkout `key`). Size only.
+    console.error("[inbound webhook] invalid JSON", { bytes: rawBody.length });
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
   const parsed = bolnaLeadPayloadSchema.safeParse(body);
   if (!parsed.success) {
+    // Redact: log the field path + failure code (enough to diagnose which
+    // field the provider sent in an unexpected shape) but never the values.
+    const issues = parsed.error.issues.map((i) => ({
+      path: i.path.join("."),
+      code: i.code,
+    }));
     console.error("[inbound webhook] invalid payload", {
-      issues: parsed.error.issues,
-      rawBody,
+      issueCount: issues.length,
+      issues,
+      bytes: rawBody.length,
     });
-    return NextResponse.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "Invalid payload", issues }, { status: 400 });
   }
 
   // Pre-extraction events (in-progress, call-disconnected before final fire)
