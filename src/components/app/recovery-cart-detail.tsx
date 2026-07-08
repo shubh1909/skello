@@ -15,6 +15,7 @@ import {
   CallStatusBadge,
   CartOutcomeBadge,
   MessageStatusBadge,
+  WhatsAppSentBadge,
 } from "@/components/app/recovery-badges";
 import {
   getRecoveryCallsForAttempt,
@@ -115,6 +116,7 @@ export function RecoveryCartDetail({
                 {cart.skip_reason.replace(/_/g, " ")}
               </span>
             ) : null}
+            <WhatsAppSentBadge status={cart.whatsapp_status} />
           </div>
         </SheetHeader>
 
@@ -146,6 +148,10 @@ export function RecoveryCartDetail({
                 value={formatDateTime(cart.next_attempt_at)}
               />
             ) : null}
+            <Field
+              label="WhatsApp sent"
+              value={formatDateTime(cart.whatsapp_sent_at)}
+            />
             <Field label="Recovered" value={formatDateTime(cart.converted_at)} />
           </div>
 

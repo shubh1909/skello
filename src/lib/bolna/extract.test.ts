@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  bolnaLeadPayloadSchema,
   coerceCallOutcome,
   extractLead,
   normalizeOutcomeKey,
@@ -123,6 +124,46 @@ describe("coerceCallOutcome", () => {
   it("returns null for null/empty", () => {
     expect(coerceCallOutcome(null)).toBeNull();
     expect(coerceCallOutcome("   ")).toBeNull();
+  });
+});
+
+describe("bolnaLeadPayloadSchema — resilience", () => {
+  // Regression: a single odd field from the provider must NOT fail the whole
+  // payload (which 400'd the webhook and lost the call result + disposition).
+  it("degrades an unexpected field shape instead of rejecting the payload", () => {
+    const res = bolnaLeadPayloadSchema.safeParse({
+      status: "completed",
+      extracted_data: {
+        lead_data: {
+          // confidence sent as a string, subjective sent as an object.
+          name: { subjective: { nested: "oops" }, objective: "Mohit", confidence: "0.8" },
+        },
+      },
+    });
+    expect(res.success).toBe(true);
+    if (res.success) {
+      const name = res.data.extracted_data?.lead_data.name;
+      expect(name?.subjective).toBeNull(); // bad shape → null
+      expect(name?.objective).toBe("Mohit"); // sibling preserved
+      expect(name?.confidence).toBeNull(); // bad type → null
+    }
+  });
+
+  it("degrades a non-object lead_data bucket entry to an empty field", () => {
+    const res = bolnaLeadPayloadSchema.safeParse({
+      status: "completed",
+      extracted_data: { lead_data: { name: "just a string" } },
+    });
+    expect(res.success).toBe(true);
+  });
+
+  it("degrades a wholly malformed extracted_data to null (pre-extraction path)", () => {
+    const res = bolnaLeadPayloadSchema.safeParse({
+      status: "completed",
+      extracted_data: { lead_data: ["not", "a", "record"] },
+    });
+    expect(res.success).toBe(true);
+    if (res.success) expect(res.data.extracted_data).toBeNull();
   });
 });
 

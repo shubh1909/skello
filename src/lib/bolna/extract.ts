@@ -8,16 +8,28 @@ import { type CallOutcome, KNOWN_CALL_OUTCOMES } from "@/types/call";
 // secret or a buggy provider payload can't push multi-MB strings into the DB.
 const REASONING_MAX = 5_000;
 
+// Resilience: every field carries `.catch(...)` so an unexpected shape from the
+// provider (e.g. `confidence` sent as the string "0.8", or `subjective` sent as
+// an object) degrades that ONE field to a safe fallback instead of failing the
+// whole payload — which would 400 the webhook and lose the entire call result +
+// campaign/recovery disposition. We read these defensively (see pickValue), so a
+// null fallback is harmless.
 const bolnaFieldSchema = z
   .object({
-    subjective: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
-    objective: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+    subjective: z
+      .union([z.string(), z.number(), z.boolean(), z.null()])
+      .optional()
+      .catch(null),
+    objective: z
+      .union([z.string(), z.number(), z.boolean(), z.null()])
+      .optional()
+      .catch(null),
     // Bolna leaves the per-side reasoning string `null` when only the
     // opposite side was filled, so both reasoning fields must accept null.
-    reasoning_subjective: z.string().max(REASONING_MAX).nullish(),
-    reasoning_objective: z.string().max(REASONING_MAX).nullish(),
-    confidence: z.number().nullish(),
-    confidence_label: z.string().max(200).nullish(),
+    reasoning_subjective: z.string().max(REASONING_MAX).nullish().catch(null),
+    reasoning_objective: z.string().max(REASONING_MAX).nullish().catch(null),
+    confidence: z.number().nullish().catch(null),
+    confidence_label: z.string().max(200).nullish().catch(null),
     validation: z.unknown().nullish(),
   })
   .passthrough();
@@ -34,13 +46,19 @@ const bolnaFieldSchema = z
 // BolnaField entries so the merge pipeline can rely on the shape.
 export const bolnaLeadPayloadSchema = z
   .object({
+    // `.catch({})` on each record value: a bucket entry that isn't a field
+    // object at all (e.g. a bare string) drops to `{}` instead of failing the
+    // record. The whole `extracted_data` also `.catch(null)`s so a wholly
+    // malformed shape (e.g. lead_data sent as an array) degrades to the
+    // pre-extraction path (status update only) rather than 400-ing the webhook.
     extracted_data: z
       .object({
-        lead_data: z.record(z.string(), bolnaFieldSchema),
+        lead_data: z.record(z.string(), bolnaFieldSchema.catch({})),
       })
-      .catchall(z.record(z.string(), bolnaFieldSchema))
+      .catchall(z.record(z.string(), bolnaFieldSchema.catch({})))
       .nullable()
-      .optional(),
+      .optional()
+      .catch(null),
     status: z.string().nullish(),
     user_number: z.string().nullish(),
     agent_number: z.string().nullish(),
