@@ -87,26 +87,63 @@ const ID_KEYS = [
   "id",
 ] as const;
 
+function idFromRecord(obj: unknown): string | null {
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as Record<string, unknown>;
+  for (const key of ID_KEYS) {
+    const v = o[key];
+    if (typeof v === "string" && v.trim()) return v;
+  }
+  return null;
+}
+
+// Wrapper keys KwikEngage / Meta-style BSPs nest the payload under. We check the
+// envelope and each of these one level deep — but NOT a blind recursive scan,
+// since a generic `id` could match an unrelated org/account id elsewhere.
+const CONTAINER_KEYS = ["data", "result", "response", "payload"] as const;
+
 function extractMessageId(body: unknown): string | null {
   if (!body || typeof body !== "object") return null;
   const b = body as Record<string, unknown>;
-  for (const key of ID_KEYS) {
+
+  const top = idFromRecord(b);
+  if (top) return top;
+
+  const messages = b.messages;
+  if (Array.isArray(messages) && messages[0]) {
+    const fromMsg = idFromRecord(messages[0]);
+    if (fromMsg) return fromMsg;
+  }
+
+  for (const key of CONTAINER_KEYS) {
+    const nested = b[key];
+    const fromNested = idFromRecord(nested);
+    if (fromNested) return fromNested;
+    // One more level — some responses are { data: { data: { messageId } } }.
+    if (nested && typeof nested === "object") {
+      const n = nested as Record<string, unknown>;
+      for (const inner of CONTAINER_KEYS) {
+        const deep = idFromRecord(n[inner]);
+        if (deep) return deep;
+      }
+    }
+  }
+  return null;
+}
+
+// A 2xx can still be a soft failure ({ success:false, error }). Surface the
+// provider's own message so the failure is actionable instead of "missing id".
+function extractProviderError(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as Record<string, unknown>;
+  const succeeded =
+    b.success === true || b.status === "success" || b.status === "sent";
+  if (succeeded) return null;
+  for (const key of ["error", "message", "error_message", "reason"] as const) {
     const v = b[key];
     if (typeof v === "string" && v.trim()) return v;
   }
-  const messages = b.messages;
-  if (Array.isArray(messages) && messages[0] && typeof messages[0] === "object") {
-    const first = messages[0] as Record<string, unknown>;
-    if (typeof first.id === "string" && first.id.trim()) return first.id;
-  }
-  const data = b.data;
-  if (data && typeof data === "object") {
-    const d = data as Record<string, unknown>;
-    for (const key of ID_KEYS) {
-      const v = d[key];
-      if (typeof v === "string" && v.trim()) return v;
-    }
-  }
+  if (b.success === false) return "WhatsApp provider rejected the send";
   return null;
 }
 
@@ -150,6 +187,17 @@ export async function sendWhatsAppTemplate(
     | null;
   const id = extractMessageId(body);
   if (!id) {
+    // A 2xx with no id is either a soft failure (surface the provider's own
+    // message) or an unrecognised response shape (log the raw body so the
+    // extraction paths can be extended — no PII in a template-send response).
+    const providerError = extractProviderError(body);
+    if (providerError) {
+      throw new WhatsAppSendError(502, providerError);
+    }
+    console.error("[kwikengage] 2xx response with no message id", {
+      template: input.templateName,
+      body,
+    });
     throw new WhatsAppSendError(502, "WhatsApp provider response missing message id");
   }
   const status =
