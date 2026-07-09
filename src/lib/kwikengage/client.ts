@@ -38,7 +38,7 @@ export const TEMPLATE_VARIABLE_ORDER = [
 //   Body: { to, channel:"whatsapp", content:{ type:"template",
 //           template:{ template_id, language, components:[{type:"body",
 //           parameters:[{type:"text",text}]}] } } }
-//   Response: { success, messageId }.
+//   Response: { status:"success", message_id_attr } (confirmed from prod logs).
 // The `template_id` is whatever the org configures as the template name (that's
 // the value KwikEngage matches). `language` must match the approved template's
 // language code. This is the ONE place the provider request shape lives.
@@ -80,6 +80,7 @@ function buildTemplateRequest(
 // Accept the message id under whichever field the provider returns it, incl.
 // Meta cloud-style `{ messages: [{ id }] }` and `{ data: { id } }`.
 const ID_KEYS = [
+  "message_id_attr", // KwikEngage send-message/v2 sync response
   "message_id",
   "messageId",
   "mid",

@@ -79,6 +79,25 @@ CRON_SECRET=<shared_secret>                    # campaigns cron drainer; must ma
 
 > Provider **API keys** are **per-organisation** — stored in the `bolna_integrations` table and configured by each org admin in Settings. Skelo itself does not hold a global provider key. The environment variable names above still reference `BOLNA_*` because that is the current provider; rename if you later abstract the service directory.
 
+### Error monitoring (Sentry) — optional
+
+Server + client errors are reported to Sentry when a DSN is set. Everything is a **hard no-op until `SENTRY_DSN` is present** — no build changes, no runtime overhead — so these are safe to leave unset in dev.
+
+```ini
+SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>   # server + edge; enables capture
+NEXT_PUBLIC_SENTRY_DSN=<same-or-separate-dsn>               # browser capture (inlined into the client bundle)
+SENTRY_ENVIRONMENT=production                               # optional — defaults to NODE_ENV
+SENTRY_TRACES_SAMPLE_RATE=0                                 # optional — 0 = errors only (default); raise for perf tracing
+# Source-map upload (readable prod stack traces). Only needed at build time; upload runs only when the auth token is set.
+SENTRY_ORG=<org-slug>
+SENTRY_PROJECT=<project-slug>
+SENTRY_AUTH_TOKEN=<org-auth-token>
+```
+
+- **PII is scrubbed before anything leaves the process** — phone numbers, emails, URL query strings (incl. the Shopify recovery `?key=` checkout token), bearer tokens, and any sensitive-named field are redacted in [src/lib/observability/scrub.ts](../src/lib/observability/scrub.ts) (`sendDefaultPii` is off + `beforeSend`/`beforeSendTransaction`/`beforeBreadcrumb` all run the scrubber).
+- Every server-side `console.error` is forwarded automatically (`captureConsoleIntegration`), and `logSkeloError` becomes a filterable issue tagged `skelo.tag` / `skelo.org`.
+- Init lives in [src/instrumentation.ts](../src/instrumentation.ts) (server/edge), [src/instrumentation-client.ts](../src/instrumentation-client.ts) (browser), and the runtime configs `sentry.server.config.ts` / `sentry.edge.config.ts`.
+
 ### Supabase clients
 
 | Client | File | Use in |

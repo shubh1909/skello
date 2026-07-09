@@ -1,5 +1,7 @@
 import "server-only";
 
+import * as Sentry from "@sentry/nextjs";
+
 // Structured error tagging so logs are grep-able when the user tests.
 //
 // Every tag follows the pattern [SKELO:DOMAIN-ACTION]:
@@ -69,10 +71,27 @@ export function logSkeloError(
   const { cause, ...rest } = ctx;
   const causeMessage = extractCause(cause);
 
-  console.error(tagged, userMessage, {
-    ...rest,
-    ...(causeMessage ? { cause: causeMessage } : {}),
+  const detail = { ...rest, ...(causeMessage ? { cause: causeMessage } : {}) };
+
+  // The console.error is wrapped in a Sentry scope so `captureConsoleIntegration`
+  // (see sentry.server.config.ts) tags THIS event with skelo.tag/org and — when
+  // `cause` is a real Error passed as an arg — attaches its stack. One enriched,
+  // filterable issue, no duplicate capture. Context is scrubbed by beforeSend, so
+  // attaching `rest` is safe even though it can carry a phone (e.g. toNumber).
+  // Sentry-dormant (no DSN) → withScope is a cheap no-op and pm2 still gets the log.
+  Sentry.withScope((scope) => {
+    scope.setTag("skelo.tag", tag);
+    if (typeof rest.organisationId === "string") {
+      scope.setTag("skelo.org", rest.organisationId);
+    }
+    scope.setContext("skelo", { userMessage, ...rest });
+    if (cause instanceof Error) {
+      console.error(tagged, userMessage, detail, cause);
+    } else {
+      console.error(tagged, userMessage, detail);
+    }
   });
+
   // Returned string is safe to surface in toasts — it's the user-friendly
   // message with the tag appended so testers can grep.
   return `${userMessage} ${tagged}`;
@@ -86,6 +105,14 @@ export function warnSkelo(
   ctx: SkeloErrorContext = {},
 ): void {
   console.warn(`[SKELO:${tag}]`, message, ctx);
+  // A warning isn't its own issue — attach it as a breadcrumb so it shows up as
+  // context on whatever error follows. Scrubbed by beforeBreadcrumb.
+  Sentry.addBreadcrumb({
+    category: "skelo",
+    level: "warning",
+    message: `[SKELO:${tag}] ${message}`,
+    data: ctx,
+  });
 }
 
 // Supabase/Postgrest errors are plain objects with NON-enumerable props, so
