@@ -71,8 +71,13 @@ export function parseKwikEngageWebhook(body: unknown): ParsedDelivery | null {
   }
 
   const id =
-    pick(src, ["message_id", "messageId", "id", "provider_message_id"]) ??
-    pick(b, ["message_id", "messageId", "id"]);
+    pick(src, [
+      "message_id_attr",
+      "message_id",
+      "messageId",
+      "id",
+      "provider_message_id",
+    ]) ?? pick(b, ["message_id_attr", "message_id", "messageId", "id"]);
   const status = mapKwikEngageStatus(
     pick(src, ["status", "event", "state", "message_status"]) ??
       pick(b, ["status", "event"]),
