@@ -22,6 +22,20 @@ const BATCH_LIMIT = 100;
 const CONCURRENCY = 25;
 const STUCK_IN_FLIGHT_MS = 30 * 60 * 1000;
 
+// Clamp a candidate dial instant into the org's calling window (evaluated in
+// APP_TIMEZONE). Outside the window → the next window open; inside, or no window
+// configured → unchanged. Applied wherever we WRITE next_attempt_at so the stored
+// (and UI-displayed) time is always callable — the dispatcher's runtime deferral
+// stays as the safety net for anything that slips through.
+function clampToCallWindow(
+  at: Date,
+  start: string | null,
+  end: string | null,
+): Date {
+  if (isWithinCallWindow(at, start, end, APP_TIMEZONE)) return at;
+  return nextCallWindowOpen(at, start, APP_TIMEZONE);
+}
+
 interface RecoverySettingsRow {
   enabled: boolean;
   wait_minutes: number;
@@ -36,6 +50,8 @@ interface RecoverySettingsRow {
   voice_enabled: boolean;
   whatsapp_enabled: boolean;
   whatsapp_template_name: string | null;
+  call_window_start: string | null;
+  call_window_end: string | null;
 }
 
 interface BolnaConfigRow {
@@ -58,7 +74,7 @@ async function loadSettings(
   const { data } = await admin
     .from("shopify_recovery_settings")
     .select(
-      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, voice_enabled, whatsapp_enabled, whatsapp_template_name",
+      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, voice_enabled, whatsapp_enabled, whatsapp_template_name, call_window_start, call_window_end",
     )
     .eq("organisation_id", organisationId)
     .maybeSingle<RecoverySettingsRow>();
@@ -228,14 +244,27 @@ export async function scheduleRecoveryFromCheckout(input: {
   // anyway (this is also the no-connect fallback). With no voice to wait for,
   // WhatsApp sends on its own at now+wait.
   const nowMs = Date.now();
-  const iso = (ms: number) => new Date(nowMs + ms).toISOString();
   const waitMs = settings.wait_minutes * 60_000;
   const bothRun = voiceActionable && whatsappActionable;
-  const voiceWhen = iso(waitMs);
+
+  // Clamp a candidate dial time INTO the org's calling window: if it lands
+  // outside, move it to the next window open. This keeps the stored
+  // next_attempt_at truthful up front, so the UI never shows an un-callable
+  // time (e.g. a 9pm abandonment + 30m wait no longer displays 9:30pm when the
+  // window closed at 9pm — it shows tomorrow's open). The dispatcher's runtime
+  // deferral stays as the safety net for anything scheduled earlier.
+  const clampToWindow = (ms: number): string =>
+    clampToCallWindow(
+      new Date(nowMs + ms),
+      settings.call_window_start,
+      settings.call_window_end,
+    ).toISOString();
+
+  const voiceWhen = clampToWindow(waitMs);
   // Upper bound on how long the voice track can run before it is exhausted.
   const voiceBudgetMs =
     waitMs + settings.max_attempts * settings.retry_interval_seconds * 1000;
-  const waWhen = bothRun ? iso(voiceBudgetMs) : iso(waitMs);
+  const waWhen = clampToWindow(bothRun ? voiceBudgetMs : waitMs);
 
   const offerFields = {
     offer_label: offerLabel,
@@ -767,6 +796,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
 
 interface AttemptOutcomeRow {
   id: string;
+  organisation_id: string;
   status: string;
   attempt: number;
   max_attempts: number;
@@ -791,7 +821,7 @@ export async function applyShopifyRecoveryOutcome(input: {
   const admin = createAdminClient();
   const { data: attempt } = await admin
     .from("shopify_recovery_attempts")
-    .select("id, status, attempt, max_attempts, retry_interval_seconds")
+    .select("id, organisation_id, status, attempt, max_attempts, retry_interval_seconds")
     .eq("id", input.attemptId)
     .maybeSingle<AttemptOutcomeRow>();
   if (!attempt) return;
@@ -812,9 +842,22 @@ export async function applyShopifyRecoveryOutcome(input: {
     } else if (attempt.attempt >= attempt.max_attempts) {
       patch.status = "failed";
     } else {
+      // Re-arm for a retry — clamped into the calling window so the stored
+      // next_attempt_at (shown as "next call") is never an un-callable time.
+      const retryAt = new Date(Date.now() + attempt.retry_interval_seconds * 1000);
+      const { data: win } = await admin
+        .from("shopify_recovery_settings")
+        .select("call_window_start, call_window_end")
+        .eq("organisation_id", attempt.organisation_id)
+        .maybeSingle<{
+          call_window_start: string | null;
+          call_window_end: string | null;
+        }>();
       patch.status = "pending";
-      patch.next_attempt_at = new Date(
-        Date.now() + attempt.retry_interval_seconds * 1000,
+      patch.next_attempt_at = clampToCallWindow(
+        retryAt,
+        win?.call_window_start ?? null,
+        win?.call_window_end ?? null,
       ).toISOString();
     }
 

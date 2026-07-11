@@ -29,7 +29,7 @@ export function CartRecoveryDashboard({
         hint="Carts we dialled"
       />
       <StatCard
-        label="Cart Recovered "
+        label="Carts Recovered "
         value={metrics.conversions_total.toLocaleString()}
         icon={<CheckCircle2Icon />}
         hint="Abandoned carts that converted"
