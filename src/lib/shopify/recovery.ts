@@ -35,8 +35,6 @@ interface RecoverySettingsRow {
   offer_discount_kind: string | null;
   voice_enabled: boolean;
   whatsapp_enabled: boolean;
-  first_channel: string;
-  escalation_gap_minutes: number;
   whatsapp_template_name: string | null;
 }
 
@@ -60,7 +58,7 @@ async function loadSettings(
   const { data } = await admin
     .from("shopify_recovery_settings")
     .select(
-      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, voice_enabled, whatsapp_enabled, first_channel, escalation_gap_minutes, whatsapp_template_name",
+      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, voice_enabled, whatsapp_enabled, whatsapp_template_name",
     )
     .eq("organisation_id", organisationId)
     .maybeSingle<RecoverySettingsRow>();
@@ -222,21 +220,22 @@ export async function scheduleRecoveryFromCheckout(input: {
   const offerDiscountKind = noOffer ? null : settings.offer_discount_kind;
   const fromPhone = bolna?.from_phone_number ?? null;
 
-  // Timing: the first channel fires at now+wait; the second escalates by the gap
-  // (only when both channels will actually run).
+  // Timing: voice always dials first, at now+wait. WhatsApp trails the voice
+  // track — it is RELEASED (re-anchored to now) the moment the connected call
+  // ends, or when voice gives up, in applyShopifyRecoveryOutcome. The timestamp
+  // stamped here is only a BACKSTOP so a dropped provider webhook can't strand a
+  // held message forever: once the whole voice budget elapses, WhatsApp sends
+  // anyway (this is also the no-connect fallback). With no voice to wait for,
+  // WhatsApp sends on its own at now+wait.
   const nowMs = Date.now();
   const iso = (ms: number) => new Date(nowMs + ms).toISOString();
   const waitMs = settings.wait_minutes * 60_000;
-  const gapMs = settings.escalation_gap_minutes * 60_000;
   const bothRun = voiceActionable && whatsappActionable;
-  const voiceWhen =
-    settings.first_channel === "whatsapp" && bothRun
-      ? iso(waitMs + gapMs)
-      : iso(waitMs);
-  const waWhen =
-    settings.first_channel === "voice" && bothRun
-      ? iso(waitMs + gapMs)
-      : iso(waitMs);
+  const voiceWhen = iso(waitMs);
+  // Upper bound on how long the voice track can run before it is exhausted.
+  const voiceBudgetMs =
+    waitMs + settings.max_attempts * settings.retry_interval_seconds * 1000;
+  const waWhen = bothRun ? iso(voiceBudgetMs) : iso(waitMs);
 
   const offerFields = {
     offer_label: offerLabel,
@@ -390,9 +389,22 @@ interface DueRecovery {
 // ---------------------------------------------------------------------------
 
 // Money → speakable string: 2dp, trailing ".00" trimmed (5000, not 5000.00).
+// Used for the percentage label; currency amounts use wholeAmount (below).
 function money(n: number): string {
   const rounded = Math.round(n * 100) / 100;
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
+// Currency amount → whole units, no paise. The voice agent quotes "5000 rupees",
+// never "4999.50", and the WhatsApp copy matches. Rounds to the nearest rupee.
+function wholeAmount(n: number): string {
+  return String(Math.round(n));
+}
+
+// First name only — the agent greets "Hi Rahul", not "Hi Rahul Gupta". Splits on
+// whitespace and takes the first token; empty/null → "".
+function firstName(full: string | null): string {
+  return full?.trim().split(/\s+/)[0] ?? "";
 }
 
 function parseCartItems(raw: unknown): RecoveryCartItem[] {
@@ -488,17 +500,18 @@ export function buildRecoveryVariables(
 
   return {
     // --- Spoken context (must match {placeholders} in the Bolna agent script) ---
-    customer_name: r.customer_name ?? "",
+    customer_name: firstName(r.customer_name),
     top_product: topProduct,
     cart_summary: cartSummary,
     item_count: String(itemCount),
     currency: r.currency ?? "",
-    cart_total: r.cart_total != null ? money(r.cart_total) : "",
+    cart_total: r.cart_total != null ? wholeAmount(r.cart_total) : "",
     discount_name: r.offer_label ?? "",
     discount_code: r.offer_code ?? "",
     discount_percentage: percentLabel,
-    discount_amount: discountAmount != null ? money(discountAmount) : "",
-    discounted_cart_total: discountedTotal != null ? money(discountedTotal) : "",
+    discount_amount: discountAmount != null ? wholeAmount(discountAmount) : "",
+    discounted_cart_total:
+      discountedTotal != null ? wholeAmount(discountedTotal) : "",
     recovery_url: r.recovery_url ?? "",
     // --- Internal correlation (not referenced by the prompt) ---
     organisation_id: r.organisation_id,
@@ -781,31 +794,54 @@ export async function applyShopifyRecoveryOutcome(input: {
     .select("id, status, attempt, max_attempts, retry_interval_seconds")
     .eq("id", input.attemptId)
     .maybeSingle<AttemptOutcomeRow>();
-  if (!attempt || attempt.status !== "in_flight") return;
+  if (!attempt) return;
 
-  const patch: Record<string, unknown> = {
-    last_call_id: input.callId,
-    last_status: input.callStatus,
-  };
+  // Voice-track transition — only while the row is still in_flight (first
+  // terminal/connect signal wins; later duplicates no-op via the CAS below).
+  if (attempt.status === "in_flight") {
+    const patch: Record<string, unknown> = {
+      last_call_id: input.callId,
+      last_status: input.callStatus,
+    };
 
-  if (connected) {
-    // Reached the shopper — done. Stamp the connect (first answer wins, since
-    // the CAS below only fires while the row is still in_flight) so we have an
-    // explicit "we spoke to them" marker and never queue another dial.
-    patch.status = "succeeded";
-    patch.connected_at = new Date().toISOString();
-  } else if (attempt.attempt >= attempt.max_attempts) {
-    patch.status = "failed";
-  } else {
-    patch.status = "pending";
-    patch.next_attempt_at = new Date(
-      Date.now() + attempt.retry_interval_seconds * 1000,
-    ).toISOString();
+    if (connected) {
+      // Reached the shopper — done. Stamp the connect so we have an explicit
+      // "we spoke to them" marker and never queue another dial.
+      patch.status = "succeeded";
+      patch.connected_at = new Date().toISOString();
+    } else if (attempt.attempt >= attempt.max_attempts) {
+      patch.status = "failed";
+    } else {
+      patch.status = "pending";
+      patch.next_attempt_at = new Date(
+        Date.now() + attempt.retry_interval_seconds * 1000,
+      ).toISOString();
+    }
+
+    await admin
+      .from("shopify_recovery_attempts")
+      .update(patch)
+      .eq("id", attempt.id)
+      .eq("status", "in_flight");
   }
 
-  await admin
-    .from("shopify_recovery_attempts")
-    .update(patch)
-    .eq("id", attempt.id)
-    .eq("status", "in_flight");
+  // Release a WhatsApp held behind the voice track. Two triggers:
+  //   - the connected call has ENDED (`completed`) → send now, right after the
+  //     call — NOT on `in_progress`, so we never message a shopper mid-call.
+  //   - voice gave up (a non-connect terminal on the last attempt) → send now
+  //     as the no-connect fallback.
+  // This runs independently of the in_flight CAS above so a `completed` landing
+  // after an earlier `in_progress` (which already flipped the row to succeeded)
+  // still releases the message. Guarded on whatsapp_status='pending' so a send
+  // that already fired — or was canceled on conversion — is never disturbed.
+  const connectedCallEnded = input.callStatus === "completed";
+  const voiceExhaustedNoConnect =
+    !connected && attempt.attempt >= attempt.max_attempts;
+  if (connectedCallEnded || voiceExhaustedNoConnect) {
+    await admin
+      .from("shopify_recovery_attempts")
+      .update({ whatsapp_next_at: new Date().toISOString() })
+      .eq("id", attempt.id)
+      .eq("whatsapp_status", "pending");
+  }
 }

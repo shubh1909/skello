@@ -106,11 +106,16 @@ Org detail page → **WhatsApp** card:
 1. In the KwikEngage/Kwikchat dashboard: get the **API token** (Integrations →
    API), and submit a **Meta-approved template** (Marketing category; see the
    template in [docs/cart-recovery.md](cart-recovery.md) / the onboarding notes).
-2. In the WhatsApp card: paste the **API token**, **sender**, and the approved
-   **template name** → **Connect**. Leave "API base URL" blank (defaults to
-   `https://api.kwikengage.ai`).
+2. In the WhatsApp card: paste the **API token**, **sender**, the approved
+   **template name**, and the **template language** (the Meta code the template was
+   approved under — `en`, `en_US`, … — must match exactly or the BSP 400s) →
+   **Connect**. Leave "API base URL" blank (defaults to `https://api.kwikengage.ai`).
 3. In the KwikEngage dashboard, set the **delivery webhook** to
    `https://app.skelo.team/api/webhooks/kwikengage?secret=<KWIKENGAGE_WEBHOOK_SECRET>`.
+4. **Send test** (on the WhatsApp card) — fires one real template send to a number
+   you choose, using the saved config. If it's rejected, the exact provider error
+   is shown (bad template name / wrong language / parameter-count mismatch). Fix and
+   re-test until it delivers before enabling the channel for real carts.
 
 > Until an approved template is set, the WhatsApp track is **skipped**
 > (`no_template`) and voice still runs — WhatsApp is purely additive.
@@ -120,18 +125,20 @@ On the org's **Cart Recovery** page (Campaigns → Templates → Cart Recovery):
 - Set the **wait time** and **max attempts**, optional **calling window** (IST).
 - Pick the **offer** from the **Shopify dropdown** (captures the discount % +
   code the agent/message quotes).
-- Under **Channels**: enable **Voice** and/or **WhatsApp**, choose the **order**
-  (WhatsApp-first or Call-first) and the **escalation gap**.
+- Under **Channels**: enable **Voice** and/or **WhatsApp**. Voice always calls
+  first; when WhatsApp is on it's sent as soon as the connected call ends (or as a
+  fallback if the call never connects) — no order or gap to set.
 - Hit **Start**.
 
 ### B5. Verify end-to-end (you)
 1. Abandon a test cart with a phone you control (set wait to ~1 min).
-2. A row appears on the **Carts** tab; on the next tick the first channel fires
-   (WhatsApp message and/or call). Watch the cart drawer's WhatsApp timeline
-   (Sent → Delivered → Read) and the Call history.
-3. **Complete the order** → it moves to **Converted** and both channels stop.
-   It only counts as **Recovered** (ROI) if a call actually reached the shopper
-   before purchase.
+2. A row appears on the **Carts** tab; on the next tick the voice call fires, and
+   the WhatsApp goes out once that call ends (or after voice gives up). Watch the
+   cart drawer's WhatsApp timeline (Sent → Delivered → Read) and the Call history.
+3. **Complete the order** → it moves to **Converted** and both channels stop. The
+   **Cart Recovered** stat counts every conversion (call-driven + organic). Strict
+   **ROI attribution** ("Recovered · by us" in the cart drawer) is separate — it
+   only credits us when a call actually reached the shopper before purchase.
 
 To fire the tick immediately instead of waiting:
 ```bash

@@ -35,7 +35,7 @@ export interface RecoveryOverview {
 }
 
 const SETTINGS_COLUMNS =
-  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, first_channel, escalation_gap_minutes, whatsapp_template_name, created_at, updated_at";
+  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
   "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at";
@@ -167,7 +167,9 @@ export async function getRecoveryOverview(): Promise<
   const converted = convertedRes.data ?? [];
   const attributed = await attributedAttemptIds(admin, converted);
   const attributedRows = converted.filter((r) => attributed.has(r.id));
-  const revenue = attributedRows.reduce((sum, r) => sum + (r.cart_total ?? 0), 0);
+  // Revenue across ALL recovered carts (call-driven + organic) — matches the
+  // "Recovered by AI" count, which is every conversion, not just the attributed.
+  const revenue = converted.reduce((sum, r) => sum + (r.cart_total ?? 0), 0);
 
   // Resolve the voice agent recovery dials from: the recovery override, else the
   // org's default agent. Its friendly name comes from the voice_agents registry.
@@ -226,10 +228,7 @@ export async function getRecoveryOverview(): Promise<
     recovered: attributedRows.length,
     conversions_total: converted.length,
     revenue_recovered: revenue,
-    currency:
-      attributedRows.find((r) => r.currency)?.currency ??
-      converted.find((r) => r.currency)?.currency ??
-      null,
+    currency: converted.find((r) => r.currency)?.currency ?? null,
   };
 
   return ok({
@@ -289,8 +288,6 @@ const settingsSchema = z.object({
   // voice-only behaviour.
   voice_enabled: z.boolean().optional(),
   whatsapp_enabled: z.boolean().optional(),
-  first_channel: z.enum(["whatsapp", "voice"]).optional(),
-  escalation_gap_minutes: z.number().int().min(1).max(10080).optional(),
   whatsapp_template_name: z.string().trim().max(200).nullable().optional(),
 });
 
@@ -344,12 +341,6 @@ export async function saveRecoverySettings(
           : {}),
         ...(parsed.data.whatsapp_enabled !== undefined
           ? { whatsapp_enabled: parsed.data.whatsapp_enabled }
-          : {}),
-        ...(parsed.data.first_channel !== undefined
-          ? { first_channel: parsed.data.first_channel }
-          : {}),
-        ...(parsed.data.escalation_gap_minutes !== undefined
-          ? { escalation_gap_minutes: parsed.data.escalation_gap_minutes }
           : {}),
         ...(parsed.data.whatsapp_template_name !== undefined
           ? { whatsapp_template_name: parsed.data.whatsapp_template_name }

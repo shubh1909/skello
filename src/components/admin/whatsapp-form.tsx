@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   disconnectWhatsAppAdmin,
+  sendTestWhatsAppAdmin,
   updateWhatsAppAdmin,
   upsertWhatsAppAdmin,
 } from "@/actions/admin/whatsapp";
@@ -31,10 +32,32 @@ export function WhatsAppForm({ organisationId, integration }: Props) {
   const [templateName, setTemplateName] = React.useState(
     integration?.template_name ?? "",
   );
+  const [templateLanguage, setTemplateLanguage] = React.useState(
+    integration?.template_language ?? "en",
+  );
   const [baseUrl, setBaseUrl] = React.useState(integration?.base_url ?? "");
   const [enabled, setEnabled] = React.useState(integration?.enabled ?? true);
+  const [testPhone, setTestPhone] = React.useState("");
 
   const hasExisting = integration !== null;
+
+  function onSendTest() {
+    if (!testPhone.trim()) {
+      toast.error("Enter a phone number to send the test to");
+      return;
+    }
+    startTransition(async () => {
+      const result = await sendTestWhatsAppAdmin({
+        organisation_id: organisationId,
+        to_phone: testPhone.trim(),
+      });
+      if (!result.success) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success("Test WhatsApp sent — check the handset");
+    });
+  }
 
   function onSave(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -49,6 +72,7 @@ export function WhatsAppForm({ organisationId, integration }: Props) {
           api_token: apiToken.trim(),
           sender_id: senderId.trim() || null,
           template_name: templateName.trim() || null,
+          template_language: templateLanguage.trim() || "en",
           base_url: baseUrl.trim() || null,
           enabled,
         });
@@ -68,6 +92,9 @@ export function WhatsAppForm({ organisationId, integration }: Props) {
       }
       if ((templateName.trim() || null) !== integration.template_name) {
         patch.template_name = templateName.trim() || null;
+      }
+      if ((templateLanguage.trim() || "en") !== integration.template_language) {
+        patch.template_language = templateLanguage.trim() || "en";
       }
       if ((baseUrl.trim() || null) !== integration.base_url) {
         patch.base_url = baseUrl.trim() || null;
@@ -110,6 +137,7 @@ export function WhatsAppForm({ organisationId, integration }: Props) {
       setApiToken("");
       setSenderId("");
       setTemplateName("");
+      setTemplateLanguage("en");
       setBaseUrl("");
       setEnabled(true);
       router.refresh();
@@ -191,6 +219,22 @@ export function WhatsAppForm({ organisationId, integration }: Props) {
       </div>
 
       <div className="grid gap-1.5">
+        <Label htmlFor="wa-language">Template language</Label>
+        <Input
+          id="wa-language"
+          placeholder="en"
+          value={templateLanguage}
+          onChange={(e) => setTemplateLanguage(e.target.value)}
+          autoComplete="off"
+        />
+        <p className="text-xs text-muted-foreground">
+          The Meta language code the template was approved under (e.g.{" "}
+          <code>en</code>, <code>en_US</code>). Must match exactly, or sends are
+          rejected. Defaults to <code>en</code>.
+        </p>
+      </div>
+
+      <div className="grid gap-1.5">
         <Label htmlFor="wa-base-url">API base URL (optional)</Label>
         <Input
           id="wa-base-url"
@@ -200,6 +244,35 @@ export function WhatsAppForm({ organisationId, integration }: Props) {
           autoComplete="off"
         />
       </div>
+
+      {hasExisting ? (
+        <div className="grid gap-1.5 rounded-md border border-border/60 p-3">
+          <Label htmlFor="wa-test-phone">Send a test message</Label>
+          <div className="flex gap-2">
+            <Input
+              id="wa-test-phone"
+              placeholder="e.g. +919876543210"
+              value={testPhone}
+              onChange={(e) => setTestPhone(e.target.value)}
+              autoComplete="off"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              disabled={pending}
+              onClick={onSendTest}
+            >
+              Send test
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Sends the saved template with sample values. Uses the currently
+            <strong> saved</strong> config, so save changes first. A rejection
+            shows the provider&apos;s exact error (bad template name, wrong
+            language, or parameter-count mismatch).
+          </p>
+        </div>
+      ) : null}
 
       <div className="flex items-center justify-between gap-2 pt-2">
         <Button type="submit" disabled={pending}>

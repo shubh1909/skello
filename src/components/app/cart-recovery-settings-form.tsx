@@ -78,12 +78,6 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   const [whatsappEnabled, setWhatsappEnabled] = React.useState(
     settings?.whatsapp_enabled ?? false,
   );
-  const [firstChannel, setFirstChannel] = React.useState<string>(
-    settings?.first_channel ?? "whatsapp",
-  );
-  const [escalationGap, setEscalationGap] = React.useState(
-    String(settings?.escalation_gap_minutes ?? 30),
-  );
   const [whatsappTemplate, setWhatsappTemplate] = React.useState(
     settings?.whatsapp_template_name ?? "",
   );
@@ -192,8 +186,6 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
         call_window_end: windowEnd || null,
         voice_enabled: voiceEnabled,
         whatsapp_enabled: whatsappEnabled,
-        first_channel: firstChannel as "whatsapp" | "voice",
-        escalation_gap_minutes: Number(escalationGap),
         whatsapp_template_name: whatsappTemplate.trim() || null,
         offer_type: offerType as ShopifyOfferType,
         offer_label: offerType === "none" ? null : offerLabel.trim() || null,
@@ -344,36 +336,11 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
             </div>
 
             {voiceEnabled && whatsappEnabled ? (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="grid gap-1.5">
-                  <Label>Which goes first</Label>
-                  <Select
-                    value={firstChannel}
-                    onValueChange={(v) => v && setFirstChannel(v)}
-                    disabled={pending}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="whatsapp">WhatsApp first</SelectItem>
-                      <SelectItem value="voice">Call first</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="esc-gap">Escalate after (minutes)</Label>
-                  <Input
-                    id="esc-gap"
-                    type="number"
-                    min={1}
-                    max={10080}
-                    value={escalationGap}
-                    onChange={(e) => setEscalationGap(e.target.value)}
-                    disabled={pending}
-                  />
-                </div>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                The voice agent calls first. WhatsApp is sent as soon as the
+                connected call ends — or as a fallback if the call never
+                connects.
+              </p>
             ) : null}
 
             {whatsappEnabled ? (
@@ -393,6 +360,16 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
                   WhatsApp connection in Settings.
                 </p>
               </div>
+            ) : null}
+
+            {whatsappEnabled && offerType === "none" ? (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                No discount offer is set, so the offer fields (discount code,
+                discounted total) in the WhatsApp template will be blank. If your
+                approved template references them, pick an offer below — or use a
+                template without discount variables — otherwise the message reads
+                oddly and some providers reject the send.
+              </p>
             ) : null}
           </div>
 

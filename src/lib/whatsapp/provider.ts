@@ -20,6 +20,9 @@ export interface WhatsAppSendInput {
   baseUrl?: string | null;
   senderId?: string | null;
   templateName: string;
+  // Meta template language code (e.g. "en", "en_US"). Must match the code the
+  // template was approved under, else the BSP 400s. Null/empty → adapter default.
+  language?: string | null;
   toPhone: string;
   // Keys from buildRecoveryVariables; the adapter maps them into the template's
   // positional parameters.

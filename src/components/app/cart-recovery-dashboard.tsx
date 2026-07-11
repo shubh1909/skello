@@ -14,7 +14,6 @@ export function CartRecoveryDashboard({
 }: {
   metrics: RecoveryMetrics;
 }) {
-  const organic = Math.max(0, metrics.conversions_total - metrics.recovered);
   return (
     <section className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
       <StatCard
@@ -30,20 +29,16 @@ export function CartRecoveryDashboard({
         hint="Carts we dialled"
       />
       <StatCard
-        label="Recovered via call"
-        value={metrics.recovered.toLocaleString()}
+        label="Cart Recovered "
+        value={metrics.conversions_total.toLocaleString()}
         icon={<CheckCircle2Icon />}
-        hint={
-          organic > 0
-            ? `+${organic.toLocaleString()} converted organically`
-            : "Reached, then purchased"
-        }
+        hint="Abandoned carts that converted"
       />
       <StatCard
         label="Revenue recovered"
         value={formatMoney(metrics.revenue_recovered, metrics.currency)}
         icon={<TrendingUpIcon />}
-        hint="From call-driven recoveries"
+        hint="Across all recovered carts"
       />
     </section>
   );

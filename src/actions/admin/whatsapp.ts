@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 
 import { requireAdmin } from "@/lib/auth/admin";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -8,6 +9,8 @@ import {
   whatsappIntegrationUpdateSchema,
   whatsappIntegrationUpsertSchema,
 } from "@/lib/validations/whatsapp-integration";
+import { getWhatsAppProvider } from "@/lib/whatsapp/registry";
+import { WhatsAppSendError } from "@/lib/whatsapp/provider";
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { WhatsAppIntegration } from "@/types/whatsapp-integration";
 
@@ -18,13 +21,14 @@ interface IntegrationRow {
   base_url: string | null;
   sender_id: string | null;
   template_name: string | null;
+  template_language: string;
   enabled: boolean;
   created_at: string;
   updated_at: string;
 }
 
 const INTEGRATION_COLUMNS =
-  "organisation_id, provider, api_token, base_url, sender_id, template_name, enabled, created_at, updated_at";
+  "organisation_id, provider, api_token, base_url, sender_id, template_name, template_language, enabled, created_at, updated_at";
 
 function toPublic(row: IntegrationRow): WhatsAppIntegration {
   return {
@@ -33,6 +37,7 @@ function toPublic(row: IntegrationRow): WhatsAppIntegration {
     base_url: row.base_url,
     sender_id: row.sender_id,
     template_name: row.template_name,
+    template_language: row.template_language,
     enabled: row.enabled,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -85,6 +90,7 @@ export async function upsertWhatsAppAdmin(
       base_url: parsed.data.base_url,
       sender_id: parsed.data.sender_id,
       template_name: parsed.data.template_name,
+      template_language: parsed.data.template_language,
       enabled: parsed.data.enabled,
     })
     .select(INTEGRATION_COLUMNS)
@@ -123,6 +129,86 @@ export async function updateWhatsAppAdmin(
 
   revalidate(organisation_id);
   return ok(toPublic(data));
+}
+
+// Non-empty sample values for every recovery variable the template adapter may
+// read. All fields are populated so a test send exercises the real template
+// (name + language + parameter count) without tripping Meta's empty-param 400 —
+// a rejection here therefore points at a genuine template mismatch.
+const TEST_VARIABLES: Record<string, string> = {
+  customer_name: "Test Customer",
+  top_product: "Sample Product",
+  cart_summary: "Sample Product",
+  item_count: "1",
+  currency: "INR",
+  cart_total: "4999",
+  discount_name: "Test Offer",
+  discount_code: "TEST10",
+  discount_percentage: "10%",
+  discount_amount: "500",
+  discounted_cart_total: "4499",
+  recovery_url: "https://example.com/cart",
+};
+
+const testSendSchema = z.object({
+  organisation_id: z.string().uuid(),
+  to_phone: z.string().trim().min(5).max(20),
+});
+
+interface TestSendRow {
+  provider: string;
+  api_token: string;
+  base_url: string | null;
+  sender_id: string | null;
+  template_name: string | null;
+  template_language: string;
+}
+
+// Fire one real template send to a chosen number so an admin can validate a
+// WhatsApp connection (token, template name, language, parameter count) before
+// it goes live — and see the provider's exact error if it's misconfigured.
+export async function sendTestWhatsAppAdmin(
+  input: unknown,
+): Promise<ActionResult<{ providerMessageId: string }>> {
+  await requireAdmin();
+  const parsed = testSendSchema.safeParse(input);
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  const admin = createAdminClient();
+  const { data: row, error } = await admin
+    .from("whatsapp_integrations")
+    .select(
+      "provider, api_token, base_url, sender_id, template_name, template_language",
+    )
+    .eq("organisation_id", parsed.data.organisation_id)
+    .maybeSingle<TestSendRow>();
+
+  if (error) return fail(error.message);
+  if (!row) return fail("WhatsApp isn't connected for this workspace yet.");
+  if (!row.template_name?.trim()) {
+    return fail("Set an approved template name before sending a test.");
+  }
+
+  try {
+    const provider = getWhatsAppProvider(row.provider);
+    const result = await provider.sendTemplate({
+      apiToken: row.api_token,
+      baseUrl: row.base_url,
+      senderId: row.sender_id,
+      templateName: row.template_name,
+      language: row.template_language,
+      toPhone: parsed.data.to_phone,
+      variables: TEST_VARIABLES,
+    });
+    return ok({ providerMessageId: result.providerMessageId });
+  } catch (err) {
+    if (err instanceof WhatsAppSendError) {
+      return fail(`Send rejected (${err.status}): ${err.message}`);
+    }
+    return fail("Failed to reach the WhatsApp provider.");
+  }
 }
 
 export async function disconnectWhatsAppAdmin(

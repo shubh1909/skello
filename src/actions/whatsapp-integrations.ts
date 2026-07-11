@@ -18,13 +18,14 @@ interface IntegrationRow {
   base_url: string | null;
   sender_id: string | null;
   template_name: string | null;
+  template_language: string;
   enabled: boolean;
   created_at: string;
   updated_at: string;
 }
 
 const INTEGRATION_COLUMNS =
-  "organisation_id, provider, api_token, base_url, sender_id, template_name, enabled, created_at, updated_at";
+  "organisation_id, provider, api_token, base_url, sender_id, template_name, template_language, enabled, created_at, updated_at";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -55,6 +56,7 @@ function toPublic(row: IntegrationRow): WhatsAppIntegration {
     base_url: row.base_url,
     sender_id: row.sender_id,
     template_name: row.template_name,
+    template_language: row.template_language,
     enabled: row.enabled,
     created_at: row.created_at,
     updated_at: row.updated_at,

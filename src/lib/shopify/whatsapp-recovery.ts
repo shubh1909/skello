@@ -40,6 +40,7 @@ interface WhatsAppIntegrationRow {
   base_url: string | null;
   sender_id: string | null;
   template_name: string | null;
+  template_language: string | null;
   enabled: boolean;
 }
 
@@ -47,8 +48,6 @@ interface WindowRow {
   organisation_id: string;
   call_window_start: string | null;
   call_window_end: string | null;
-  first_channel: string;
-  escalation_gap_minutes: number;
   whatsapp_template_name: string | null;
 }
 
@@ -96,13 +95,13 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
   const [{ data: integrations }, { data: settingsRows }] = await Promise.all([
     admin
       .from("whatsapp_integrations")
-      .select("organisation_id, provider, api_token, base_url, sender_id, template_name, enabled")
+      .select("organisation_id, provider, api_token, base_url, sender_id, template_name, template_language, enabled")
       .in("organisation_id", orgIds)
       .returns<WhatsAppIntegrationRow[]>(),
     admin
       .from("shopify_recovery_settings")
       .select(
-        "organisation_id, call_window_start, call_window_end, first_channel, escalation_gap_minutes, whatsapp_template_name",
+        "organisation_id, call_window_start, call_window_end, whatsapp_template_name",
       )
       .in("organisation_id", orgIds)
       .returns<WindowRow[]>(),
@@ -165,12 +164,15 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
       return { id: r.id, ok: false };
     }
 
-    // CAS claim — only proceed if still pending.
+    // CAS claim — only proceed if still pending AND not yet converted. The
+    // converted_at guard closes the race where an order lands between the batch
+    // fetch and this claim: a recovered cart must never be messaged.
     const { data: claim } = await admin
       .from("shopify_recovery_attempts")
       .update({ whatsapp_status: "in_flight" })
       .eq("id", r.id)
       .eq("whatsapp_status", "pending")
+      .is("converted_at", null)
       .select("id")
       .maybeSingle<{ id: string }>();
     if (!claim) return { id: r.id, ok: false };
@@ -188,6 +190,7 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
         baseUrl: integration.base_url,
         senderId: integration.sender_id,
         templateName,
+        language: integration.template_language,
         toPhone: r.phone!,
         variables,
       });
@@ -219,21 +222,6 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
         })
         .eq("id", r.id)
         .eq("whatsapp_status", "in_flight");
-
-      // Voice handshake: when WhatsApp leads, re-anchor the follow-up call to
-      // gap-after-this-send. CAS on status='pending' (+ an agent set) so it
-      // never disturbs an in-flight/finished/agentless call.
-      if (settings?.first_channel === "whatsapp") {
-        const nextVoice = new Date(
-          Date.now() + (settings.escalation_gap_minutes ?? 30) * 60_000,
-        ).toISOString();
-        await admin
-          .from("shopify_recovery_attempts")
-          .update({ next_attempt_at: nextVoice, scheduled_at: nextVoice })
-          .eq("id", r.id)
-          .eq("status", "pending")
-          .not("agent_id", "is", null);
-      }
 
       return { id: r.id, ok: true };
     } catch (err) {
