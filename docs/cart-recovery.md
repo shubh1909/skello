@@ -296,8 +296,12 @@ same cron tick. The voice state machine is untouched.
   (default off — existing orgs stay voice-only), `whatsapp_template_name`
   (optional override of the integration default). There is no channel-ordering
   choice: voice always dials first, WhatsApp follows the call.
-- **Scheduling** (`scheduleRecoveryFromCheckout`): the voice call fires at
-  `now + wait_minutes`. When both channels are on, WhatsApp is **held behind the
+- **Scheduling** (`scheduleRecoveryFromCheckout`): the voice call is scheduled for
+  `now + wait_minutes`, **clamped into the calling window** (`clampToCallWindow`) —
+  if that instant falls outside the window it's moved to the next window open, so
+  the stored `next_attempt_at` (what the UI shows as "next call") is always a
+  callable time, not just deferred later at dispatch. Retries are clamped the same
+  way. When both channels are on, WhatsApp is **held behind the
   voice track** — its `whatsapp_next_at` is stamped to a backstop
   (`now + wait_minutes + max_attempts × retry_interval_seconds`) so a dropped
   provider webhook can't strand it. It is **released** (re-anchored to `now`, so
