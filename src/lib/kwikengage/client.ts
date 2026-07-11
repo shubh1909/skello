@@ -43,7 +43,33 @@ export const TEMPLATE_VARIABLE_ORDER = [
 // the value KwikEngage matches). `language` must match the approved template's
 // language code. This is the ONE place the provider request shape lives.
 // ===========================================================================
-const TEMPLATE_LANGUAGE = "en";
+// Fallback when the org hasn't configured a template language.
+const DEFAULT_TEMPLATE_LANGUAGE = "en";
+
+function templateLanguage(input: WhatsAppSendInput): string {
+  return input.language?.trim() || DEFAULT_TEMPLATE_LANGUAGE;
+}
+
+// Meta/WhatsApp rejects a template body parameter that is empty, or that
+// contains a newline, a tab, or 4+ consecutive spaces — any of these comes back
+// as a generic 400 ("There was an error while sending… Kindly retry") from the
+// BSP, with no hint as to which param was at fault. Cart recovery hits this
+// routinely: a cart with no offer sends an empty discount_code, a cart with no
+// captured name sends an empty customer_name. Normalise every value (collapse
+// internal whitespace, trim) and fall back to a non-empty placeholder so a
+// missing field degrades the copy instead of hard-failing the whole send.
+const EMPTY_PARAM_FALLBACK = "-";
+
+function sanitizeTemplateParam(raw: string): string {
+  const collapsed = raw.replace(/\s+/g, " ").trim();
+  return collapsed.length > 0 ? collapsed : EMPTY_PARAM_FALLBACK;
+}
+
+// Keys whose value was blank before sanitisation — surfaced in logs (never the
+// values, which carry PII) so an operator can spot a data/template mismatch.
+function blankParamKeys(variables: Record<string, string>): string[] {
+  return TEMPLATE_VARIABLE_ORDER.filter((k) => !(variables[k] ?? "").trim());
+}
 
 function buildTemplateRequest(
   input: WhatsAppSendInput,
@@ -53,7 +79,7 @@ function buildTemplateRequest(
   const to = recipient.replace(/^\+/, "");
   const parameters = TEMPLATE_VARIABLE_ORDER.map((k) => ({
     type: "text",
-    text: input.variables[k] ?? "",
+    text: sanitizeTemplateParam(input.variables[k] ?? ""),
   }));
 
   return {
@@ -69,7 +95,7 @@ function buildTemplateRequest(
         type: "template",
         template: {
           template_id: input.templateName,
-          language: TEMPLATE_LANGUAGE,
+          language: templateLanguage(input),
           components: [{ type: "body", parameters }],
         },
       },
@@ -160,12 +186,14 @@ export async function sendWhatsAppTemplate(
   }
 
   const req = buildTemplateRequest(input, recipient);
+  const blankKeys = blankParamKeys(input.variables);
 
-  // Lightweight trace — no raw phone numbers / tokens in prod logs.
+  // Lightweight trace — no raw phone numbers / tokens / param values in logs.
   console.log("[kwikengage] POST template", {
     template: input.templateName,
     recipientPrefixed: recipient.startsWith("+"),
     variables: TEMPLATE_VARIABLE_ORDER.length,
+    blankParams: blankKeys,
   });
 
   const response = await fetch(req.url, {
@@ -177,9 +205,23 @@ export async function sendWhatsAppTemplate(
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    // A 4xx is almost always a template/param problem the provider won't
+    // itemise. Log the template + which params were blank (key names only) so a
+    // recurring failure is diagnosable without leaking PII.
+    console.error("[kwikengage] template send rejected", {
+      status: response.status,
+      template: input.templateName,
+      language: templateLanguage(input),
+      blankParams: blankKeys,
+      response: text.slice(0, 300),
+    });
+    // Surface the likely cause to the operator via the stored whatsapp_error —
+    // the blank source fields are the usual reason a template 400s.
+    const hint =
+      blankKeys.length > 0 ? ` (blank fields: ${blankKeys.join(", ")})` : "";
     throw new WhatsAppSendError(
       response.status,
-      text || `WhatsApp provider returned ${response.status}`,
+      `${text || `WhatsApp provider returned ${response.status}`}${hint}`,
     );
   }
 
@@ -203,6 +245,17 @@ export async function sendWhatsAppTemplate(
   }
   const status =
     body && typeof body.status === "string" ? body.status : "sent";
+  // Accepted by the BSP — but "accepted" ≠ "delivered". Log the full body + the
+  // id shape so we can tell an internal queue id (Mongo-style hex) from a Meta
+  // wamid, and spot any queued/pending/warning flag the provider tucks into a
+  // 2xx. Real delivery outcome only arrives via the delivery webhook.
+  console.log("[kwikengage] template accepted", {
+    template: input.templateName,
+    providerMessageId: id,
+    looksLikeMetaWamid: id.startsWith("wamid."),
+    status,
+    body,
+  });
   return { providerMessageId: id, status };
 }
 

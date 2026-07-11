@@ -249,6 +249,8 @@ Bolna places the call → status + post-call webhooks
         · connect (answered OR completed) → succeeded + connected_at, never re-dialled
         · technical miss (no_answer / busy / failed) → retries under the cap
         · order placed (orders/create) → canceled + converted_at
+        · WhatsApp release: connected call ENDED (completed), or voice exhausted
+          with no connect → re-anchor whatsapp_next_at = now (next tick sends it)
 ```
 
 ### Data model
@@ -291,24 +293,36 @@ voice call (Bolna) and a WhatsApp message (KwikEngage BSP). WhatsApp is a
 same cron tick. The voice state machine is untouched.
 
 - **Config** (`shopify_recovery_settings`): `voice_enabled`, `whatsapp_enabled`
-  (default off — existing orgs stay voice-only), `first_channel`
-  (`whatsapp`|`voice`), `escalation_gap_minutes`, `whatsapp_template_name`
-  (optional override of the integration default).
-- **Scheduling** (`scheduleRecoveryFromCheckout`): the first channel fires at
-  `now + wait_minutes`; the second escalates by `escalation_gap_minutes` — but
-  only if the cart hasn't converted. On a WhatsApp send the voice follow-up is
-  re-anchored to gap-after-send (CAS-guarded on `status='pending'`).
+  (default off — existing orgs stay voice-only), `whatsapp_template_name`
+  (optional override of the integration default). There is no channel-ordering
+  choice: voice always dials first, WhatsApp follows the call.
+- **Scheduling** (`scheduleRecoveryFromCheckout`): the voice call fires at
+  `now + wait_minutes`. When both channels are on, WhatsApp is **held behind the
+  voice track** — its `whatsapp_next_at` is stamped to a backstop
+  (`now + wait_minutes + max_attempts × retry_interval_seconds`) so a dropped
+  provider webhook can't strand it. It is **released** (re-anchored to `now`, so
+  the next tick sends it) by `applyShopifyRecoveryOutcome` the instant the
+  connected call ends (`completed`) — never on `in_progress`, so we don't message
+  a shopper mid-call — or when voice gives up (a non-connect terminal on the last
+  attempt), which is the no-connect fallback. If WhatsApp is on but voice isn't
+  actionable (no agent), it sends on its own at `now + wait_minutes`. Conversion
+  (`converted_at`) cancels a still-held WhatsApp.
 - **Template-gated & configurable:** WhatsApp needs a Meta-approved template.
   Until `template_name` is set the WhatsApp track is `skipped` (`no_template`)
   and voice still runs. The send call is wired to **KwikEngage**:
   `POST {base}/send-message/v2` with `Authorization: <api key>` (raw), `to` as
   the international number without `+`, `type:"template"`, and body variables
   mapped into Meta-style `content.template.components`. Response is
-  `{success, messageId}`. The endpoint/payload + positional variable order
-  (`TEMPLATE_VARIABLE_ORDER`) live in ONE place — `lib/kwikengage/client.ts`
-  `buildTemplateRequest()`. Variables come from the shared
-  `buildRecoveryVariables()`. Base URL default `https://api.kwikengage.ai`
-  (override per-org via the integration's `base_url`).
+  `{status:"success", message_id_attr}` (the id is read leniently via
+  `extractMessageId`, which also accepts `messageId`/`data.*` shapes). The
+  endpoint/payload + positional variable order (`TEMPLATE_VARIABLE_ORDER`) live
+  in ONE place — `lib/kwikengage/client.ts` `buildTemplateRequest()`. Variables
+  come from the shared `buildRecoveryVariables()`. Base URL default
+  `https://api.kwikengage.ai` (override per-org via the integration's
+  `base_url`). **Param hygiene:** each body parameter is sanitised
+  (`sanitizeTemplateParam` — whitespace collapsed, trimmed, blank → `-`) because
+  Meta rejects empty/newline/tab params with a generic 400; blank source keys are
+  logged (names only) for diagnosis.
 - **Provider-agnostic:** a `provider` column + `lib/whatsapp/registry.ts` mean a
   different org can use a different BSP later — add an adapter + webhook route,
   no schema change.
@@ -333,18 +347,21 @@ unknown, so the prompt never renders a literal `{name}`).
 
 | Variable | Example | Notes |
 | --- | --- | --- |
-| `{customer_name}` | `Asha Rao` | from the checkout |
+| `{customer_name}` | `Asha` | **first name only** — "Asha", not "Asha Rao" |
 | `{top_product}` | `Diamond Ring` | highest line value in the cart |
 | `{cart_summary}` | `Diamond Ring and others` | "…and others" when >1 product |
 | `{item_count}` | `3` | distinct products |
 | `{currency}` | `INR` | |
-| `{cart_total}` | `5000` | original cart total |
+| `{cart_total}` | `5000` | original cart total — **whole units, no paise** |
 | `{discount_name}` | `20% off your order` | offer label |
 | `{discount_code}` | `COMEBACK20` | redeemable code |
 | `{discount_percentage}` | `20%` | percentage offers only |
-| `{discount_amount}` | `1000` | computed from the offer |
-| `{discounted_cart_total}` | `4000` | `cart_total − discount_amount` |
+| `{discount_amount}` | `1000` | computed from the offer (whole units) |
+| `{discounted_cart_total}` | `4000` | `cart_total − discount_amount` (whole units) |
 | `{recovery_url}` | `https://…` | finish-checkout link |
+
+Currency values are rounded to whole units (`wholeAmount()`) so the agent quotes
+"5000 rupees", never "4999.50" — the same values flow into the WhatsApp template.
 
 Internal IDs (`organisation_id`, `shopify_recovery_attempt_id`, `lead_id`) are also
 sent for traceability but aren't meant to be spoken.
@@ -385,19 +402,26 @@ and the dispatcher additionally skips any row with `converted_at` set.
 ### The dashboard
 
 - **Stats** (`getRecoveryOverview`): Carts abandoned (actioned, excludes skipped),
-  Calls made, Recovered via call (attributed), Revenue recovered (attributed).
-  `getRecoveryOverview` also returns a read-only **voice agent** summary (agent
-  label from `voice_agents`, caller number from `bolna_integrations`) rendered by
-  `RecoveryAgentCard` — never names the provider.
+  Calls made, **Cart Recovered** (every conversion — call-driven **and** organic,
+  `conversions_total`), and **Revenue recovered** (cart value across **all**
+  recovered carts, not just the attributed ones). The strict-ROI split
+  (`recovered` = attributed count) is still computed and kept in the DB, just not
+  shown as its own headline card. `getRecoveryOverview` also returns a read-only
+  **voice agent** summary (agent label from `voice_agents`, caller number from
+  `bolna_integrations`) rendered by `RecoveryAgentCard` — never names the provider.
 - **Tabs** (`CartRecoveryWorkspace`), each paginated (`getAbandonedCarts`,
   `getConvertedCarts`, `getRecoveryCalls`, 20/page) and **live** (Supabase
   realtime on `shopify_recovery_attempts` + `calls`, debounced):
   - **All carts** — every cart (converted or not); "callable only" filter hides
-    skipped/no-phone. Columns include phone, cart value, products, offer, attempts,
-    the pipeline **Status**, a **Cart** outcome badge (**Abandoned / Recovered · by
-    us / Recovered · organic**, via `CartOutcomeBadge` + `attributedAttemptIds`),
-    and abandoned / next-call timestamps.
-  - **Converted** — flags each as **Call-driven** vs **Organic**; recovered-at time.
+    skipped/no-phone. Columns: phone, cart value, products, offer, a **Cart**
+    outcome badge (**Abandoned / Recovered · by us / Recovered · organic**, via
+    `CartOutcomeBadge` + `attributedAttemptIds`), a combined **Reach-out** status
+    (`ReachOutStatusBadge` — **Closed ✓** when a call connected or WhatsApp sent;
+    **Failed** if either channel failed, naming which; **Scheduled** while queued),
+    and abandoned / next-call timestamps. Per-cart **Attempts** and **WhatsApp**
+    detail live in the cart drawer, not as table columns.
+  - **Converted** — recovered-at time (the per-row Call-driven/Organic column was
+    removed; attribution is still in the DB + the drawer's outcome badge).
   - **Call history** — one row per dial, status shown with an event-based colored
     badge (`CallStatusBadge`); a row opens a **detail drawer** with the recording
     player, full transcript, extracted lead fields, and the cart. The drawer stays
@@ -461,7 +485,7 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Dashboard UI | `components/app/cart-recovery-*.tsx`, `recovery-call-detail.tsx` |
 | Status/outcome badges · voice agent card | `components/app/recovery-badges.tsx` · `recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
-| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql` |
 
 ## Going live: setup checklist
 
@@ -481,8 +505,13 @@ and the dispatcher additionally skips any row with `converted_at` set.
   `20260702000000_dashboard_recovery_source.sql` (admin analytics `recovery`
   source); `20260702000001_recovery_realtime.sql` (publishes the tables for live
   dashboard updates); `20260703000000_recovery_connected_at.sql` (the reach-once
-  marker); and `20260703000001_recovery_call_window.sql` (the calling-window
-  columns).
+  marker); `20260703000001_recovery_call_window.sql` (the calling-window
+  columns); `20260704000000_recovery_whatsapp.sql` (the WhatsApp channel, ledger,
+  and settings); and `20260711000000_recovery_drop_channel_ordering.sql` (drops
+  `first_channel` + `escalation_gap_minutes` now that voice always leads and
+  WhatsApp fires when the connected call ends); and
+  `20260711000001_whatsapp_template_language.sql` (per-org `template_language` on
+  `whatsapp_integrations`, default `en`).
 
 **Per client:**
 
@@ -501,14 +530,26 @@ and the dispatcher additionally skips any row with `converted_at` set.
    `{discount_code}`. We send the data regardless, but the agent only *says* the
    variables the script mentions.
 5. **WhatsApp (optional channel)** — in **Settings → WhatsApp**, connect the API
-   token, sender, and the **Meta-approved template name**. In the BSP dashboard
+   token, sender, the **Meta-approved template name**, and the **template
+   language** (the Meta language code the template was approved under, e.g. `en`
+   or `en_US` — it must match exactly or the BSP rejects the send). In the BSP
+   dashboard
    (KwikEngage → Integrations → Webhook), point the delivery webhook at
    `https://app.skelo.team/api/webhooks/kwikengage?secret=<KWIKENGAGE_WEBHOOK_SECRET>`.
-   Then on the Cart Recovery page enable **WhatsApp** under Channels, pick the
-   order (WhatsApp-first or Call-first) and the escalation gap. Without an
+   Then on the Cart Recovery page enable **WhatsApp** under Channels. Voice always
+   calls first; WhatsApp is sent once the connected call ends (or as a fallback if
+   voice never connects) — there's no ordering or gap to configure. Without an
    approved template the WhatsApp track is skipped and voice still runs. The
    template's positional variable order is set in `lib/kwikengage/client.ts`
    (`TEMPLATE_VARIABLE_ORDER`).
+6. **Validate the connection** (admin) — the admin WhatsApp form has a **Send
+   test** button (`sendTestWhatsAppAdmin`) that fires one real template send, with
+   sample values, to any number. It uses the **saved** config, so save first. A
+   rejection surfaces the provider's exact error (bad template name, wrong
+   language, or parameter-count mismatch) instead of failing silently — the fastest
+   way to confirm a template is wired correctly before going live. Empty template
+   params are sanitised to a non-empty placeholder (Meta rejects blanks with a
+   generic 400), and blank source fields are logged by name for diagnosis.
 
 ## How to test it
 

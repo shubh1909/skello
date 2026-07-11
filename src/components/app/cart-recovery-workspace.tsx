@@ -11,14 +11,12 @@ import {
   getRecoveryCalls,
 } from "@/actions/shopify-recovery";
 import { createClient } from "@/lib/supabase/client";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
-  AttemptStatusBadge,
   CallStatusBadge,
   CartOutcomeBadge,
-  WhatsAppSentBadge,
+  ReachOutStatusBadge,
 } from "@/components/app/recovery-badges";
 import { RecoveryCallDetail } from "@/components/app/recovery-call-detail";
 import { RecoveryCartDetail } from "@/components/app/recovery-cart-detail";
@@ -393,7 +391,7 @@ function CartTable({
   onToggleSort?: () => void;
 }) {
   const isConverted = variant === "converted";
-  const colSpan = isConverted ? 10 : 11;
+  const colSpan = isConverted ? 7 : 9;
   return (
     <Card className="overflow-hidden p-0">
       <div className="overflow-x-auto">
@@ -405,14 +403,14 @@ function CartTable({
               <th className="px-4 py-3 font-medium">Cart value</th>
               <th className="px-4 py-3 font-medium">Products</th>
               <th className="px-4 py-3 font-medium">Offer</th>
-              <th className="px-4 py-3 font-medium">Attempts</th>
               {!isConverted ? (
                 <th className="px-4 py-3 font-medium">Cart</th>
               ) : null}
-              <th className="px-4 py-3 font-medium">
-                {isConverted ? "Recovery" : "Status"}
-              </th>
-              <th className="px-4 py-3 font-medium">WhatsApp</th>
+              {!isConverted ? (
+                <th className="whitespace-nowrap px-4 py-3 font-medium">
+                  Reach-out
+                </th>
+              ) : null}
               <th className="px-4 py-3 font-medium">
                 {!isConverted && onToggleSort ? (
                   <button
@@ -463,9 +461,6 @@ function CartTable({
                   <td className="px-4 py-3 text-muted-foreground">
                     {r.offer_label ?? "—"}
                   </td>
-                  <td className="px-4 py-3 tabular-nums text-muted-foreground">
-                    {r.attempt}/{r.max_attempts}
-                  </td>
                   {!isConverted ? (
                     <td className="px-4 py-3">
                       <CartOutcomeBadge
@@ -474,36 +469,14 @@ function CartTable({
                       />
                     </td>
                   ) : null}
-                  <td className="px-4 py-3">
-                    {isConverted ? (
-                      r.attributed ? (
-                        <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
-                          Call-driven
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">Organic</Badge>
-                      )
-                    ) : (
-                      <div className="flex items-center gap-1.5">
-                        <AttemptStatusBadge status={r.status} />
-                        {r.status === "skipped" && r.skip_reason ? (
-                          <span className="text-[11px] text-muted-foreground">
-                            {r.skip_reason.replace(/_/g, " ")}
-                          </span>
-                        ) : null}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-col items-start gap-0.5">
-                      <WhatsAppSentBadge status={r.whatsapp_status} />
-                      {r.whatsapp_status === "sent" && r.whatsapp_sent_at ? (
-                        <span className="text-[11px] text-muted-foreground">
-                          {formatDateTime(r.whatsapp_sent_at)}
-                        </span>
-                      ) : null}
-                    </div>
-                  </td>
+                  {!isConverted ? (
+                    <td className="whitespace-nowrap px-4 py-3">
+                      <ReachOutStatusBadge
+                        voiceStatus={r.status}
+                        whatsappStatus={r.whatsapp_status}
+                      />
+                    </td>
+                  ) : null}
                   <td className="px-4 py-3 text-xs text-muted-foreground">
                     {formatDateTime(r.abandoned_at ?? r.created_at)}
                   </td>

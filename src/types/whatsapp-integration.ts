@@ -7,6 +7,8 @@ export interface WhatsAppIntegration {
   base_url: string | null;
   sender_id: string | null;
   template_name: string | null;
+  // Meta template language code (e.g. "en", "en_US"). Defaults to "en".
+  template_language: string;
   enabled: boolean;
   created_at: string;
   updated_at: string;

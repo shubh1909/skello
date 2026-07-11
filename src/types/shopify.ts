@@ -55,19 +55,15 @@ export interface ShopifyRecoverySettings {
   call_window_start: string | null;
   call_window_end: string | null;
   // Channels. Defaults reproduce voice-only behaviour (voice on, WhatsApp off).
-  // first_channel goes first; the other escalates after escalation_gap_minutes
-  // if the cart hasn't converted.
+  // Voice always dials first; when WhatsApp is enabled it is sent once the
+  // connected call ends (or as a fallback if voice never connects).
   voice_enabled: boolean;
   whatsapp_enabled: boolean;
-  first_channel: RecoveryChannel;
-  escalation_gap_minutes: number;
   // Optional per-org template override; null → the integration's default.
   whatsapp_template_name: string | null;
   created_at: string;
   updated_at: string;
 }
-
-export type RecoveryChannel = "whatsapp" | "voice";
 
 // Read-only view of the WhatsApp channel for the dashboard card. Never names the
 // underlying provider — product copy says "WhatsApp".

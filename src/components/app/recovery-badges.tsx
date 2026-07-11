@@ -1,3 +1,5 @@
+import { CheckIcon } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import type {
   RecoveryAttemptStatus,
@@ -162,6 +164,58 @@ export function WhatsAppSentBadge({
     className: "bg-muted text-muted-foreground",
   };
   return <Badge className={meta.className}>{meta.label}</Badge>;
+}
+
+// Combined "did we reach them" status across BOTH channels (voice + WhatsApp),
+// collapsed to three states for the carts table:
+//   Failed    — either channel failed (failure wins; we name which one).
+//   Done      — otherwise, if either channel reached/sent.
+//   Scheduled — otherwise, if either channel is still queued/in progress.
+//   —         — neither channel is active (both skipped/none).
+export function ReachOutStatusBadge({
+  voiceStatus,
+  whatsappStatus,
+}: {
+  voiceStatus: RecoveryAttemptStatus;
+  whatsappStatus: RecoveryWhatsAppTrackStatus;
+}) {
+  const voiceFailed = voiceStatus === "failed";
+  const waFailed = whatsappStatus === "failed";
+  const voiceDone = voiceStatus === "succeeded";
+  const waDone = whatsappStatus === "sent";
+  const voiceScheduled = voiceStatus === "pending" || voiceStatus === "in_flight";
+  const waScheduled =
+    whatsappStatus === "pending" || whatsappStatus === "in_flight";
+
+  if (voiceFailed || waFailed) {
+    const which = [voiceFailed ? "Call" : null, waFailed ? "WhatsApp" : null]
+      .filter(Boolean)
+      .join(" & ");
+    return (
+      <div className="flex items-center gap-1.5">
+        <Badge className="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300">
+          Failed
+        </Badge>
+        <span className="text-[11px] text-muted-foreground">{which}</span>
+      </div>
+    );
+  }
+  if (voiceDone || waDone) {
+    return (
+      <Badge className="gap-1 bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
+        <CheckIcon className="size-3" />
+        Closed
+      </Badge>
+    );
+  }
+  if (voiceScheduled || waScheduled) {
+    return (
+      <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
+        Scheduled
+      </Badge>
+    );
+  }
+  return <span className="text-muted-foreground">—</span>;
 }
 
 // A single WhatsApp message's delivery status (ledger row) for the timeline.
