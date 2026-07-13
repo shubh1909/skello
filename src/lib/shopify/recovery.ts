@@ -146,7 +146,9 @@ export async function scheduleRecoveryFromCheckout(input: {
   const voiceActionable =
     settings.voice_enabled && !!bolna?.enabled && !!agentId && hasPhone;
   const waTemplate =
-    settings.whatsapp_template_name?.trim() || wa?.template_name?.trim() || null;
+    settings.whatsapp_template_name?.trim() ||
+    wa?.template_name?.trim() ||
+    null;
   const whatsappActionable =
     settings.whatsapp_enabled && !!wa?.enabled && !!waTemplate && hasPhone;
 
@@ -366,7 +368,9 @@ export async function cancelRecoveryForOrder(input: {
   if (!attempt) return;
 
   const now = new Date().toISOString();
-  const patch: Record<string, unknown> = { converted_at: attempt.converted_at ?? now };
+  const patch: Record<string, unknown> = {
+    converted_at: attempt.converted_at ?? now,
+  };
   // Stop a pending/in-flight recovery on both channels — they already bought.
   if (attempt.status === "pending" || attempt.status === "in_flight") {
     patch.status = "canceled";
@@ -463,7 +467,7 @@ function summariseCart(items: RecoveryCartItem[]): {
   const top = [...items].sort((a, b) => b.lineValue - a.lineValue)[0].title;
   return {
     topProduct: top,
-    cartSummary: items.length > 1 ? `${top} and others` : top,
+    cartSummary: items.length > 1 ? `${top} along with others` : top,
     itemCount: items.length,
   };
 }
@@ -474,7 +478,11 @@ function applyOffer(
   cartTotal: number | null,
   value: number | null,
   kind: string | null,
-): { discountAmount: number | null; discountedTotal: number | null; percentLabel: string } {
+): {
+  discountAmount: number | null;
+  discountedTotal: number | null;
+  percentLabel: string;
+} {
   if (cartTotal == null || value == null || value <= 0) {
     return { discountAmount: null, discountedTotal: null, percentLabel: "" };
   }
@@ -821,7 +829,9 @@ export async function applyShopifyRecoveryOutcome(input: {
   const admin = createAdminClient();
   const { data: attempt } = await admin
     .from("shopify_recovery_attempts")
-    .select("id, organisation_id, status, attempt, max_attempts, retry_interval_seconds")
+    .select(
+      "id, organisation_id, status, attempt, max_attempts, retry_interval_seconds",
+    )
     .eq("id", input.attemptId)
     .maybeSingle<AttemptOutcomeRow>();
   if (!attempt) return;
@@ -844,7 +854,9 @@ export async function applyShopifyRecoveryOutcome(input: {
     } else {
       // Re-arm for a retry — clamped into the calling window so the stored
       // next_attempt_at (shown as "next call") is never an un-callable time.
-      const retryAt = new Date(Date.now() + attempt.retry_interval_seconds * 1000);
+      const retryAt = new Date(
+        Date.now() + attempt.retry_interval_seconds * 1000,
+      );
       const { data: win } = await admin
         .from("shopify_recovery_settings")
         .select("call_window_start, call_window_end")
