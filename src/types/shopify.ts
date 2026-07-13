@@ -148,6 +148,9 @@ export interface RecoveryAttemptRow {
   // WhatsApp channel track (parallel to the voice status/attempt fields above).
   whatsapp_status: RecoveryWhatsAppTrackStatus;
   whatsapp_sent_at: string | null;
+  // Why the WhatsApp track was skipped (e.g. marketing_cap, opted_out,
+  // undeliverable, no_template) — set for whatsapp_status = 'skipped'.
+  whatsapp_skip_reason: string | null;
   // Converted tab only: was the conversion attributable to a completed call
   // that ended before the order (strict ROI attribution)?
   attributed?: boolean;

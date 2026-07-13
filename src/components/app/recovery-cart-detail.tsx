@@ -116,7 +116,10 @@ export function RecoveryCartDetail({
                 {cart.skip_reason.replace(/_/g, " ")}
               </span>
             ) : null}
-            <WhatsAppSentBadge status={cart.whatsapp_status} />
+            <WhatsAppSentBadge
+              status={cart.whatsapp_status}
+              reason={cart.whatsapp_skip_reason}
+            />
           </div>
         </SheetHeader>
 
