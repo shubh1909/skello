@@ -13,6 +13,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { APP_TIMEZONE } from "@/lib/time";
 import { getWhatsAppProvider } from "@/lib/whatsapp/registry";
 import { WhatsAppSendError } from "@/lib/whatsapp/provider";
+import {
+  classifyWhatsAppError,
+  terminalStatusFor,
+} from "@/lib/whatsapp/error-codes";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -240,7 +244,28 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
         error_message: reason.slice(0, 500),
       });
 
+      const info = classifyWhatsAppError(reason);
+      const terminal = terminalStatusFor(info.disposition);
       const newAttempt = r.whatsapp_attempt + 1;
+
+      if (terminal) {
+        // Soft cap / opt-out / undeliverable (→ skipped) or a template/config
+        // error (→ failed): retrying won't help, so stop with a precise reason.
+        await admin
+          .from("shopify_recovery_attempts")
+          .update({
+            whatsapp_status: terminal,
+            whatsapp_attempt: newAttempt,
+            whatsapp_skip_reason: terminal === "skipped" ? info.reason : null,
+            whatsapp_error: reason.slice(0, 500),
+            whatsapp_next_at: null,
+          })
+          .eq("id", r.id)
+          .eq("whatsapp_status", "in_flight");
+        return { id: r.id, ok: false };
+      }
+
+      // Retryable (rate limit / transient / unknown) — re-arm under the cap.
       const exhausted = newAttempt >= r.whatsapp_max_attempts;
       await admin
         .from("shopify_recovery_attempts")
@@ -317,13 +342,18 @@ export async function applyWhatsAppDeliveryUpdate(input: {
 
   await admin.from("shopify_recovery_messages").update(patch).eq("id", msg.id);
 
-  // A failed delivery marks the attempt's WhatsApp track failed (informational —
+  // A failed delivery advances the attempt's WhatsApp track (informational —
   // delivered/read do NOT stop the voice escalation; only conversion does).
+  // Classify Meta's reason: a per-user cap / opt-out / undeliverable is a soft
+  // "skipped" (not a red failure), everything else stays "failed".
   if (input.status === "failed" && msg.shopify_recovery_attempt_id) {
+    const info = classifyWhatsAppError(input.errorMessage);
+    const terminal = terminalStatusFor(info.disposition) ?? "failed";
     await admin
       .from("shopify_recovery_attempts")
       .update({
-        whatsapp_status: "failed",
+        whatsapp_status: terminal,
+        whatsapp_skip_reason: terminal === "skipped" ? info.reason : null,
         whatsapp_error: input.errorMessage ?? "Delivery failed",
       })
       .eq("id", msg.shopify_recovery_attempt_id)

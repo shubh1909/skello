@@ -1,6 +1,7 @@
 import { CheckIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { whatsappReasonLabel } from "@/lib/whatsapp/error-codes";
 import type {
   RecoveryAttemptStatus,
   RecoveryMessageStatus,
@@ -156,9 +157,31 @@ const WHATSAPP_SENT_META: Record<
 
 export function WhatsAppSentBadge({
   status,
+  reason,
 }: {
   status: RecoveryWhatsAppTrackStatus;
+  reason?: string | null;
 }) {
+  // A skipped track carries a reason (marketing cap, opted out, undeliverable,
+  // no template…). Surface the friendly label so a Meta per-user cap reads as
+  // "Capped" (amber) rather than a plain "Skipped" or a red failure.
+  if (status === "skipped") {
+    const label = whatsappReasonLabel(reason);
+    if (label) {
+      const soft = reason === "cannot_receive" || reason === "invalid_recipient";
+      return (
+        <Badge
+          className={
+            soft
+              ? "bg-muted text-muted-foreground"
+              : "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+          }
+        >
+          {label}
+        </Badge>
+      );
+    }
+  }
   const meta = WHATSAPP_SENT_META[status] ?? {
     label: status,
     className: "bg-muted text-muted-foreground",
@@ -167,28 +190,44 @@ export function WhatsAppSentBadge({
 }
 
 // Combined "did we reach them" status across BOTH channels (voice + WhatsApp),
-// collapsed to three states for the carts table:
-//   Failed    — either channel failed (failure wins; we name which one).
-//   Done      — otherwise, if either channel reached/sent.
-//   Scheduled — otherwise, if either channel is still queued/in progress.
-//   —         — neither channel is active (both skipped/none).
+// collapsed for the carts table:
+//   Failed      — a TECHNICAL failure (our side / couldn't place the call, or a
+//                 WhatsApp config error). Failure wins; we name which channel.
+//   Closed ✓    — otherwise, if either channel reached/sent.
+//   Scheduled   — otherwise, if either channel is still queued/in progress.
+//   Not reached — otherwise, if the call ran out of attempts on a CUSTOMER-side
+//                 non-connect (busy / no answer). Not our fault → never red.
+//   —           — neither channel produced a meaningful state.
+//
+// The voice track lands on `status='failed'` for BOTH "we couldn't place it" and
+// "they never picked up". `last_status` (the real call outcome) disambiguates:
+// no_answer / busy / canceled are customer-side; failed or null are technical.
 export function ReachOutStatusBadge({
   voiceStatus,
+  voiceLastStatus,
   whatsappStatus,
 }: {
   voiceStatus: RecoveryAttemptStatus;
+  voiceLastStatus: string | null;
   whatsappStatus: RecoveryWhatsAppTrackStatus;
 }) {
-  const voiceFailed = voiceStatus === "failed";
-  const waFailed = whatsappStatus === "failed";
-  const voiceDone = voiceStatus === "succeeded";
-  const waDone = whatsappStatus === "sent";
+  const customerMiss =
+    voiceLastStatus === "no_answer" ||
+    voiceLastStatus === "busy" ||
+    voiceLastStatus === "canceled";
+  const voiceReached = voiceStatus === "succeeded";
+  const voiceTechFailed = voiceStatus === "failed" && !customerMiss;
+  const voiceNotReached = voiceStatus === "failed" && customerMiss;
   const voiceScheduled = voiceStatus === "pending" || voiceStatus === "in_flight";
+
+  const waDone = whatsappStatus === "sent";
+  const waFailed = whatsappStatus === "failed";
   const waScheduled =
     whatsappStatus === "pending" || whatsappStatus === "in_flight";
 
-  if (voiceFailed || waFailed) {
-    const which = [voiceFailed ? "Call" : null, waFailed ? "WhatsApp" : null]
+  // Failure wins — but only TECHNICAL failures — and we name the channel(s).
+  if (voiceTechFailed || waFailed) {
+    const which = [voiceTechFailed ? "Call" : null, waFailed ? "WhatsApp" : null]
       .filter(Boolean)
       .join(" & ");
     return (
@@ -200,7 +239,7 @@ export function ReachOutStatusBadge({
       </div>
     );
   }
-  if (voiceDone || waDone) {
+  if (voiceReached || waDone) {
     return (
       <Badge className="gap-1 bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
         <CheckIcon className="size-3" />
@@ -212,6 +251,13 @@ export function ReachOutStatusBadge({
     return (
       <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
         Scheduled
+      </Badge>
+    );
+  }
+  if (voiceNotReached) {
+    return (
+      <Badge className="bg-orange-100 text-orange-800 dark:bg-orange-500/15 dark:text-orange-300">
+        Not reached
       </Badge>
     );
   }

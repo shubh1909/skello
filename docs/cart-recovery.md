@@ -340,6 +340,18 @@ same cron tick. The voice state machine is untouched.
   `x-kwikengage-signature` header or `?secret=`) → `applyWhatsAppDeliveryUpdate()`
   advances the ledger row + track (monotonic, idempotent by
   `provider_message_id`). Inbound replies are out of scope for v1.
+- **Failure classification** (`lib/whatsapp/error-codes.ts`,
+  `classifyWhatsAppError`): both the send-time catch and the delivery webhook map
+  Meta's `(#code)` to a disposition so a bare "failed" isn't the only outcome:
+  - **capped / opted_out / undeliverable** (e.g. `#131049` marketing frequency
+    cap, `#131050` opt-out, `#131026` can't-receive) → track set to `skipped` with
+    a `whatsapp_skip_reason` (`marketing_cap` / `opted_out` / `cannot_receive`),
+    **no retry** — shown as **Capped / Opted out / Undeliverable**, never a red
+    failure, and it doesn't contribute a "Failed · WhatsApp" to the Reach-out cell.
+  - **rate_limited / transient** (`#131048`, `#130429`, `#131016`, …) → retried
+    under `whatsapp_max_attempts`.
+  - **config** (`#131008`, `#132001`, template/param/policy) → `failed`
+    immediately (retrying the same payload can't succeed).
 
 ### Conversation context (what we send the agent)
 
@@ -420,10 +432,15 @@ and the dispatcher additionally skips any row with `converted_at` set.
     skipped/no-phone. Columns: phone, cart value, products, offer, a **Cart**
     outcome badge (**Abandoned / Recovered · by us / Recovered · organic**, via
     `CartOutcomeBadge` + `attributedAttemptIds`), a combined **Reach-out** status
-    (`ReachOutStatusBadge` — **Closed ✓** when a call connected or WhatsApp sent;
-    **Failed** if either channel failed, naming which; **Scheduled** while queued),
-    and abandoned / next-call timestamps. Per-cart **Attempts** and **WhatsApp**
-    detail live in the cart drawer, not as table columns.
+    (`ReachOutStatusBadge`), and abandoned / next-call timestamps. Per-cart
+    **Attempts** and **WhatsApp** detail live in the cart drawer, not as table
+    columns. Reach-out collapses both channels: **Failed** (red) only for a
+    *technical* failure — our side / couldn't place the call (`last_status` =
+    `failed`/null), or a WhatsApp config error — naming which channel;
+    **Closed ✓** (green) when a call connected or WhatsApp sent; **Scheduled**
+    (amber) while queued; **Not reached** (orange) when the calls ran out of
+    attempts on a *customer-side* non-connect (`last_status` = `no_answer` /
+    `busy` / `canceled`) — never counted as a failure.
   - **Converted** — recovered-at time (the per-row Call-driven/Organic column was
     removed; attribution is still in the DB + the drawer's outcome badge).
   - **Call history** — one row per dial, status shown with an event-based colored

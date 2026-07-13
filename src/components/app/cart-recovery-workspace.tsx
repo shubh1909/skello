@@ -473,6 +473,7 @@ function CartTable({
                     <td className="whitespace-nowrap px-4 py-3">
                       <ReachOutStatusBadge
                         voiceStatus={r.status}
+                        voiceLastStatus={r.last_status}
                         whatsappStatus={r.whatsapp_status}
                       />
                     </td>
