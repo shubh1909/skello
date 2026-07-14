@@ -2,6 +2,11 @@ import "server-only";
 
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
 import { isTerminalCallStatus } from "@/lib/callbacks/outcome-decision";
+import {
+  DEFAULT_MAX_CONNECTED_CALLS_PER_LEAD,
+  evaluateConnectedCallCapForRows,
+  resolveConnectedCallCap,
+} from "@/lib/calls/connect-cap";
 import { pooledMap } from "@/lib/campaigns/dispatch";
 import {
   isWithinCallWindow,
@@ -610,7 +615,9 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
   const [{ data: integrations }, { data: windowRows }] = await Promise.all([
     admin
       .from("bolna_integrations")
-      .select("organisation_id, api_key, from_phone_number, enabled")
+      .select(
+        "organisation_id, api_key, from_phone_number, enabled, max_connected_calls_per_lead",
+      )
       .in("organisation_id", orgIds)
       .returns<
         Array<{
@@ -618,6 +625,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
           api_key: string;
           from_phone_number: string | null;
           enabled: boolean;
+          max_connected_calls_per_lead: number | null;
         }>
       >(),
     admin
@@ -645,12 +653,59 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
     ),
   );
 
+  // Per-lead connected-call cap (global per-org governor). Drop — and record as
+  // skipped on BOTH channels — any lead already at the org's ceiling in the
+  // rolling 48h window, before we spend a dial. Phone is the cross-surface lead
+  // identity (campaign call rows carry no lead_id). A capped cart isn't worth
+  // deferring: cart recovery is time-sensitive, so we suppress rather than hold.
+  const capEval = await evaluateConnectedCallCapForRows({
+    admin,
+    rows: queue,
+    capForOrg: (orgId) => {
+      const integ = integrationByOrg.get(orgId);
+      return integ
+        ? resolveConnectedCallCap(integ.max_connected_calls_per_lead)
+        : DEFAULT_MAX_CONNECTED_CALLS_PER_LEAD;
+    },
+  });
+  const cappedRows = queue.filter((r) =>
+    capEval.isCapped(r.organisation_id, r.phone),
+  );
+  if (cappedRows.length > 0) {
+    await Promise.all(
+      cappedRows.flatMap((r) => [
+        admin
+          .from("shopify_recovery_attempts")
+          .update({
+            status: "skipped",
+            skip_reason: "per_lead_cap_reached",
+            last_error: "Per-lead connected-call cap reached (48h)",
+          })
+          .eq("id", r.id)
+          .eq("status", "pending"),
+        // Suppress the WhatsApp track too — only if it hasn't already fired.
+        admin
+          .from("shopify_recovery_attempts")
+          .update({
+            whatsapp_status: "canceled",
+            whatsapp_skip_reason: "per_lead_cap_reached",
+          })
+          .eq("id", r.id)
+          .eq("whatsapp_status", "pending"),
+      ]),
+    );
+  }
+  const uncapped = queue.filter(
+    (r) => !capEval.isCapped(r.organisation_id, r.phone),
+  );
+  if (uncapped.length === 0) return { processed: 0, fired: 0 };
+
   // Calling-window gate: rows whose org is outside its configured dial window
   // are deferred to the next window open (in APP_TIMEZONE) rather than dialled.
   const now = new Date();
   const dialable: DueRecovery[] = [];
   const deferrals: Array<{ id: string; next: string }> = [];
-  for (const r of queue) {
+  for (const r of uncapped) {
     const w = windowByOrg.get(r.organisation_id);
     if (!w || isWithinCallWindow(now, w.start, w.end, APP_TIMEZONE)) {
       dialable.push(r);

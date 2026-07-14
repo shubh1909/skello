@@ -40,6 +40,12 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
   const [callbackFromPhone, setCallbackFromPhone] = React.useState(
     integration?.callback_from_phone ?? "",
   );
+  // Blank string = unlimited (null on the row); otherwise an integer 1–1000.
+  const [maxConnectedCalls, setMaxConnectedCalls] = React.useState(
+    integration?.max_connected_calls_per_lead != null
+      ? String(integration.max_connected_calls_per_lead)
+      : "",
+  );
 
   const hasExisting = integration !== null;
 
@@ -89,6 +95,21 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
         (callbackFromPhone.trim() || null) !== integration.callback_from_phone
       ) {
         patch.callback_from_phone = callbackFromPhone.trim() || null;
+      }
+
+      // Per-lead connected-call cap: blank → unlimited (null); else int 1–1000.
+      const rawCap = maxConnectedCalls.trim();
+      let capValue: number | null = null;
+      if (rawCap !== "") {
+        const n = Number(rawCap);
+        if (!Number.isInteger(n) || n < 1 || n > 1000) {
+          toast.error("Per-lead call cap must be a whole number from 1 to 1000");
+          return;
+        }
+        capValue = n;
+      }
+      if (capValue !== integration.max_connected_calls_per_lead) {
+        patch.max_connected_calls_per_lead = capValue;
       }
 
       if (Object.keys(patch).length === 1) {
@@ -147,6 +168,7 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
       setCallbacksEnabled(false);
       setCallbackAgentId("");
       setCallbackFromPhone("");
+      setMaxConnectedCalls("");
       router.refresh();
     });
   }
@@ -220,6 +242,27 @@ export function VoiceAgentForm({ organisationId, integration }: Props) {
           autoComplete="off"
         />
       </div>
+
+      {hasExisting ? (
+        <div className="grid gap-1.5">
+          <Label htmlFor="admin-max-connected">Per-lead call cap</Label>
+          <Input
+            id="admin-max-connected"
+            type="number"
+            min={1}
+            max={1000}
+            placeholder="2"
+            value={maxConnectedCalls}
+            onChange={(e) => setMaxConnectedCalls(e.target.value)}
+            autoComplete="off"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Max successful calls to one lead across all outbound channels before
+            we stop dialling them. Resets every 48 hours. Leave blank for
+            unlimited. Default 2.
+          </p>
+        </div>
+      ) : null}
 
       {hasExisting ? (
         <div className="grid gap-3 rounded-md border p-3">
