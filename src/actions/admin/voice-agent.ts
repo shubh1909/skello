@@ -16,6 +16,7 @@ interface IntegrationRow {
   from_phone_number: string | null;
   enabled: boolean;
   daily_calls_per_number: number | null;
+  max_connected_calls_per_lead: number | null;
   callbacks_enabled: boolean;
   callback_agent_id: string | null;
   callback_from_phone: string | null;
@@ -26,7 +27,7 @@ interface IntegrationRow {
 const DEFAULT_DAILY_CALLS_PER_NUMBER = 200;
 
 const INTEGRATION_COLUMNS =
-  "organisation_id, agent_id, api_key, from_phone_number, enabled, daily_calls_per_number, callbacks_enabled, callback_agent_id, callback_from_phone, created_at, updated_at";
+  "organisation_id, agent_id, api_key, from_phone_number, enabled, daily_calls_per_number, max_connected_calls_per_lead, callbacks_enabled, callback_agent_id, callback_from_phone, created_at, updated_at";
 
 function toPublic(row: IntegrationRow): BolnaIntegration {
   return {
@@ -36,6 +37,8 @@ function toPublic(row: IntegrationRow): BolnaIntegration {
     enabled: row.enabled,
     daily_calls_per_number:
       row.daily_calls_per_number ?? DEFAULT_DAILY_CALLS_PER_NUMBER,
+    // null is meaningful here (unlimited) — pass through, don't default.
+    max_connected_calls_per_lead: row.max_connected_calls_per_lead,
     callbacks_enabled: row.callbacks_enabled,
     callback_agent_id: row.callback_agent_id,
     callback_from_phone: row.callback_from_phone,
@@ -75,6 +78,11 @@ const updateSchema = z.object({
   api_key: z.string().trim().min(1).max(500).optional(),
   from_phone_number: fromPhone.optional(),
   enabled: z.boolean().optional(),
+  // Per-lead connected-call cap. A number 1–1000 sets the ceiling; null opts
+  // the org out (unlimited). Absent → unchanged.
+  max_connected_calls_per_lead: z
+    .union([z.coerce.number().int().min(1).max(1000), z.null()])
+    .optional(),
   // Automated inbound callbacks (see scheduled_callbacks).
   callbacks_enabled: z.boolean().optional(),
   callback_agent_id: optionalAgentId.optional(),

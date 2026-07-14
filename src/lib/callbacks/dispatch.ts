@@ -1,6 +1,12 @@
 import "server-only";
 
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
+import {
+  CONNECTED_CALL_CAP_WINDOW_MS,
+  DEFAULT_MAX_CONNECTED_CALLS_PER_LEAD,
+  evaluateConnectedCallCapForRows,
+  resolveConnectedCallCap,
+} from "@/lib/calls/connect-cap";
 import { pooledMap } from "@/lib/campaigns/dispatch";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -36,6 +42,7 @@ interface IntegrationRow {
   from_phone_number: string | null;
   enabled: boolean;
   callbacks_enabled: boolean;
+  max_connected_calls_per_lead: number | null;
 }
 
 /**
@@ -97,7 +104,7 @@ export async function dispatchDueCallbacks(): Promise<CallbackDispatchResult> {
   const { data: integrations } = await admin
     .from("bolna_integrations")
     .select(
-      "organisation_id, api_key, from_phone_number, enabled, callbacks_enabled",
+      "organisation_id, api_key, from_phone_number, enabled, callbacks_enabled, max_connected_calls_per_lead",
     )
     .in("organisation_id", orgIds)
     .returns<IntegrationRow[]>();
@@ -105,7 +112,43 @@ export async function dispatchDueCallbacks(): Promise<CallbackDispatchResult> {
     (integrations ?? []).map((i) => [i.organisation_id, i] as const),
   );
 
+  // Per-lead connected-call cap (global per-org governor). A capped callback is
+  // deferred (not failed) to when its 48h window frees up, so the rolling cap
+  // self-resolves. Note: this holds even customer-requested callbacks — they
+  // count against the same ceiling as any other outbound surface.
+  const capEval = await evaluateConnectedCallCapForRows({
+    admin,
+    rows: queue.map((c) => ({
+      organisation_id: c.organisation_id,
+      phone: c.phone,
+    })),
+    capForOrg: (orgId) => {
+      const integ = integrationByOrg.get(orgId);
+      return integ
+        ? resolveConnectedCallCap(integ.max_connected_calls_per_lead)
+        : DEFAULT_MAX_CONNECTED_CALLS_PER_LEAD;
+    },
+  });
+
   const fired = await pooledMap(queue, CONCURRENCY, async (cb) => {
+    // Per-lead connected-call cap — checked first. The lead was already reached
+    // its allotted times (across all surfaces) in the rolling window, so defer
+    // to when that frees up rather than dial. No attempt consumed.
+    if (capEval.isCapped(cb.organisation_id, cb.phone)) {
+      const next =
+        capEval.reEligibleAt(cb.organisation_id, cb.phone) ??
+        new Date(Date.now() + CONNECTED_CALL_CAP_WINDOW_MS).toISOString();
+      await admin
+        .from("scheduled_callbacks")
+        .update({
+          next_attempt_at: next,
+          last_error: "Per-lead connected-call cap reached (48h) — deferred",
+        })
+        .eq("id", cb.id)
+        .eq("status", "pending");
+      return { id: cb.id, ok: false };
+    }
+
     const integration = integrationByOrg.get(cb.organisation_id);
     // Integration gone or callbacks turned off after queueing → fail the row
     // (don't silently strand it pending forever).

@@ -2,6 +2,12 @@ import "server-only";
 
 import { BolnaApiError, initiateBolnaCall } from "@/lib/bolna/client";
 import {
+  CONNECTED_CALL_CAP_WINDOW_MS,
+  DEFAULT_MAX_CONNECTED_CALLS_PER_LEAD,
+  evaluateConnectedCallCapForRows,
+  resolveConnectedCallCap,
+} from "@/lib/calls/connect-cap";
+import {
   campaignCallingWindow,
   isWithinCallingWindow,
   nextCallingWindowOpen,
@@ -190,6 +196,7 @@ export type IntegrationRow = {
   api_key: string;
   from_phone_number: string | null;
   enabled: boolean;
+  max_connected_calls_per_lead: number | null;
 };
 
 // Health of one caller-ID over the measurement window: how many dials it placed
@@ -403,12 +410,31 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   const orgIds = Array.from(new Set(queue.map((c) => c.organisation_id)));
   const { data: integrations } = await admin
     .from("bolna_integrations")
-    .select("organisation_id, agent_id, api_key, from_phone_number, enabled")
+    .select(
+      "organisation_id, agent_id, api_key, from_phone_number, enabled, max_connected_calls_per_lead",
+    )
     .in("organisation_id", orgIds)
     .returns<IntegrationRow[]>();
   const integrationByOrg = new Map(
     (integrations ?? []).map((i) => [i.organisation_id, i] as const),
   );
+
+  // Per-lead connected-call cap (global per-org governor). Evaluate once for the
+  // tick's queue; a capped contact is deferred (not failed) to when its 48h
+  // window frees up, so the rolling cap self-resolves without stranding it.
+  const capEval = await evaluateConnectedCallCapForRows({
+    admin,
+    rows: queue.map((c) => ({
+      organisation_id: c.organisation_id,
+      phone: c.phone,
+    })),
+    capForOrg: (orgId) => {
+      const integ = integrationByOrg.get(orgId);
+      return integ
+        ? resolveConnectedCallCap(integ.max_connected_calls_per_lead)
+        : DEFAULT_MAX_CONNECTED_CALLS_PER_LEAD;
+    },
+  });
 
   // Number health for switching. Load recent outbound calls once over the
   // LONGEST window any campaign in this batch needs, then compute each
@@ -472,6 +498,25 @@ export async function dispatchDueCampaignContacts(): Promise<DispatchResult> {
   }
 
   const fired = await pooledMap(queue, CONCURRENCY, async (contact) => {
+      // Per-lead connected-call cap — absolute, checked before the window gate.
+      // The lead has already been reached its allotted times (across all
+      // surfaces) in the rolling window, so defer to when that frees up rather
+      // than dial. No attempt consumed; number-health untouched.
+      if (capEval.isCapped(contact.organisation_id, contact.phone)) {
+        const next =
+          capEval.reEligibleAt(contact.organisation_id, contact.phone) ??
+          new Date(Date.now() + CONNECTED_CALL_CAP_WINDOW_MS).toISOString();
+        await admin
+          .from("campaign_contacts")
+          .update({
+            next_attempt_at: next,
+            last_error: "Per-lead connected-call cap reached (48h) — deferred",
+          })
+          .eq("id", contact.id)
+          .eq("status", "pending");
+        return { id: contact.id, ok: false, reason: "per_lead_cap" };
+      }
+
       // Calling window gate — checked first so an out-of-window contact is parked
       // (next_attempt_at → window open) rather than dialed, marked failed, or
       // having its number-health touched. No attempt is consumed.
