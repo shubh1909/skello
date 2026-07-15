@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   normalizeAbandonedCheckout,
-  orderCheckoutToken,
+  orderRecoveryKeys,
   verifyWebhookHmac,
 } from "@/lib/shopify/webhooks";
 
@@ -85,9 +85,43 @@ describe("normalizeAbandonedCheckout", () => {
   });
 });
 
-describe("orderCheckoutToken", () => {
-  it("reads the checkout token an order completed against", () => {
-    expect(orderCheckoutToken({ checkout_token: "chk_123" })).toBe("chk_123");
-    expect(orderCheckoutToken({})).toBeNull();
+describe("normalizeAbandonedCheckout — cart token", () => {
+  it("captures cart_token when present, null when absent", () => {
+    expect(
+      normalizeAbandonedCheckout({ token: "chk_1", cart_token: "cart_9" })!
+        .cartToken,
+    ).toBe("cart_9");
+    expect(normalizeAbandonedCheckout({ token: "chk_1" })!.cartToken).toBeNull();
+  });
+});
+
+describe("orderRecoveryKeys", () => {
+  it("reads checkout_token, cart_token and buyer phone", () => {
+    expect(
+      orderRecoveryKeys({
+        checkout_token: "chk_123",
+        cart_token: "cart_9",
+        phone: "+919962004406",
+      }),
+    ).toEqual({
+      checkoutToken: "chk_123",
+      cartToken: "cart_9",
+      phone: "+919962004406",
+    });
+  });
+
+  it("falls back to customer / shipping phone and nulls when absent", () => {
+    expect(
+      orderRecoveryKeys({ customer: { phone: "+910000000000" } }),
+    ).toEqual({
+      checkoutToken: null,
+      cartToken: null,
+      phone: "+910000000000",
+    });
+    expect(orderRecoveryKeys({})).toEqual({
+      checkoutToken: null,
+      cartToken: null,
+      phone: null,
+    });
   });
 });

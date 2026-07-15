@@ -14,7 +14,7 @@ import {
 } from "@/lib/shopify/recovery";
 import { normalizeShopDomain } from "@/lib/shopify/util";
 import {
-  orderCheckoutToken,
+  orderRecoveryKeys,
   verifyWebhookHmac,
 } from "@/lib/shopify/webhooks";
 
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
       } else if (topic === "orders/create") {
         await cancelRecoveryForOrder({
           integration,
-          checkoutToken: orderCheckoutToken(payload),
+          ...orderRecoveryKeys(payload),
         });
       }
     } catch (err) {
