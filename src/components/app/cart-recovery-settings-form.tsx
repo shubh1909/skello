@@ -6,7 +6,6 @@ import { ChevronDownIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import {
-  getShopifyOfferCode,
   listShopifyOffers,
   saveRecoverySettings,
 } from "@/actions/shopify-recovery";
@@ -23,7 +22,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { RECOVERY_TEMPLATE_LAYOUTS } from "@/lib/shopify/recovery-templates";
 import type {
+  RecoveryTemplateLayout,
   ShopifyDiscountKind,
   ShopifyOfferOption,
   ShopifyOfferType,
@@ -81,6 +82,10 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   const [whatsappTemplate, setWhatsappTemplate] = React.useState(
     settings?.whatsapp_template_name ?? "",
   );
+  const [whatsappLayout, setWhatsappLayout] =
+    React.useState<RecoveryTemplateLayout>(
+      settings?.whatsapp_template_layout ?? "coupon_link",
+    );
   const [offerType, setOfferType] = React.useState<string>(
     settings?.offer_type ?? "none",
   );
@@ -132,7 +137,7 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
   }, [connected, offerType, offers.length, loadOffers]);
 
   // Picking a discount binds its value/kind and auto-fills the redeemable code
-  // (fetched from the price rule) plus a friendly spoken label.
+  // (carried inline on the offer) plus a friendly spoken label.
   function onSelectOffer(id: string) {
     const offer = offers.find((o) => o.id === id);
     if (!offer) return;
@@ -146,19 +151,7 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
     } else {
       setOfferLabel(offer.title);
     }
-    startTransition(async () => {
-      const res = await getShopifyOfferCode(id);
-      if (!res.success) {
-        toast.error(res.error);
-        return;
-      }
-      setOfferCode(res.data.code ?? "");
-      if (!res.data.code) {
-        toast.info(
-          "This discount has no redeemable code (automatic discount) — the code field is left blank.",
-        );
-      }
-    });
+    setOfferCode(offer.code ?? "");
   }
 
   const discountHint =
@@ -187,6 +180,7 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
         voice_enabled: voiceEnabled,
         whatsapp_enabled: whatsappEnabled,
         whatsapp_template_name: whatsappTemplate.trim() || null,
+        whatsapp_template_layout: whatsappLayout,
         offer_type: offerType as ShopifyOfferType,
         offer_label: offerType === "none" ? null : offerLabel.trim() || null,
         offer_code: offerType === "none" ? null : offerCode.trim() || null,
@@ -341,6 +335,39 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
                 connected call ends — or as a fallback if the call never
                 connects.
               </p>
+            ) : null}
+
+            {whatsappEnabled ? (
+              <div className="grid gap-1.5">
+                <Label>Message style</Label>
+                <Select
+                  value={whatsappLayout}
+                  onValueChange={(v) =>
+                    v && setWhatsappLayout(v as RecoveryTemplateLayout)
+                  }
+                  disabled={pending}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(
+                      Object.keys(
+                        RECOVERY_TEMPLATE_LAYOUTS,
+                      ) as RecoveryTemplateLayout[]
+                    ).map((key) => (
+                      <SelectItem key={key} value={key}>
+                        {RECOVERY_TEMPLATE_LAYOUTS[key].label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {RECOVERY_TEMPLATE_LAYOUTS[whatsappLayout].description} Point
+                  the template name below at a Meta template with the matching
+                  variable count.
+                </p>
+              </div>
             ) : null}
 
             {whatsappEnabled ? (

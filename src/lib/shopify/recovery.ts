@@ -580,6 +580,52 @@ export interface RecoveryVariableSource {
   offer_discount_kind: string | null;
 }
 
+// The storefront's PRIMARY origin/host, derived from the abandoned-checkout URL
+// (which always uses the store's primary domain — unlike our stored myshopify
+// shop_domain). Used to build the coupon_link template's store name + link.
+function storefrontOrigin(recoveryUrl: string | null): string | null {
+  if (!recoveryUrl) return null;
+  try {
+    return new URL(recoveryUrl).origin;
+  } catch {
+    return null;
+  }
+}
+
+function storeHost(recoveryUrl: string | null): string {
+  const origin = storefrontOrigin(recoveryUrl);
+  if (!origin) return "";
+  try {
+    return new URL(origin).host.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+// The single checkout link the coupon_link template reads out. We send the
+// shopper through Shopify's discount route so the code is auto-applied, then
+// REDIRECT them to the ORIGINAL abandoned-checkout URL. That URL is Shopify's
+// durable, cross-device recovery link, and — crucially — the completed order
+// keeps the SAME checkout_token, so the orders/create webhook attributes the
+// conversion back to this attempt (see cancelRecoveryForOrder). No coupon → just
+// the checkout link (exact cart, no discount).
+function buildDiscountLink(
+  recoveryUrl: string | null,
+  offerCode: string | null,
+): string {
+  if (!recoveryUrl) return "";
+  if (!offerCode) return recoveryUrl;
+  try {
+    const u = new URL(recoveryUrl);
+    const redirectPath = `${u.pathname}${u.search}`;
+    return `${u.origin}/discount/${encodeURIComponent(
+      offerCode,
+    )}?redirect=${encodeURIComponent(redirectPath)}`;
+  } catch {
+    return recoveryUrl;
+  }
+}
+
 // Build the flat scalar context (→ Bolna {variables} / WhatsApp template params)
 // plus the internal correlation IDs (unused by the prompt, kept for tracing).
 export function buildRecoveryVariables(
@@ -608,6 +654,9 @@ export function buildRecoveryVariables(
     discounted_cart_total:
       discountedTotal != null ? wholeAmount(discountedTotal) : "",
     recovery_url: r.recovery_url ?? "",
+    // --- coupon_link WhatsApp template ({{3}} store, {{4}} checkout link) ---
+    store_name: storeHost(r.recovery_url),
+    discount_link: buildDiscountLink(r.recovery_url, r.offer_code),
     // --- Internal correlation (not referenced by the prompt) ---
     organisation_id: r.organisation_id,
     shopify_recovery_attempt_id: r.id,

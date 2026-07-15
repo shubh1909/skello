@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { ShopifyOfferOption } from "@/types/shopify";
+import type { ShopifyDiscountKind, ShopifyOfferOption } from "@/types/shopify";
 import type { ShopifyWebhookTopic } from "@/lib/shopify/webhooks";
 
 // Minimal typed Admin API client for one store. Holds the per-org credentials;
@@ -49,6 +49,46 @@ async function request<T>(
     );
   }
   return (await res.json()) as T;
+}
+
+// GraphQL Admin API call. Discounts (and other modern resources) only live in
+// GraphQL — the legacy REST PriceRule resource misses new-engine / app-created
+// discounts. Note: GraphQL returns HTTP 200 even for query errors, so we must
+// inspect the `errors` array explicitly.
+async function graphql<T>(
+  cfg: ShopifyClientConfig,
+  query: string,
+  variables?: Record<string, unknown>,
+): Promise<T> {
+  const res = await fetch(`${baseUrl(cfg)}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": cfg.accessToken,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ query, variables }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ShopifyApiError(
+      res.status,
+      text.slice(0, 300) || `Shopify returned ${res.status}`,
+    );
+  }
+  const json = (await res.json()) as {
+    data?: T;
+    errors?: Array<{ message: string }>;
+  };
+  if (json.errors && json.errors.length > 0) {
+    throw new ShopifyApiError(
+      200,
+      json.errors.map((e) => e.message).join("; ").slice(0, 300),
+    );
+  }
+  if (!json.data) throw new ShopifyApiError(200, "GraphQL returned no data");
+  return json.data;
 }
 
 // Idempotent at the call level isn't guaranteed by Shopify, so the registrar
@@ -109,59 +149,117 @@ export async function ensureWebhooks(
   return { registered, alreadyPresent };
 }
 
-interface PriceRuleRow {
-  id: number;
-  title: string;
-  // Shopify stores the discount as a negative string, e.g. "-10.0".
-  value?: string | null;
-  value_type?: string | null;
+// One page of active code discounts. We ask GraphQL to filter to `status:active`
+// server-side, and pull the code + value inline so the picker needs no follow-up
+// call. Covers ALL code-discount types (basic / BXGY / free shipping / app) —
+// crucially including new-engine discounts the legacy REST price_rules misses.
+const ACTIVE_CODE_DISCOUNTS_QUERY = `
+query ActiveCodeDiscounts($cursor: String) {
+  codeDiscountNodes(first: 100, after: $cursor, query: "status:active") {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      codeDiscount {
+        __typename
+        ... on DiscountCodeBasic {
+          title
+          codes(first: 1) { nodes { code } }
+          customerGets {
+            value {
+              __typename
+              ... on DiscountPercentage { percentage }
+              ... on DiscountAmount { amount { amount } }
+            }
+          }
+        }
+        ... on DiscountCodeBxgy { title codes(first: 1) { nodes { code } } }
+        ... on DiscountCodeFreeShipping { title codes(first: 1) { nodes { code } } }
+        ... on DiscountCodeApp { title codes(first: 1) { nodes { code } } }
+      }
+    }
+  }
+}`;
+
+interface DiscountValueNode {
+  __typename?: string;
+  percentage?: number;
+  amount?: { amount?: string | null } | null;
 }
 
-// Offer source for the picker: price rules (discount campaigns) on the store.
-// Best-effort — used to help the org pick an offer; manual entry still works.
-// We also surface the numeric value + kind so the recovery agent can quote a
-// real discounted cart total.
+interface CodeDiscountNode {
+  id: string;
+  codeDiscount: {
+    __typename: string;
+    title?: string | null;
+    codes?: { nodes?: Array<{ code?: string | null }> } | null;
+    customerGets?: { value?: DiscountValueNode | null } | null;
+  } | null;
+}
+
+interface CodeDiscountsData {
+  codeDiscountNodes: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    nodes: CodeDiscountNode[];
+  };
+}
+
+// Map a Shopify discount value to our (value, kind). Percentage arrives as a
+// fraction (0.2 = 20%) — we store whole percentages. BXGY / free-shipping have
+// no scalar value, so the agent can read the code but can't quote a total.
+function extractDiscountValue(v: DiscountValueNode | null | undefined): {
+  value: number | null;
+  valueType: ShopifyDiscountKind | null;
+} {
+  if (!v) return { value: null, valueType: null };
+  if (v.__typename === "DiscountPercentage" && typeof v.percentage === "number") {
+    return {
+      value: Math.round(v.percentage * 100 * 100) / 100,
+      valueType: "percentage",
+    };
+  }
+  if (v.__typename === "DiscountAmount" && v.amount?.amount != null) {
+    const n = Number(v.amount.amount);
+    return Number.isFinite(n)
+      ? { value: n, valueType: "fixed_amount" }
+      : { value: null, valueType: null };
+  }
+  return { value: null, valueType: null };
+}
+
+// Offer source for the picker: ACTIVE code discounts on the store, via GraphQL.
+// Best-effort — manual entry still works. Pages through results (cursor-based),
+// bounded so a pathological store can't loop forever. Codeless (automatic)
+// discounts are skipped — recovery needs a code the agent can read out.
 export async function listDiscountOffers(
   cfg: ShopifyClientConfig,
 ): Promise<ShopifyOfferOption[]> {
-  const json = await request<{ price_rules?: PriceRuleRow[] }>(
-    cfg,
-    "GET",
-    "/price_rules.json?limit=50",
-  );
-  return (json.price_rules ?? []).map((r) => {
-    const kind =
-      r.value_type === "percentage" || r.value_type === "fixed_amount"
-        ? r.value_type
-        : null;
-    // value arrives negative ("-10.0") — magnitude is the discount.
-    const raw = r.value != null ? Math.abs(Number(r.value)) : NaN;
-    return {
-      id: String(r.id),
-      title: r.title,
-      value: kind && Number.isFinite(raw) ? raw : null,
-      valueType: kind,
-    };
-  });
-}
+  const offers: ShopifyOfferOption[] = [];
+  let cursor: string | null = null;
 
-interface DiscountCodeRow {
-  id: number;
-  code: string;
-}
+  for (let page = 0; page < 20; page++) {
+    const data: CodeDiscountsData = await graphql<CodeDiscountsData>(
+      cfg,
+      ACTIVE_CODE_DISCOUNTS_QUERY,
+      { cursor },
+    );
+    const conn = data.codeDiscountNodes;
+    for (const node of conn.nodes) {
+      const d = node.codeDiscount;
+      if (!d) continue;
+      const code = d.codes?.nodes?.[0]?.code?.trim() || null;
+      if (!code) continue; // active CODE discounts only
+      const { value, valueType } = extractDiscountValue(d.customerGets?.value);
+      offers.push({
+        id: node.id,
+        title: d.title?.trim() || code,
+        code,
+        value,
+        valueType,
+      });
+    }
+    if (!conn.pageInfo.hasNextPage || !conn.pageInfo.endCursor) break;
+    cursor = conn.pageInfo.endCursor;
+  }
 
-// The redeemable code(s) live on a price rule's child resource — a rule can own
-// several, but recovery only needs one to read out. Returns the first code, or
-// null for an automatic discount (price rule with no codes).
-export async function getDiscountCodeForRule(
-  cfg: ShopifyClientConfig,
-  priceRuleId: string,
-): Promise<string | null> {
-  const json = await request<{ discount_codes?: DiscountCodeRow[] }>(
-    cfg,
-    "GET",
-    `/price_rules/${encodeURIComponent(priceRuleId)}/discount_codes.json`,
-  );
-  const code = json.discount_codes?.[0]?.code;
-  return typeof code === "string" && code.trim() !== "" ? code.trim() : null;
+  return offers;
 }

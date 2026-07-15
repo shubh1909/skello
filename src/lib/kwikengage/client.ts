@@ -18,10 +18,10 @@ function baseUrl(override?: string | null): string {
   return url && url.length > 0 ? url.replace(/\/+$/, "") : DEFAULT_BASE;
 }
 
-// Positional order of the approved Meta template's variables ({{1}}, {{2}}, …).
-// Keys map to buildRecoveryVariables output. If your approved template's
-// parameter order/count differs, change ONLY this array (or promote it to
-// per-org config) — nothing else in the pipeline depends on the order.
+// Default positional order of the approved Meta template's variables ({{1}},
+// {{2}}, …) — the CLASSIC recovery template. Callers may override per send via
+// WhatsAppSendInput.variableOrder (see lib/shopify/recovery-templates.ts), which
+// is how the coupon_link layout sends a different variable set.
 export const TEMPLATE_VARIABLE_ORDER = [
   "customer_name",
   "top_product",
@@ -67,8 +67,11 @@ function sanitizeTemplateParam(raw: string): string {
 
 // Keys whose value was blank before sanitisation — surfaced in logs (never the
 // values, which carry PII) so an operator can spot a data/template mismatch.
-function blankParamKeys(variables: Record<string, string>): string[] {
-  return TEMPLATE_VARIABLE_ORDER.filter((k) => !(variables[k] ?? "").trim());
+function blankParamKeys(
+  order: readonly string[],
+  variables: Record<string, string>,
+): string[] {
+  return order.filter((k) => !(variables[k] ?? "").trim());
 }
 
 function buildTemplateRequest(
@@ -77,7 +80,8 @@ function buildTemplateRequest(
 ): { url: string; headers: Record<string, string>; body: string } {
   // KwikEngage `to` is a string; send the international number without the +.
   const to = recipient.replace(/^\+/, "");
-  const parameters = TEMPLATE_VARIABLE_ORDER.map((k) => ({
+  const order = input.variableOrder ?? TEMPLATE_VARIABLE_ORDER;
+  const parameters = order.map((k) => ({
     type: "text",
     text: sanitizeTemplateParam(input.variables[k] ?? ""),
   }));
@@ -185,14 +189,15 @@ export async function sendWhatsAppTemplate(
     );
   }
 
+  const order = input.variableOrder ?? TEMPLATE_VARIABLE_ORDER;
   const req = buildTemplateRequest(input, recipient);
-  const blankKeys = blankParamKeys(input.variables);
+  const blankKeys = blankParamKeys(order, input.variables);
 
   // Lightweight trace — no raw phone numbers / tokens / param values in logs.
   console.log("[kwikengage] POST template", {
     template: input.templateName,
     recipientPrefixed: recipient.startsWith("+"),
-    variables: TEMPLATE_VARIABLE_ORDER.length,
+    variables: order.length,
     blankParams: blankKeys,
   });
 
