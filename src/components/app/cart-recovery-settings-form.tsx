@@ -149,7 +149,10 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
     } else if (offer.valueType === "fixed_amount" && offer.value != null) {
       setOfferLabel(`${offer.value} off your order`);
     } else {
-      setOfferLabel(offer.title);
+      // Value-less discount (app-managed / BXGY / free shipping) — Shopify
+      // doesn't expose the amount, so leave the spoken line for the operator
+      // rather than reading out an internal title.
+      setOfferLabel("");
     }
     setOfferCode(offer.code ?? "");
   }
@@ -195,6 +198,11 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
       router.refresh();
     });
   }
+
+  // The currently-selected offer, so the trigger can show a clean code rather
+  // than letting Radix fall back to the item's value (the discount GID).
+  const selectedOffer =
+    offers.find((o) => o.id === selectedOfferId) ?? null;
 
   return (
     <Card className="p-5">
@@ -453,23 +461,40 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
                   disabled={pending || !connected || offers.length === 0}
                 >
                   <SelectTrigger id="shopify-discount">
-                    <SelectValue
-                      placeholder={
-                        loadingOffers
-                          ? "Loading discounts…"
-                          : offers.length === 0
-                            ? "No discounts found on the store"
-                            : "Select a discount campaign"
-                      }
-                    />
+                    {selectedOffer ? (
+                      <span className="truncate">
+                        {selectedOffer.code ?? selectedOffer.title}
+                      </span>
+                    ) : (
+                      <SelectValue
+                        placeholder={
+                          loadingOffers
+                            ? "Loading discounts…"
+                            : offers.length === 0
+                              ? "No active discount codes on the store"
+                              : "Select a discount code"
+                        }
+                      />
+                    )}
                   </SelectTrigger>
                   <SelectContent>
                     {offers.map((o) => {
                       const badge = discountBadge(o);
+                      const primary = o.code ?? o.title;
+                      const showTitle = o.title && o.title !== o.code;
                       return (
                         <SelectItem key={o.id} value={o.id}>
                           <span className="flex w-full items-center justify-between gap-3">
-                            <span className="truncate">{o.title}</span>
+                            <span className="flex min-w-0 flex-col">
+                              <span className="truncate font-medium">
+                                {primary}
+                              </span>
+                              {showTitle ? (
+                                <span className="truncate text-xs text-muted-foreground">
+                                  {o.title}
+                                </span>
+                              ) : null}
+                            </span>
                             {badge ? (
                               <Badge variant="secondary">{badge}</Badge>
                             ) : null}

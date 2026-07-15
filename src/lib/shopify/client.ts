@@ -203,24 +203,33 @@ interface CodeDiscountsData {
   };
 }
 
-// Map a Shopify discount value to our (value, kind). Percentage arrives as a
-// fraction (0.2 = 20%) — we store whole percentages. BXGY / free-shipping have
-// no scalar value, so the agent can read the code but can't quote a total.
+function toFiniteNumber(x: unknown): number | null {
+  const n =
+    typeof x === "number" ? x : typeof x === "string" ? Number(x) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+// Map a Shopify discount value to our (value, kind). Percentage is documented as
+// a 0–1 fraction (0.2 = 20%), but we tolerate a 0–100 value and string encodings
+// too — different discount sources have burned us both ways. BXGY / free-shipping
+// / app discounts expose no scalar value, so the agent reads the code but can't
+// quote a total.
 function extractDiscountValue(v: DiscountValueNode | null | undefined): {
   value: number | null;
   valueType: ShopifyDiscountKind | null;
 } {
   if (!v) return { value: null, valueType: null };
-  if (v.__typename === "DiscountPercentage" && typeof v.percentage === "number") {
-    return {
-      value: Math.round(v.percentage * 100 * 100) / 100,
-      valueType: "percentage",
-    };
+  if (v.__typename === "DiscountPercentage") {
+    const raw = toFiniteNumber(v.percentage);
+    if (raw == null || raw <= 0) return { value: null, valueType: null };
+    // 0–1 fraction → whole percentage; a value already >1 is taken as-is.
+    const pct = raw <= 1 ? raw * 100 : raw;
+    return { value: Math.round(pct * 100) / 100, valueType: "percentage" };
   }
-  if (v.__typename === "DiscountAmount" && v.amount?.amount != null) {
-    const n = Number(v.amount.amount);
-    return Number.isFinite(n)
-      ? { value: n, valueType: "fixed_amount" }
+  if (v.__typename === "DiscountAmount") {
+    const amt = toFiniteNumber(v.amount?.amount);
+    return amt != null
+      ? { value: amt, valueType: "fixed_amount" }
       : { value: null, valueType: null };
   }
   return { value: null, valueType: null };
@@ -261,5 +270,11 @@ export async function listDiscountOffers(
     cursor = conn.pageInfo.endCursor;
   }
 
+  // Alphabetical by code so the picker reads predictably.
+  offers.sort((a, b) =>
+    (a.code ?? a.title).localeCompare(b.code ?? b.title, undefined, {
+      sensitivity: "base",
+    }),
+  );
   return offers;
 }
