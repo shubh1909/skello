@@ -55,6 +55,10 @@ function firstPhone(...candidates: Array<unknown>): string | null {
 
 export interface NormalizedCheckout {
   checkoutToken: string;
+  // Shopify's cart token — stable across checkout re-sessions. Stored alongside
+  // checkoutToken so a recovered order can be matched back even when its
+  // checkout_token diverges (Shop Pay / express / new checkout).
+  cartToken: string | null;
   phone: string | null;
   email: string | null;
   customerName: string | null;
@@ -130,6 +134,7 @@ export function normalizeAbandonedCheckout(
 
   return {
     checkoutToken,
+    cartToken: asString(p.cart_token),
     phone,
     email: asString(p.email),
     customerName,
@@ -142,9 +147,27 @@ export function normalizeAbandonedCheckout(
   };
 }
 
-// Pull the checkout token an order completed against, so we can cancel/convert
-// the matching recovery attempt. Orders/{create} carries checkout_token.
-export function orderCheckoutToken(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  return asString((payload as Json).checkout_token);
+export interface OrderRecoveryKeys {
+  checkoutToken: string | null;
+  cartToken: string | null;
+  phone: string | null;
+}
+
+// Pull every identifier an order can be matched back to its abandoned cart by.
+// `checkout_token` historically equals the checkouts/* `token`, but diverges for
+// express / re-sessioned / new-checkout orders — so we ALSO carry `cart_token`
+// (Shopify's own recovery-attribution key) and the buyer phone as a last resort.
+export function orderRecoveryKeys(payload: unknown): OrderRecoveryKeys {
+  if (!payload || typeof payload !== "object") {
+    return { checkoutToken: null, cartToken: null, phone: null };
+  }
+  const p = payload as Json;
+  const customer = (p.customer as Json | undefined) ?? {};
+  const shipping = (p.shipping_address as Json | undefined) ?? {};
+  const billing = (p.billing_address as Json | undefined) ?? {};
+  return {
+    checkoutToken: asString(p.checkout_token),
+    cartToken: asString(p.cart_token),
+    phone: firstPhone(p.phone, customer.phone, shipping.phone, billing.phone),
+  };
 }

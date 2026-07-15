@@ -175,6 +175,7 @@ export async function scheduleRecoveryFromCheckout(input: {
     organisation_id: orgId,
     shop_domain: input.integration.shop_domain,
     checkout_token: checkout.checkoutToken,
+    cart_token: checkout.cartToken,
     customer_name: checkout.customerName,
     email: checkout.email,
     phone: checkout.phone,
@@ -352,45 +353,97 @@ export async function scheduleRecoveryFromCheckout(input: {
 // CANCEL / CONVERT — an order completed, so the cart was recovered.
 // =============================================================================
 
+// Last-10-digits key for tolerant phone matching across payload shapes — a
+// checkout phone "+91 99620 04406" and an order phone "9962004406" must match.
+function phoneKey(raw: string | null | undefined): string | null {
+  const digits = (raw ?? "").replace(/[^0-9]/g, "");
+  if (digits.length === 0) return null;
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+interface CancelCandidate {
+  id: string;
+  status: string;
+  whatsapp_status: string;
+  converted_at: string | null;
+  phone: string | null;
+}
+
 export async function cancelRecoveryForOrder(input: {
   integration: ShopifyIntegration;
   checkoutToken: string | null;
+  cartToken: string | null;
+  phone: string | null;
 }): Promise<void> {
-  if (!input.checkoutToken) return;
+  const orgId = input.integration.organisation_id;
   const admin = createAdminClient();
 
-  const { data: attempt } = await admin
-    .from("shopify_recovery_attempts")
-    .select("id, status, whatsapp_status, converted_at")
-    .eq("organisation_id", input.integration.organisation_id)
-    .eq("checkout_token", input.checkoutToken)
-    .maybeSingle<{
-      id: string;
-      status: string;
-      whatsapp_status: string;
-      converted_at: string | null;
-    }>();
-  if (!attempt) return;
+  // 1) Authoritative match: the order references the tracked cart by EITHER
+  //    token. checkout_token is the classic key; cart_token catches the cases
+  //    where the shopper completed in a different checkout session (Shop Pay /
+  //    express / new checkout) and checkout_token no longer equals the one we
+  //    saw on checkouts/* — Shopify attributes recovery via cart_token.
+  const tokenOr: string[] = [];
+  if (input.checkoutToken) {
+    tokenOr.push(`checkout_token.eq.${input.checkoutToken}`);
+  }
+  if (input.cartToken) tokenOr.push(`cart_token.eq.${input.cartToken}`);
+
+  let matched: CancelCandidate[] = [];
+  if (tokenOr.length > 0) {
+    const { data } = await admin
+      .from("shopify_recovery_attempts")
+      .select("id, status, whatsapp_status, converted_at, phone")
+      .eq("organisation_id", orgId)
+      .or(tokenOr.join(","))
+      .returns<CancelCandidate[]>();
+    matched = data ?? [];
+  }
+
+  // 2) Safety net: no token matched, but we know who bought. Stop any LIVE
+  //    recovery for that phone so we never call someone who already purchased.
+  //    Compared on last-10 digits so a country-code/format drift between the
+  //    checkout and order payloads doesn't defeat the match.
+  if (matched.length === 0 && input.phone) {
+    const target = phoneKey(input.phone);
+    if (target) {
+      const { data } = await admin
+        .from("shopify_recovery_attempts")
+        .select("id, status, whatsapp_status, converted_at, phone")
+        .eq("organisation_id", orgId)
+        .in("status", ["pending", "in_flight"])
+        .is("converted_at", null)
+        .not("phone", "is", null)
+        .returns<CancelCandidate[]>();
+      matched = (data ?? []).filter((r) => phoneKey(r.phone) === target);
+    }
+  }
+
+  if (matched.length === 0) return;
 
   const now = new Date().toISOString();
-  const patch: Record<string, unknown> = {
-    converted_at: attempt.converted_at ?? now,
-  };
-  // Stop a pending/in-flight recovery on both channels — they already bought.
-  if (attempt.status === "pending" || attempt.status === "in_flight") {
-    patch.status = "canceled";
-    patch.canceled_at = now;
-  }
-  if (
-    attempt.whatsapp_status === "pending" ||
-    attempt.whatsapp_status === "in_flight"
-  ) {
-    patch.whatsapp_status = "canceled";
-  }
-  await admin
-    .from("shopify_recovery_attempts")
-    .update(patch)
-    .eq("id", attempt.id);
+  await Promise.all(
+    matched.map((attempt) => {
+      const patch: Record<string, unknown> = {
+        converted_at: attempt.converted_at ?? now,
+      };
+      // Stop a pending/in-flight recovery on both channels — they already bought.
+      if (attempt.status === "pending" || attempt.status === "in_flight") {
+        patch.status = "canceled";
+        patch.canceled_at = now;
+      }
+      if (
+        attempt.whatsapp_status === "pending" ||
+        attempt.whatsapp_status === "in_flight"
+      ) {
+        patch.whatsapp_status = "canceled";
+      }
+      return admin
+        .from("shopify_recovery_attempts")
+        .update(patch)
+        .eq("id", attempt.id);
+    }),
+  );
 }
 
 // =============================================================================
