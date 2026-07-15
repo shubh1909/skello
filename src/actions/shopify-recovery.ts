@@ -5,11 +5,7 @@ import { z } from "zod";
 
 import { requireSession } from "@/lib/auth/session";
 import { logSkeloError } from "@/lib/errors";
-import {
-  ShopifyApiError,
-  getDiscountCodeForRule,
-  listDiscountOffers,
-} from "@/lib/shopify/client";
+import { ShopifyApiError, listDiscountOffers } from "@/lib/shopify/client";
 import { getShopifyIntegration } from "@/lib/shopify/integration";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { type ActionResult, fail, ok } from "@/types/action";
@@ -35,7 +31,7 @@ export interface RecoveryOverview {
 }
 
 const SETTINGS_COLUMNS =
-  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, created_at, updated_at";
+  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, whatsapp_template_layout, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
   "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_skip_reason";
@@ -289,6 +285,7 @@ const settingsSchema = z.object({
   voice_enabled: z.boolean().optional(),
   whatsapp_enabled: z.boolean().optional(),
   whatsapp_template_name: z.string().trim().max(200).nullable().optional(),
+  whatsapp_template_layout: z.enum(["classic", "coupon_link"]).optional(),
 });
 
 // The org tunes its own offer + timing. Org resolved from the session; the
@@ -345,6 +342,9 @@ export async function saveRecoverySettings(
         ...(parsed.data.whatsapp_template_name !== undefined
           ? { whatsapp_template_name: parsed.data.whatsapp_template_name }
           : {}),
+        ...(parsed.data.whatsapp_template_layout !== undefined
+          ? { whatsapp_template_layout: parsed.data.whatsapp_template_layout }
+          : {}),
       },
       { onConflict: "organisation_id" },
     )
@@ -388,44 +388,6 @@ export async function listShopifyOffers(): Promise<
     }
     return fail(
       logSkeloError("SHOPIFY", "Failed to list Shopify offers", {
-        organisationId: session.organisation.id,
-        cause: err,
-      }),
-    );
-  }
-}
-
-// Resolve the redeemable discount code for a chosen price rule, so the form can
-// auto-fill it (rather than the operator hand-typing it). Org-scoped; the rule
-// id is validated as a bare Shopify numeric id.
-export async function getShopifyOfferCode(
-  priceRuleId: unknown,
-): Promise<ActionResult<{ code: string | null }>> {
-  const session = await requireSession();
-  const parsed = z.string().regex(/^\d+$/, "Invalid offer id").safeParse(priceRuleId);
-  if (!parsed.success) return fail("Invalid offer id");
-
-  const integration = await getShopifyIntegration(session.organisation.id);
-  if (!integration || !integration.access_token) {
-    return fail("Shopify isn't connected for this workspace yet.");
-  }
-
-  try {
-    const code = await getDiscountCodeForRule(
-      {
-        shopDomain: integration.shop_domain,
-        accessToken: integration.access_token,
-        apiVersion: integration.api_version,
-      },
-      parsed.data,
-    );
-    return ok({ code });
-  } catch (err) {
-    if (err instanceof ShopifyApiError) {
-      return fail(`Couldn't load the discount code from Shopify: ${err.message}`);
-    }
-    return fail(
-      logSkeloError("SHOPIFY", "Failed to fetch Shopify offer code", {
         organisationId: session.organisation.id,
         cause: err,
       }),

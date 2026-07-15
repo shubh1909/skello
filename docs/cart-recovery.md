@@ -384,13 +384,17 @@ sent for traceability but aren't meant to be spoken.
 
 ### The offer discount (auto-sourced)
 
-The client picks a discount from a dropdown of the store's **price rules**
-(`listDiscountOffers`, `lib/shopify/client.ts`). Selecting one:
+The client picks a discount from a dropdown of the store's **active code
+discounts** (`listDiscountOffers`, `lib/shopify/client.ts`). These are fetched
+via the **GraphQL Admin API** (`codeDiscountNodes`, filtered `status:active`) —
+which returns every code discount, legacy *and* new-engine, unlike the legacy
+REST `price_rules` resource that misses discounts created in the new admin UI or
+by apps. Selecting one:
 
-- captures the numeric **value + kind** (`percentage` / `fixed_amount`) from the
-  price rule and persists them on settings (`offer_discount_value/kind`);
-- auto-fills the redeemable **code** via `getDiscountCodeForRule` /
-  `getShopifyOfferCode`.
+- captures the numeric **value + kind** (`percentage` / `fixed_amount`) and
+  persists them on settings (`offer_discount_value/kind`);
+- auto-fills the redeemable **code**, carried inline on the offer (no second
+  call — BXGY / free-shipping codes have a code but no scalar value).
 
 At dispatch, `discount_amount` and `discounted_cart_total` are computed from the
 snapshotted value (percentage → `total × pct/100`; fixed → `min(value, total)`).

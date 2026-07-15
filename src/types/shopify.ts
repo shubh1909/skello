@@ -35,6 +35,10 @@ export type ShopifyOfferType = "none" | "discount_code" | "free_product";
 export type ShopifyDiscountKind = "percentage" | "fixed_amount";
 
 // The org-tunable cart-recovery levers (offer + timing).
+// Which WhatsApp recovery template body an org sends. See
+// lib/shopify/recovery-templates.ts for the variable layout each one maps to.
+export type RecoveryTemplateLayout = "classic" | "coupon_link";
+
 export interface ShopifyRecoverySettings {
   organisation_id: string;
   enabled: boolean;
@@ -61,6 +65,8 @@ export interface ShopifyRecoverySettings {
   whatsapp_enabled: boolean;
   // Optional per-org template override; null → the integration's default.
   whatsapp_template_name: string | null;
+  // Which template body the org uses; drives positional variable mapping.
+  whatsapp_template_layout: RecoveryTemplateLayout;
   created_at: string;
   updated_at: string;
 }
@@ -224,12 +230,15 @@ export interface RecoveryMetrics {
   currency: string | null;
 }
 
-// What an org picks from when configuring the offer (fetched from Shopify).
-// value/valueType come from the price rule so we can compute the discounted
-// cart value the agent quotes; null when the rule has no usable numeric value.
+// What an org picks from when configuring the offer (fetched from Shopify via
+// the GraphQL Admin API — all active code discounts, legacy + new-engine).
+// value/valueType let us compute the discounted cart value the agent quotes;
+// null when the discount has no usable numeric value (e.g. BXGY / free shipping).
 export interface ShopifyOfferOption {
-  id: string;
+  id: string; // discount node GID, e.g. gid://shopify/DiscountCodeNode/123
   title: string;
+  // The redeemable code, resolved inline from the discount (no second call).
+  code: string | null;
   value: number | null;
   valueType: ShopifyDiscountKind | null;
 }

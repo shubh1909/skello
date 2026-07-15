@@ -9,6 +9,7 @@ import {
   buildRecoveryVariables,
   type RecoveryVariableSource,
 } from "@/lib/shopify/recovery";
+import { recoveryTemplateVariableOrder } from "@/lib/shopify/recovery-templates";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { APP_TIMEZONE } from "@/lib/time";
 import { getWhatsAppProvider } from "@/lib/whatsapp/registry";
@@ -53,6 +54,7 @@ interface WindowRow {
   call_window_start: string | null;
   call_window_end: string | null;
   whatsapp_template_name: string | null;
+  whatsapp_template_layout: string | null;
 }
 
 async function reconcileStuck(admin: Admin): Promise<void> {
@@ -105,7 +107,7 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
     admin
       .from("shopify_recovery_settings")
       .select(
-        "organisation_id, call_window_start, call_window_end, whatsapp_template_name",
+        "organisation_id, call_window_start, call_window_end, whatsapp_template_name, whatsapp_template_layout",
       )
       .in("organisation_id", orgIds)
       .returns<WindowRow[]>(),
@@ -197,6 +199,11 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
         language: integration.template_language,
         toPhone: r.phone!,
         variables,
+        // Positional order per the org's chosen template layout (classic vs
+        // coupon_link). Defaults to coupon_link when unset.
+        variableOrder: recoveryTemplateVariableOrder(
+          settings?.whatsapp_template_layout,
+        ),
       });
 
       const sentAt = new Date().toISOString();
