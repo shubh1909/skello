@@ -89,13 +89,33 @@ function parseCode(raw: string): number | null {
   return digits ? Number(digits) : null;
 }
 
+/**
+ * Classify a failure into a disposition we can act on.
+ *
+ * `knownCode` is the code lifted straight off the provider payload (Meta's
+ * `errors[].code`). Prefer it: the regex fallback only works when the provider
+ * happens to inline "(#131049)" in prose, which Meta's webhook does NOT — it
+ * sends the code as a number in a structured field. Text is the provider's to
+ * reword at will; the code is stable.
+ */
 export function classifyWhatsAppError(
   raw: string | null | undefined,
+  knownCode?: number | null,
 ): WhatsAppErrorInfo {
   const text = (raw ?? "").trim();
-  if (!text) return { disposition: "unknown", code: null, reason: "unknown" };
 
-  const code = parseCode(text);
+  if (knownCode != null && CODE_MAP[knownCode]) {
+    return { ...CODE_MAP[knownCode], code: knownCode };
+  }
+  if (!text) {
+    // A code we don't have mapped is still worth carrying — it's the only thing
+    // that makes an unrecognised failure diagnosable after the fact.
+    return knownCode != null
+      ? { disposition: "unknown", code: knownCode, reason: "delivery_failed" }
+      : { disposition: "unknown", code: null, reason: "unknown" };
+  }
+
+  const code = knownCode ?? parseCode(text);
   if (code !== null && CODE_MAP[code]) {
     return { ...CODE_MAP[code], code };
   }

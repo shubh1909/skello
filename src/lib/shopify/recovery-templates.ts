@@ -7,6 +7,12 @@ import type { RecoveryTemplateLayout } from "@/types/shopify";
 //
 // Plain data + pure helpers (no server-only deps) so the settings form (client)
 // and the dispatcher (server) can both import it.
+//
+// ⚠️ BOTH layouts now send the short link (`discount_link`), which only resolves
+// once THAT CLIENT's Shopify App Proxy is configured — there is no runtime
+// fallback to the long URL when it isn't (see buildMessageLink). Verify with
+// "Check app proxy" on the admin Shopify screen before a client goes live, or
+// their shoppers get 404s. See docs/cart-recovery.md § The short recovery link.
 
 export interface RecoveryTemplateLayoutMeta {
   label: string;
@@ -33,7 +39,14 @@ export const RECOVERY_TEMPLATE_LAYOUTS: Record<
       "cart_total",
       "discounted_cart_total",
       "discount_code",
-      "recovery_url",
+      // Was `recovery_url` (Shopify's raw abandoned-checkout URL). Now the same
+      // short link coupon_link sends: {{6}} is still a URL, so the approved Meta
+      // template needs NO change and no re-approval — the variable count and
+      // shape are identical. What the shopper gets instead is a link on the
+      // store's own domain that pre-applies the coupon and, crucially, routes
+      // through us so `clicked_at` records. On `recovery_url` a classic org
+      // could never register a single click.
+      "discount_link",
     ],
   },
   coupon_link: {

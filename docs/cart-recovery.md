@@ -379,7 +379,8 @@ unknown, so the prompt never renders a literal `{name}`).
 | `{discount_percentage}` | `20%` | percentage offers only |
 | `{discount_amount}` | `1000` | computed from the offer (whole units) |
 | `{discounted_cart_total}` | `4000` | `cart_total − discount_amount` (whole units) |
-| `{recovery_url}` | `https://…` | finish-checkout link |
+| `{recovery_url}` | `https://…` | Shopify's RAW abandoned-checkout URL. Still emitted, but **no template sends it** — it bypasses our redirect, so a click on it is invisible. Use `{discount_link}`. |
+| `{discount_link}` | `https://<store>/apps/skelo/r/…` | the short link both layouts send: store's own domain, pre-applies the coupon, records the click |
 
 Currency values are rounded to whole units (`wholeAmount()`) so the agent quotes
 "5000 rupees", never "4999.50" — the same values flow into the WhatsApp template.
@@ -446,9 +447,10 @@ still quotes the cart total, just no "you save X."
 
 ### The short recovery link (App Proxy)
 
-The `coupon_link` template sends **one** link, and it is deliberately short and on
-the **store's own domain** — a shopper who gets a `app.skelo.team` link in a
-message about *their* cart has every reason not to tap it:
+**Both** layouts send this link (`discount_link` — classic as `{{6}}`,
+coupon_link as `{{4}}`). It is deliberately short and on the **store's own
+domain** — a shopper who gets an `app.skelo.team` link in a message about *their*
+cart has every reason not to tap it:
 
 ```
 https://maishalifestyle.com/apps/skelo/r/aB3xK9pQ12zY     ← what we send
@@ -483,6 +485,14 @@ pointing at the same URL. Until it's set, tokens are still minted;
 storefront origin is **absent**, not when the proxy is merely unconfigured. See
 the setup checklist below.
 
+> **Sequencing — this is a regression if you get it wrong.** `classic` used to
+> send Shopify's raw `recovery_url`, which needs no proxy and always worked.
+> Both layouts now send the short link, so for **every existing client**, going
+> live with an unconfigured proxy turns a working link into a 404 for real
+> shoppers. Configure the proxy and confirm with **Check app proxy** BEFORE
+> deploying this to a client that's already sending. There is no runtime
+> fallback to save you.
+
 `clicked_at` is an attribution signal independent of any token join: a click
 proves the message drove the visit even when `checkout_token` diverges.
 
@@ -506,7 +516,7 @@ what**:
 | Sent | **ours** — the BSP accepted the template | `shopify_recovery_messages.sent_at` |
 | Delivered | **Meta's** — via the delivery webhook | `.delivered_at` |
 | Read | **Meta's** — same | `.read_at` |
-| Failed | **Meta's** — with the provider's reason | `.status` + `.error_message` |
+| Failed | **Meta's** — code + reason | `.status` + `.error_code` + `.error_message` |
 | Clicked | **ours** — the shopper hit our redirect route | `shopify_recovery_attempts.clicked_at` |
 
 The **cart detail sheet** renders every step with its timestamp
@@ -515,6 +525,33 @@ sequence. **Clicked is cart-level**, not per-message — the short-link token
 belongs to the *attempt*, so when retries sent several messages we genuinely
 can't say which one was clicked; it renders once below the list
 (`WhatsAppClickStep`).
+
+**Why a message reads "sent" when Meta actually rejected it.** Meta reports
+failures as an **array of objects**, never a string:
+
+```json
+"statuses": [{ "status": "failed",
+  "errors": [{ "code": 131049, "title": "…", "error_data": { "details": "…" } }] }]
+```
+
+`parseKwikEngageWebhook` now reads that array, lifts `code` into a first-class
+`shopify_recovery_messages.error_code`, and renders the text back into the
+`(#code) title: details` form. Before, it looked only for a *string* under
+`error`/`reason` — so the code was discarded, `classifyWhatsAppError` got `null`,
+and **every** Meta rejection collapsed into a generic "unknown". The entire
+`CODE_MAP` was dead on the webhook path; it only ever fired on the send path,
+where the BSP happens to inline `(#code)` in prose. `classifyWhatsAppError(text,
+code)` now takes the code directly — prefer it, since the text is the provider's
+to reword and the code is the stable half.
+
+⚠️ **A correlation miss looks exactly like success.** We store the id the send
+response returns — KwikEngage's own Mongo-style queue id
+(`6a58df316390a7ea11317bf4`), **not** a Meta `wamid`. If their delivery webhook
+reports a `wamid` instead, `applyWhatsAppDeliveryUpdate` matches nothing, returns
+`not_found`, and the message sits at "sent" forever while Meta rejected it. That
+return value used to be discarded — both it and the route now log loudly
+(`no message matches this id`, with `looksLikeMetaWamid` and the raw body), which
+is the only way to tell this apart from "the webhook never fired".
 
 The **cart table** shows a compact `WhatsApp` column (`WhatsAppReachSummary`):
 the furthest state Meta reported, plus a Clicked marker. Note the neighbouring
@@ -644,7 +681,7 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Dashboard UI | `components/app/cart-recovery-*.tsx`, `recovery-call-detail.tsx` |
 | Status/outcome badges · voice agent card | `components/app/recovery-badges.tsx` · `recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
-| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql`, `20260717000000_recovery_message_error_code.sql` |
 
 ## Going live: setup checklist
 

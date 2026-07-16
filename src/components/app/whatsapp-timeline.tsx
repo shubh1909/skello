@@ -3,6 +3,10 @@
 import * as React from "react";
 import { CheckIcon, MousePointerClickIcon, XIcon } from "lucide-react";
 
+import {
+  classifyWhatsAppError,
+  whatsappReasonLabel,
+} from "@/lib/whatsapp/error-codes";
 import type {
   RecoveryMessageRow,
   RecoveryMessageStatus,
@@ -51,6 +55,19 @@ function formatStamp(iso: string | null): string {
   })}, ${formatTime(iso)}`;
 }
 
+// Prefer OUR plain-English reading of the code over the provider's prose, which
+// is long, changes wording without notice, and buries the point ("Message failed
+// to send because more than 24 hours have passed…"). Fall back to their text
+// when the code is one we haven't mapped — something beats nothing.
+function failureDetail(m: RecoveryMessageRow): string | null {
+  const info = classifyWhatsAppError(m.error_message, m.error_code);
+  const label = whatsappReasonLabel(info.reason);
+  if (label && info.reason !== "unknown" && info.reason !== "delivery_failed") {
+    return label;
+  }
+  return m.error_message;
+}
+
 // Meta reports a failure as a terminal state, so a message that failed BEFORE
 // we ever handed it over (no sent_at) must not render a green "Sent".
 function stepsFor(m: RecoveryMessageRow): Step[] {
@@ -70,14 +87,16 @@ function stepsFor(m: RecoveryMessageRow): Step[] {
   // Only meaningful once we actually got it to the provider.
   if (reachedBsp) {
     if (failed) {
-      // Accepted by the BSP, then rejected/undelivered by Meta — the reason is
-      // the only thing that explains a cart going silent, so surface it.
+      // Accepted by the BSP, then rejected by Meta — the single most confusing
+      // state, because our side says "sent". The code is what makes it
+      // actionable: 131049 (per-user cap) means do nothing, 132001 (template
+      // not found) means the channel is dead until someone fixes it.
       steps.push({
         label: "Failed",
         at: null,
-        via: "Meta",
+        via: m.error_code ? `Meta · #${m.error_code}` : "Meta",
         state: "failed",
-        detail: m.error_message,
+        detail: failureDetail(m),
       });
     } else {
       steps.push({
