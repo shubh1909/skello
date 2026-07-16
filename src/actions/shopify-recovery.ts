@@ -14,6 +14,7 @@ import type {
   RecoveryCallRow,
   RecoveryCartItem,
   RecoveryMessageRow,
+  RecoveryMessageStatus,
   RecoveryMetrics,
   RecoveryPage,
   RecoveryVoiceAgent,
@@ -31,10 +32,10 @@ export interface RecoveryOverview {
 }
 
 const SETTINGS_COLUMNS =
-  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, whatsapp_template_layout, created_at, updated_at";
+  "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_code_spoken, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, whatsapp_template_layout, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
-  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_skip_reason";
+  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_skip_reason, clicked_at";
 
 const MESSAGE_COLUMNS =
   "id, to_phone, template_name, provider, provider_message_id, status, error_message, sent_at, delivered_at, read_at, created_at";
@@ -43,6 +44,62 @@ const CALL_COLUMNS =
   "id, status, direction, to_phone, from_phone, error_message, bolna_call_id, created_at, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript, transcript_url, summary, name_extracted, interest, lead_intent_extracted, customer_status, call_outcome, requested_callback_at, connect_on_whatsapp, visit_scheduled_at, lead_data, custom_data, shopify_recovery_attempt_id, lead_id";
 
 const PAGE_SIZE = 20;
+
+// Meta's delivery signal (delivered/read/failed) lives on
+// shopify_recovery_messages — the ATTEMPT only tracks our own send track
+// (whatsapp_status), which says nothing about whether the message landed. To
+// show both sides in the cart table we derive the furthest state each listed
+// cart reached, batched into ONE query for the page rather than N.
+const DELIVERY_RANK: Record<RecoveryMessageStatus, number> = {
+  failed: 0,
+  queued: 1,
+  sent: 2,
+  delivered: 3,
+  read: 4,
+};
+
+async function attachDeliveryState<T extends { id: string }>(
+  admin: ReturnType<typeof createAdminClient>,
+  organisationId: string,
+  rows: T[],
+): Promise<Array<T & { whatsapp_delivery: RecoveryMessageStatus | null }>> {
+  if (rows.length === 0) return [];
+
+  const { data } = await admin
+    .from("shopify_recovery_messages")
+    .select("shopify_recovery_attempt_id, status")
+    .eq("organisation_id", organisationId)
+    .in(
+      "shopify_recovery_attempt_id",
+      rows.map((r) => r.id),
+    )
+    .returns<
+      {
+        shopify_recovery_attempt_id: string | null;
+        status: RecoveryMessageStatus;
+      }[]
+    >();
+
+  // Furthest, not latest: when a retry lands after an earlier failure, the cart
+  // WAS reached — the failure is history, so 'delivered' outranks 'failed'.
+  const furthest = new Map<string, RecoveryMessageStatus>();
+  for (const m of data ?? []) {
+    const key = m.shopify_recovery_attempt_id;
+    if (!key) continue;
+    const current = furthest.get(key);
+    if (
+      !current ||
+      (DELIVERY_RANK[m.status] ?? 0) > (DELIVERY_RANK[current] ?? 0)
+    ) {
+      furthest.set(key, m.status);
+    }
+  }
+
+  return rows.map((r) => ({
+    ...r,
+    whatsapp_delivery: furthest.get(r.id) ?? null,
+  }));
+}
 
 // Strict ROI attribution: a conversion counts only when a recovery call actually
 // completed (we reached the shopper) AND that call ended before the order was
@@ -263,6 +320,7 @@ const settingsSchema = z.object({
   retry_interval_seconds: z.number().int().min(60).max(86400),
   offer_type: z.enum(["none", "discount_code", "free_product"]),
   offer_code: z.string().trim().max(120).nullable().optional(),
+  offer_code_spoken: z.string().trim().max(200).nullable().optional(),
   offer_label: z.string().trim().max(200).nullable().optional(),
   // Numeric discount captured from the chosen Shopify price rule. Optional —
   // a manually-typed offer label has no matching rule, so the agent just
@@ -312,6 +370,7 @@ export async function saveRecoverySettings(
         retry_interval_seconds: parsed.data.retry_interval_seconds,
         offer_type: parsed.data.offer_type,
         offer_code: parsed.data.offer_code ?? null,
+        offer_code_spoken: parsed.data.offer_code_spoken ?? null,
         offer_label: parsed.data.offer_label ?? null,
         // Drop the numeric discount when there's no offer.
         offer_discount_value:
@@ -718,12 +777,15 @@ export async function getAbandonedCarts(
   // organic, so the table's cart-status column can distinguish "recovered by us".
   const rows = data ?? [];
   const convertedOnPage = rows.filter((r) => r.converted_at);
-  const attributed = await attributedAttemptIds(
-    admin,
-    convertedOnPage.map((r) => ({ id: r.id, converted_at: r.converted_at })),
-  );
+  const [attributed, withDelivery] = await Promise.all([
+    attributedAttemptIds(
+      admin,
+      convertedOnPage.map((r) => ({ id: r.id, converted_at: r.converted_at })),
+    ),
+    attachDeliveryState(admin, session.organisation.id, rows),
+  ]);
   return ok({
-    rows: rows.map((r) =>
+    rows: withDelivery.map((r) =>
       r.converted_at ? { ...r, attributed: attributed.has(r.id) } : r,
     ),
     total: count ?? 0,
@@ -761,12 +823,15 @@ export async function getConvertedCarts(
   }
 
   const rows = data ?? [];
-  const attributed = await attributedAttemptIds(
-    admin,
-    rows.map((r) => ({ id: r.id, converted_at: r.converted_at })),
-  );
+  const [attributed, withDelivery] = await Promise.all([
+    attributedAttemptIds(
+      admin,
+      rows.map((r) => ({ id: r.id, converted_at: r.converted_at })),
+    ),
+    attachDeliveryState(admin, session.organisation.id, rows),
+  ]);
   return ok({
-    rows: rows.map((r) => ({ ...r, attributed: attributed.has(r.id) })),
+    rows: withDelivery.map((r) => ({ ...r, attributed: attributed.has(r.id) })),
     total: count ?? 0,
   });
 }

@@ -47,7 +47,13 @@ export interface ShopifyRecoverySettings {
   retry_interval_seconds: number;
   agent_id: string | null;
   offer_type: ShopifyOfferType;
+  // The EXACT redeemable code (e.g. GRAB20). Read by the WhatsApp template and
+  // the /discount/<code> checkout link — both need it verbatim.
   offer_code: string | null;
+  // How the agent should SAY that code (e.g. "grab twenty"). The agent can't
+  // reliably read alphanumerics aloud. Blank → falls back to offer_code. Never
+  // reaches WhatsApp or the checkout link.
+  offer_code_spoken: string | null;
   offer_label: string | null;
   // Numeric discount, auto-captured from the chosen Shopify price rule. Drives
   // the discounted-cart-value math the agent quotes on the call. Null when the
@@ -142,6 +148,7 @@ export interface RecoveryAttemptRow {
   cart_items: RecoveryCartItem[];
   offer_label: string | null;
   offer_code: string | null;
+  offer_code_spoken: string | null;
   attempt: number;
   max_attempts: number;
   last_status: string | null;
@@ -157,9 +164,19 @@ export interface RecoveryAttemptRow {
   // Why the WhatsApp track was skipped (e.g. marketing_cap, opted_out,
   // undeliverable, no_template) — set for whatsapp_status = 'skipped'.
   whatsapp_skip_reason: string | null;
+  // When the shopper FIRST opened the short recovery link. Cart-level, not
+  // per-message: the token belongs to the attempt, so a click can't be pinned
+  // to one message when retries sent several. Proves our message drove the
+  // visit — independent of any checkout/cart token join.
+  clicked_at: string | null;
   // Converted tab only: was the conversion attributable to a completed call
   // that ended before the order (strict ROI attribution)?
   attributed?: boolean;
+  // Furthest state META reported across this cart's messages — derived from
+  // shopify_recovery_messages, not stored on the attempt (whatsapp_status above
+  // is only OUR send track and can't tell you whether it landed). Batch-loaded
+  // for the listed page; absent on rows fetched outside the table queries.
+  whatsapp_delivery?: RecoveryMessageStatus | null;
 }
 
 export type RecoveryWhatsAppTrackStatus =

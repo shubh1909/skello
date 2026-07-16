@@ -319,8 +319,12 @@ same cron tick. The voice state machine is untouched.
   mapped into Meta-style `content.template.components`. Response is
   `{status:"success", message_id_attr}` (the id is read leniently via
   `extractMessageId`, which also accepts `messageId`/`data.*` shapes). The
-  endpoint/payload + positional variable order (`TEMPLATE_VARIABLE_ORDER`) live
-  in ONE place — `lib/kwikengage/client.ts` `buildTemplateRequest()`. Variables
+  endpoint/payload lives in ONE place — `lib/kwikengage/client.ts`
+  `buildTemplateRequest()`. The positional **variable order is the caller's**,
+  supplied per send from the org's chosen layout
+  (`recoveryTemplateVariableOrder`, `lib/shopify/recovery-templates.ts`); the
+  adapter holds no default, because guessing one silently sends a `classic`
+  6-param body at a `coupon_link` 4-param template. Variables
   come from the shared `buildRecoveryVariables()`. Base URL default
   `https://api.kwikengage.ai` (override per-org via the integration's
   `base_url`). **Param hygiene:** each body parameter is sanitised
@@ -370,7 +374,8 @@ unknown, so the prompt never renders a literal `{name}`).
 | `{currency}` | `INR` | |
 | `{cart_total}` | `5000` | original cart total — **whole units, no paise** |
 | `{discount_name}` | `20% off your order` | offer label |
-| `{discount_code}` | `COMEBACK20` | redeemable code |
+| `{discount_code}` | `COMEBACK20` | the EXACT redeemable code — **do not put this in a voice prompt** |
+| `{discount_code_spoken}` | `comeback twenty` | how the agent should SAY the code — **use this one in the prompt**; falls back to `{discount_code}` when unset |
 | `{discount_percentage}` | `20%` | percentage offers only |
 | `{discount_amount}` | `1000` | computed from the offer (whole units) |
 | `{discounted_cart_total}` | `4000` | `cart_total − discount_amount` (whole units) |
@@ -381,6 +386,44 @@ Currency values are rounded to whole units (`wholeAmount()`) so the agent quotes
 
 Internal IDs (`organisation_id`, `shopify_recovery_attempt_id`, `lead_id`) are also
 sent for traceability but aren't meant to be spoken.
+
+### Written vs spoken discount code
+
+One field was doing two incompatible jobs. The agent can't reliably read
+`GRAB20` aloud — it hallucinates — so orgs typed the code phonetically ("grab
+twenty") into **Discount code**. But that same field feeds the **WhatsApp
+template** and the **`/discount/<code>` checkout link**, where "grab twenty" is
+not a redeemable code. Fixing the call broke the coupon.
+
+They're now separate fields on `shopify_recovery_settings` (snapshotted onto each
+attempt at schedule time, so editing settings can't rewrite what an in-flight
+call was told to say):
+
+| Field | Holds | Read by |
+| --- | --- | --- |
+| `offer_code` | `GRAB20` — exact, auto-filled from the chosen discount | WhatsApp template · checkout link |
+| `offer_code_spoken` | `grab twenty` — phonetic | the voice agent only |
+
+→ `{discount_code}` = exact · `{discount_code_spoken}` = phonetic (falls back to
+the exact code when blank, which is better than silence).
+
+> ⚠️ **BREAKING for any org already live.** Two manual steps, no automatic
+> migration:
+>
+> 1. **Move the phonetic code.** An org that typed "grab twenty" into *Discount
+>    code* must put it in *How the agent says the code* and restore the exact
+>    code (easiest: re-pick the discount from the dropdown — it auto-fills).
+>    Until then WhatsApp keeps sending an unusable coupon.
+> 2. **Update the Bolna prompt** — `{discount_code}` → `{discount_code_spoken}`.
+>    `{discount_code}` now resolves to `GRAB20`, so a prompt left alone makes the
+>    agent read it aloud and hallucinate again. **The regression is silent:**
+>    nothing errors, no status turns red — the agent just says the wrong thing on
+>    live calls.
+>
+> We can't detect who's affected or backfill safely: "grab twenty" is a
+> syntactically valid discount code, so nothing distinguishes a phonetic value
+> from a real one. The settings form shows an inline warning as soon as a spoken
+> code is entered.
 
 ### The offer discount (auto-sourced)
 
@@ -401,6 +444,89 @@ snapshotted value (percentage → `total × pct/100`; fixed → `min(value, tota
 A hand-typed label with no matching rule simply has no numeric discount — the agent
 still quotes the cart total, just no "you save X."
 
+### The short recovery link (App Proxy)
+
+The `coupon_link` template sends **one** link, and it is deliberately short and on
+the **store's own domain** — a shopper who gets a `app.skelo.team` link in a
+message about *their* cart has every reason not to tap it:
+
+```
+https://maishalifestyle.com/apps/skelo/r/aB3xK9pQ12zY     ← what we send
+        └── Shopify App Proxy ──→ app.skelo.team/api/shopify/proxy/r/<token>
+```
+
+`short_token` is an opaque 12-char base62 id (`newShortToken`), minted **once** at
+activation and never rotated — rotating one would dead-link a message already
+sitting in someone's WhatsApp. It is a **capability**: holding it means you
+received the message, so the route must never make it enumerable.
+
+The route (`app/api/shopify/proxy/r/[token]/route.ts`) resolves the tenant from
+the proxied `shop` param, verifies the App Proxy signature **with that store's own
+`api_secret`**, looks the token up **scoped to that org** (Law #1 — a token must
+never resolve another tenant's cart), stamps `clicked_at` on first click, and
+hands the browser the real checkout URL. Bad signature, unknown shop and unknown
+token all return an identical opaque 404.
+
+**Why an HTML page and not a 302.** Shopify's App Proxy *follows* a 30x
+server-side and renders the result at the storefront path — it does not hand the
+redirect to the browser — and it **strips `Set-Cookie`** from our response. Since
+the recover URL works *by* setting the session cookies that restore the cart, a
+302 would lose exactly what makes the link work. So the browser must navigate
+itself: the route returns a minimal page that calls `location.replace()`, with a
+`<meta http-equiv="refresh">` for no-JS and a visible link if both fail.
+
+⚠️ **The link 404s until that client's App Proxy is configured.** Because Skelo
+runs **one Dev-Dashboard app per client**, this is a **per-client** step — not a
+one-time global one. Every client's app needs its own App Proxy entry, all
+pointing at the same URL. Until it's set, tokens are still minted;
+`buildMessageLink` only falls back to the long URL when the token or the
+storefront origin is **absent**, not when the proxy is merely unconfigured. See
+the setup checklist below.
+
+`clicked_at` is an attribution signal independent of any token join: a click
+proves the message drove the visit even when `checkout_token` diverges.
+
+**The health probe.** A reserved token (`PROXY_PROBE_TOKEN`, underscored so it can
+never collide with a real 12-char base62 token) walks the same resolve→verify
+path and then stops, without touching the attempts table. It answers `200` with a
+plain-text marker per outcome — deliberately chattier than the real path, which
+is safe only because the probe token is a public constant with no cart behind it.
+It has to answer `200`: "proxy not configured" produces Shopify's **own** themed
+404, which never reaches us, so status alone can't tell the two apart — only the
+body can. `checkShopifyAppProxy` drives it from the admin screen.
+
+### WhatsApp delivery: both sides of the boundary
+
+"Sent" says nothing about whether the message landed — an accepted send that Meta
+later drops looks identical at our boundary. So the UI labels **who is asserting
+what**:
+
+| Step | Whose signal | Source |
+| --- | --- | --- |
+| Sent | **ours** — the BSP accepted the template | `shopify_recovery_messages.sent_at` |
+| Delivered | **Meta's** — via the delivery webhook | `.delivered_at` |
+| Read | **Meta's** — same | `.read_at` |
+| Failed | **Meta's** — with the provider's reason | `.status` + `.error_message` |
+| Clicked | **ours** — the shopper hit our redirect route | `shopify_recovery_attempts.clicked_at` |
+
+The **cart detail sheet** renders every step with its timestamp
+(`WhatsAppMessageTimeline`), one block per message, so retries read as a
+sequence. **Clicked is cart-level**, not per-message — the short-link token
+belongs to the *attempt*, so when retries sent several messages we genuinely
+can't say which one was clicked; it renders once below the list
+(`WhatsAppClickStep`).
+
+The **cart table** shows a compact `WhatsApp` column (`WhatsAppReachSummary`):
+the furthest state Meta reported, plus a Clicked marker. Note the neighbouring
+**Reach-out** column is a different thing — it's *our* send track
+(`whatsapp_status`: pending/sent/failed), which can read "sent" while Meta never
+delivered.
+
+Meta's state isn't on the attempt (only messages carry it), so the table derives
+it via `attachDeliveryState` — **one batched query per page**, not N. It takes
+the *furthest* state rather than the latest: when a retry lands after an earlier
+failure the cart WAS reached, so `delivered` outranks `failed`.
+
 ### Recovered = strict ROI attribution
 
 A conversion counts toward the **Recovered / revenue** stats only when a recovery
@@ -408,7 +534,9 @@ call actually **completed** (we reached the shopper) **and that call ended befor
 the order was placed (`attributedAttemptIds` in `actions/shopify-recovery.ts`). Any
 other conversion (bought before we called, never connected) is shown as
 **Organic** on the Converted tab and excluded from ROI. `converted_at` itself is
-set by the `orders/create` webhook matching the checkout token.
+set by the `orders/create` webhook matching the tracked cart on **either token**
+(`checkout_token` or the stable `cart_token`), with the buyer's phone as a
+last-resort safety net — see `cancelRecoveryForOrder`.
 
 **Reach-once, then stop** (`applyShopifyRecoveryOutcome`): "connected" means the
 dial was **answered** (`in_progress`) or **completed** — either signal stamps
@@ -495,6 +623,12 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | --- | --- |
 | Webhook entry | `app/api/webhooks/shopify/route.ts` |
 | Normalize + HMAC | `lib/shopify/webhooks.ts` |
+| Short link: proxy signature + token + probe (+ test) | `lib/shopify/app-proxy.ts` · `app-proxy.test.ts` |
+| Short-link redirect route (+ health probe) | `app/api/shopify/proxy/r/[token]/route.ts` |
+| Proxy health check (admin) | `actions/admin/shopify.ts` `checkShopifyAppProxy` · `components/admin/shopify-connect-form.tsx` |
+| WhatsApp delivery timeline + table cell | `components/app/whatsapp-timeline.tsx` |
+| Checkout / message link builders (+ test) | `lib/shopify/recovery.ts` · `recovery-link.test.ts` |
+| WhatsApp template layouts (variable order) | `lib/shopify/recovery-templates.ts` |
 | Schedule / dispatch / outcome | `lib/shopify/recovery.ts` |
 | WhatsApp dispatch + delivery outcome | `lib/shopify/whatsapp-recovery.ts` |
 | WhatsApp provider seam + registry | `lib/whatsapp/provider.ts` · `lib/whatsapp/registry.ts` |
@@ -510,7 +644,7 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Dashboard UI | `components/app/cart-recovery-*.tsx`, `recovery-call-detail.tsx` |
 | Status/outcome badges · voice agent card | `components/app/recovery-badges.tsx` · `recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
-| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql` |
 
 ## Going live: setup checklist
 
@@ -545,16 +679,59 @@ and the dispatcher additionally skips any row with `converted_at` set.
    (the store approves once and we get the access pass automatically).
 2. **Register webhooks** (us, one button) — tells Shopify to start sending that
    store's abandoned-cart alerts.
-3. **Tune + turn on** (client) — on their Cart Recovery page, set the wait time and
+3. **Configure the App Proxy** (in **that client's own app**) — Dev Dashboard
+   (`dev.shopify.com`) → **Apps → {the client's app} → Versions → Create a
+   version → App proxy**:
+
+   | Field | Value |
+   | --- | --- |
+   | Subpath prefix | `apps` |
+   | Subpath | `skelo` |
+   | Proxy URL | `https://app.skelo.team/api/shopify/proxy` |
+
+   Then **release the version** — an unreleased version doesn't take effect.
+   This is what makes the short recovery link resolve on the merchant's own
+   domain (`https://<store>/apps/skelo/r/<token>`).
+
+   ⚠️ **This is per client, not once.** Every client has their own app, so every
+   client's app needs its own App Proxy entry — all three values identical, all
+   pointing at the same URL (our route resolves the tenant from the proxied
+   `shop` param). **Until it's set for a client, every short link we send that
+   client's shoppers 404s** — the token is minted regardless, so there is no
+   automatic fallback to the long URL. The values must match `APP_PROXY_PREFIX`
+   in `lib/shopify/app-proxy.ts` exactly.
+
+   Note the merchant *can* override the prefix/subpath from their own admin
+   (Settings → Apps and sales channels → {app} → App proxy → Customize URL), and
+   the values become **immutable on that store once installed** — so get them
+   right before install, and don't let a client deviate.
+
+   **Verify before going live:** on the admin Shopify screen, click **Check app
+   proxy** (`checkShopifyAppProxy`). It requests a reserved probe token through
+   the storefront, so Shopify signs and proxies it exactly like a real recovery
+   link — a pass therefore proves the whole chain (proxy wired → shop known →
+   `api_secret` correct), not just that something answered. The four failures are
+   reported distinctly:
+
+   | Result | Meaning |
+   | --- | --- |
+   | **App proxy is live** | Short links will resolve. |
+   | **Not configured** | The store never routed it to us — do step 3. |
+   | **API secret is wrong** | Proxy works, but Shopify signed with a secret we don't hold. Re-copy it. |
+   | **Store isn't recognised** | Proxy works, but the shop resolves to no workspace. |
+   | **Couldn't reach the store** | Storefront didn't respond (password-protected? dev plan?) — verify by hand. |
+4. **Tune + turn on** (client) — on their Cart Recovery page, set the wait time and
    attempts, pick the offer from the **Shopify dropdown** (so the discount % and
    code are captured for the call), then hit **Start**.
-4. **Wire the agent script** (one-time, per client) — the voice agent's Bolna
+5. **Wire the agent script** (one-time, per client) — the voice agent's Bolna
    prompt must reference the `{placeholders}` from
    [Conversation context](#conversation-context-what-we-send-the-agent) — e.g.
    `{customer_name}`, `{cart_summary}`, `{cart_total}`, `{discounted_cart_total}`,
-   `{discount_code}`. We send the data regardless, but the agent only *says* the
-   variables the script mentions.
-5. **WhatsApp (optional channel)** — in **Settings → WhatsApp**, connect the API
+   `{discount_code_spoken}`. We send the data regardless, but the agent only
+   *says* the variables the script mentions. **Use `{discount_code_spoken}`, not
+   `{discount_code}`** — the latter is the exact code (`GRAB20`), which the agent
+   garbles; see [Written vs spoken discount code](#written-vs-spoken-discount-code).
+6. **WhatsApp (optional channel)** — in **Settings → WhatsApp**, connect the API
    token, sender, the **Meta-approved template name**, and the **template
    language** (the Meta language code the template was approved under, e.g. `en`
    or `en_US` — it must match exactly or the BSP rejects the send). In the BSP
@@ -565,8 +742,10 @@ and the dispatcher additionally skips any row with `converted_at` set.
    calls first; WhatsApp is sent once the connected call ends (or as a fallback if
    voice never connects) — there's no ordering or gap to configure. Without an
    approved template the WhatsApp track is skipped and voice still runs. The
-   template's positional variable order is set in `lib/kwikengage/client.ts`
-   (`TEMPLATE_VARIABLE_ORDER`).
+   template's positional variable order follows the org's **layout** (Classic, 6
+   vars, or Coupon link, 4 vars — picked on the Cart Recovery page); the orders
+   live in `lib/shopify/recovery-templates.ts`. The layout must match the
+   approved Meta template's variable count, or the send fails on param count.
 6. **Validate the connection** (admin) — the admin WhatsApp form has a **Send
    test** button (`sendTestWhatsAppAdmin`) that fires one real template send, with
    sample values, to any number. It uses the **saved** config, so save first. A

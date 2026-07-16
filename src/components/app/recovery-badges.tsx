@@ -4,7 +4,6 @@ import { Badge } from "@/components/ui/badge";
 import { whatsappReasonLabel } from "@/lib/whatsapp/error-codes";
 import type {
   RecoveryAttemptStatus,
-  RecoveryMessageStatus,
   RecoveryWhatsAppTrackStatus,
 } from "@/types/shopify";
 
@@ -264,45 +263,10 @@ export function ReachOutStatusBadge({
   return <span className="text-muted-foreground">—</span>;
 }
 
-// A single WhatsApp message's delivery status (ledger row) for the timeline.
-const MESSAGE_STATUS_META: Record<
-  RecoveryMessageStatus,
-  { label: string; className: string }
-> = {
-  queued: {
-    label: "Queued",
-    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
-  },
-  sent: {
-    label: "Sent",
-    className: "bg-slate-100 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300",
-  },
-  delivered: {
-    label: "Delivered",
-    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
-  },
-  read: {
-    label: "Read",
-    className:
-      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  },
-  failed: {
-    label: "Failed",
-    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
-  },
-};
-
-export function MessageStatusBadge({
-  status,
-}: {
-  status: RecoveryMessageStatus;
-}) {
-  const meta = MESSAGE_STATUS_META[status] ?? {
-    label: status,
-    className: "bg-muted text-muted-foreground",
-  };
-  return <Badge className={meta.className}>{meta.label}</Badge>;
-}
+// A message's delivery state is no longer a single badge — one badge could only
+// ever show the furthest state reached, hiding whether Meta actually delivered
+// it and when. See components/app/whatsapp-timeline.tsx for the per-step view,
+// and WhatsAppReachSummary there for the compact table cell.
 
 export function CartOutcomeBadge({
   convertedAt,

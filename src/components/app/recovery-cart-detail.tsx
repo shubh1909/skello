@@ -14,9 +14,12 @@ import {
   AttemptStatusBadge,
   CallStatusBadge,
   CartOutcomeBadge,
-  MessageStatusBadge,
   WhatsAppSentBadge,
 } from "@/components/app/recovery-badges";
+import {
+  WhatsAppClickStep,
+  WhatsAppMessageTimeline,
+} from "@/components/app/whatsapp-timeline";
 import {
   getRecoveryCallsForAttempt,
   getRecoveryMessagesForAttempt,
@@ -133,6 +136,11 @@ export function RecoveryCartDetail({
             <Field label="Products" value={products.full || "—"} />
             <Field label="Offer" value={cart.offer_label} />
             <Field label="Discount code" value={cart.offer_code} />
+            {/* Snapshotted per attempt — what the agent was told to SAY on this
+                call, which is not necessarily today's setting. */}
+            {cart.offer_code_spoken ? (
+              <Field label="Agent says" value={cart.offer_code_spoken} />
+            ) : null}
             <Field
               label="Attempts"
               value={`${cart.attempt}/${cart.max_attempts}`}
@@ -209,25 +217,12 @@ export function RecoveryCartDetail({
                 Loading messages…
               </div>
             ) : messages && messages.length > 0 ? (
-              <ul className="flex flex-col gap-2">
+              <div className="flex flex-col gap-2">
                 {messages.map((m) => (
-                  <li
-                    key={m.id}
-                    className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-card px-3 py-2"
-                  >
-                    <div className="flex min-w-0 flex-col">
-                      <span className="truncate text-sm">
-                        {m.template_name ?? "template"}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {formatDateTime(m.sent_at ?? m.created_at)}
-                        {m.error_message ? ` · ${m.error_message}` : ""}
-                      </span>
-                    </div>
-                    <MessageStatusBadge status={m.status} />
-                  </li>
+                  <WhatsAppMessageTimeline key={m.id} message={m} />
                 ))}
-              </ul>
+                <WhatsAppClickStep clickedAt={cart.clicked_at} />
+              </div>
             ) : (
               <p className="text-sm text-muted-foreground">
                 No WhatsApp messages for this cart yet.

@@ -6,10 +6,12 @@ import { CheckCircle2Icon, Loader2Icon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import {
+  checkShopifyAppProxy,
   disconnectShopify,
   getRegisteredWebhooks,
   registerShopifyWebhooks,
   saveShopifyIntegration,
+  type AppProxyProbeResult,
 } from "@/actions/admin/shopify";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +20,51 @@ import { Label } from "@/components/ui/label";
 import type { ShopifyIntegrationStatus } from "@/types/shopify";
 
 const DEFAULT_API_VERSION = "2025-04";
+
+// What each probe outcome means and what the operator should do about it. The
+// App Proxy is configured per client app, and a missing one fails silently —
+// short recovery links 404 for that client's shoppers with no error anywhere on
+// our side. So each state names the fix, not just the symptom.
+const PROXY_PROBE_COPY: Record<
+  AppProxyProbeResult["status"],
+  { tone: "ok" | "warn" | "error"; title: string; body: string }
+> = {
+  ok: {
+    tone: "ok",
+    title: "App proxy is live",
+    body: "Short recovery links will resolve on the store's own domain.",
+  },
+  not_configured: {
+    tone: "error",
+    title: "App proxy is not configured",
+    body:
+      "The store didn't route this to us. In THIS client's app: Dev Dashboard → Apps → Versions → Create a version → App proxy. Set prefix 'apps', subpath 'skelo', URL https://app.skelo.team/api/shopify/proxy — then release the version. Until this is done, every short link we send this client's shoppers 404s.",
+  },
+  bad_signature: {
+    tone: "error",
+    title: "App proxy is wired, but the API secret is wrong",
+    body:
+      "Shopify reached us, but signed the request with a different secret than we hold. Re-copy the API secret key from this client's app and save it above.",
+  },
+  unknown_shop: {
+    tone: "error",
+    title: "App proxy is wired, but the store isn't recognised",
+    body:
+      "Shopify reached us for a shop domain that resolves to no workspace. Check the store domain saved above matches the app doing the proxying.",
+  },
+  unreachable: {
+    tone: "warn",
+    title: "Couldn't reach the store",
+    body:
+      "The storefront didn't respond. If it's password-protected or still on a dev plan, this check can't run — verify by hand instead.",
+  },
+};
+
+const PROXY_TONE_CLASS: Record<"ok" | "warn" | "error", string> = {
+  ok: "border-emerald-500/30 bg-emerald-500/5",
+  warn: "border-amber-500/30 bg-amber-500/5",
+  error: "border-destructive/30 bg-destructive/5",
+};
 
 interface Props {
   organisationId: string;
@@ -37,10 +84,12 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
   const [webhooks, setWebhooks] = React.useState<
     { topic: string; address: string }[] | null
   >(null);
+  const [proxyProbe, setProxyProbe] =
+    React.useState<AppProxyProbeResult | null>(null);
   // Which button triggered the shared transition — so only that button shows a
   // spinner (the `pending` flag is shared across all actions).
   const [activeAction, setActiveAction] = React.useState<
-    "save" | "register" | "show" | "disconnect" | null
+    "save" | "register" | "show" | "proxy" | "disconnect" | null
   >(null);
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -98,6 +147,24 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
         return;
       }
       setWebhooks(res.data);
+    });
+  }
+
+  function onCheckProxy() {
+    setActiveAction("proxy");
+    startTransition(async () => {
+      const res = await checkShopifyAppProxy({
+        organisation_id: organisationId,
+      });
+      if (!res.success) {
+        toast.error(res.error);
+        return;
+      }
+      setProxyProbe(res.data);
+      // The panel carries the detail + the fix; the toast is just the headline.
+      const copy = PROXY_PROBE_COPY[res.data.status];
+      if (res.data.status === "ok") toast.success(copy.title);
+      else toast.error(copy.title);
     });
   }
 
@@ -160,6 +227,18 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
             <Button
               type="button"
               size="sm"
+              variant="outline"
+              onClick={onCheckProxy}
+              disabled={pending}
+            >
+              {pending && activeAction === "proxy" ? (
+                <Loader2Icon className="size-4 animate-spin" />
+              ) : null}
+              Check app proxy
+            </Button>
+            <Button
+              type="button"
+              size="sm"
               variant="ghost"
               onClick={onDisconnect}
               disabled={pending}
@@ -212,6 +291,25 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
           <span className="font-medium text-foreground">Authorize</span>.
         </div>
       )}
+
+      {proxyProbe ? (
+        <div
+          className={`rounded-lg border p-4 ${
+            PROXY_TONE_CLASS[PROXY_PROBE_COPY[proxyProbe.status].tone]
+          }`}
+        >
+          <p className="mb-1 text-sm font-medium">
+            {PROXY_PROBE_COPY[proxyProbe.status].title}
+          </p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {PROXY_PROBE_COPY[proxyProbe.status].body}
+          </p>
+          <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">
+            {proxyProbe.probedUrl}
+            {proxyProbe.detail ? ` → ${proxyProbe.detail}` : null}
+          </p>
+        </div>
+      ) : null}
 
       {webhooks ? (
         <div className="rounded-lg border border-border/60 p-4">

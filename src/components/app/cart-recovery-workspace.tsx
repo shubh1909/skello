@@ -20,6 +20,7 @@ import {
 } from "@/components/app/recovery-badges";
 import { RecoveryCallDetail } from "@/components/app/recovery-call-detail";
 import { RecoveryCartDetail } from "@/components/app/recovery-cart-detail";
+import { WhatsAppReachSummary } from "@/components/app/whatsapp-timeline";
 import {
   formatDateTime,
   formatDuration,
@@ -391,7 +392,8 @@ function CartTable({
   onToggleSort?: () => void;
 }) {
   const isConverted = variant === "converted";
-  const colSpan = isConverted ? 7 : 9;
+  // +1 for the WhatsApp delivery/click column, on both variants.
+  const colSpan = isConverted ? 8 : 10;
   return (
     <Card className="overflow-hidden p-0">
       <div className="overflow-x-auto">
@@ -411,6 +413,9 @@ function CartTable({
                   Reach-out
                 </th>
               ) : null}
+              <th className="whitespace-nowrap px-4 py-3 font-medium">
+                WhatsApp
+              </th>
               <th className="px-4 py-3 font-medium">
                 {!isConverted && onToggleSort ? (
                   <button
@@ -478,6 +483,14 @@ function CartTable({
                       />
                     </td>
                   ) : null}
+                  {/* Reach-out above is OUR send track; this is Meta's delivery
+                      signal + whether the shopper opened the link. */}
+                  <td className="px-4 py-3">
+                    <WhatsAppReachSummary
+                      delivery={r.whatsapp_delivery}
+                      clickedAt={r.clicked_at}
+                    />
+                  </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">
                     {formatDateTime(r.abandoned_at ?? r.created_at)}
                   </td>

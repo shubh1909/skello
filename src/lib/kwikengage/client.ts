@@ -18,18 +18,11 @@ function baseUrl(override?: string | null): string {
   return url && url.length > 0 ? url.replace(/\/+$/, "") : DEFAULT_BASE;
 }
 
-// Default positional order of the approved Meta template's variables ({{1}},
-// {{2}}, …) — the CLASSIC recovery template. Callers may override per send via
-// WhatsAppSendInput.variableOrder (see lib/shopify/recovery-templates.ts), which
-// is how the coupon_link layout sends a different variable set.
-export const TEMPLATE_VARIABLE_ORDER = [
-  "customer_name",
-  "top_product",
-  "cart_total",
-  "discounted_cart_total",
-  "discount_code",
-  "recovery_url",
-] as const;
+// The positional order of the approved Meta template's variables ({{1}}, {{2}},
+// …) is the CALLER's to supply — it varies per org layout (classic vs
+// coupon_link, see lib/shopify/recovery-templates.ts). This adapter deliberately
+// holds no default: guessing one here is how a coupon_link org ends up sending
+// six classic parameters at a four-parameter template.
 
 // ===========================================================================
 // PROVIDER PAYLOAD SEAM — KwikEngage send-message API (confirmed from docs).
@@ -80,7 +73,7 @@ function buildTemplateRequest(
 ): { url: string; headers: Record<string, string>; body: string } {
   // KwikEngage `to` is a string; send the international number without the +.
   const to = recipient.replace(/^\+/, "");
-  const order = input.variableOrder ?? TEMPLATE_VARIABLE_ORDER;
+  const order = input.variableOrder;
   const parameters = order.map((k) => ({
     type: "text",
     text: sanitizeTemplateParam(input.variables[k] ?? ""),
@@ -189,7 +182,7 @@ export async function sendWhatsAppTemplate(
     );
   }
 
-  const order = input.variableOrder ?? TEMPLATE_VARIABLE_ORDER;
+  const order = input.variableOrder;
   const req = buildTemplateRequest(input, recipient);
   const blankKeys = blankParamKeys(order, input.variables);
 

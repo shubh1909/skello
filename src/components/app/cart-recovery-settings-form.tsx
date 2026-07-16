@@ -93,6 +93,9 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
     settings?.offer_label ?? "",
   );
   const [offerCode, setOfferCode] = React.useState(settings?.offer_code ?? "");
+  const [offerCodeSpoken, setOfferCodeSpoken] = React.useState(
+    settings?.offer_code_spoken ?? "",
+  );
   const [offers, setOffers] = React.useState<ShopifyOfferOption[]>([]);
   const [loadingOffers, setLoadingOffers] = React.useState(false);
   const [selectedOfferId, setSelectedOfferId] = React.useState<string>("");
@@ -187,6 +190,8 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
         offer_type: offerType as ShopifyOfferType,
         offer_label: offerType === "none" ? null : offerLabel.trim() || null,
         offer_code: offerType === "none" ? null : offerCode.trim() || null,
+        offer_code_spoken:
+          offerType === "none" ? null : offerCodeSpoken.trim() || null,
         offer_discount_value: offerType === "none" ? null : discountValue,
         offer_discount_kind: offerType === "none" ? null : discountKind,
       });
@@ -541,10 +546,45 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
                     disabled={pending}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Auto-filled from the selected discount; edit if your code
-                    differs.
+                    The exact code, as WhatsApp and the checkout link need it.
+                    Auto-filled from the selected discount.
                   </p>
                 </div>
+              </div>
+
+              {/* The agent can't reliably read an alphanumeric code aloud, so
+                  the spoken form is a separate field — writing it phonetically
+                  into "Discount code" would push unusable text to WhatsApp and
+                  the checkout link. */}
+              <div className="grid gap-4 sm:grid-cols-2 sm:items-start">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="offer-code-spoken" className="whitespace-nowrap">
+                    How the agent says the code
+                  </Label>
+                  <Input
+                    id="offer-code-spoken"
+                    placeholder="e.g. grab twenty"
+                    value={offerCodeSpoken}
+                    onChange={(e) => setOfferCodeSpoken(e.target.value)}
+                    disabled={pending}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Spell it out in words — the agent garbles codes like
+                    “GRAB20”. Blank falls back to the exact code. Never sent to
+                    WhatsApp.
+                  </p>
+                </div>
+                {offerCodeSpoken.trim() ? (
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed text-muted-foreground">
+                    Your voice agent prompt must use{" "}
+                    <code className="text-foreground">
+                      {"{discount_code_spoken}"}
+                    </code>{" "}
+                    — <code>{"{discount_code}"}</code> now sends the exact code,
+                    so a prompt still using it will read “{offerCode || "GRAB20"}”
+                    aloud.
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : offerType === "free_product" ? (
