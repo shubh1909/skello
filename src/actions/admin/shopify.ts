@@ -6,6 +6,13 @@ import { z } from "zod";
 import { requireAdmin } from "@/lib/auth/admin";
 import { logSkeloError } from "@/lib/errors";
 import {
+  APP_PROXY_PREFIX,
+  PROXY_PROBE_BAD_SIGNATURE,
+  PROXY_PROBE_OK,
+  PROXY_PROBE_TOKEN,
+  PROXY_PROBE_UNKNOWN_SHOP,
+} from "@/lib/shopify/app-proxy";
+import {
   ShopifyApiError,
   ensureWebhooks,
   listShopifyWebhooks,
@@ -193,6 +200,96 @@ export async function getRegisteredWebhooks(
       }),
     );
   }
+}
+
+// --- App Proxy health ------------------------------------------------------
+
+// How long to wait on the storefront before calling it unreachable. Generous:
+// a cold storefront can be slow, and a false "not configured" is worse than a
+// slow check.
+const PROBE_TIMEOUT_MS = 10_000;
+
+export type AppProxyProbeStatus =
+  | "ok"
+  | "not_configured"
+  | "bad_signature"
+  | "unknown_shop"
+  | "unreachable";
+
+export interface AppProxyProbeResult {
+  status: AppProxyProbeStatus;
+  // Operator-facing hint (HTTP status, error class). Never shown as the primary
+  // message — the UI maps `status` to the human explanation.
+  detail: string | null;
+  probedUrl: string;
+}
+
+/**
+ * Ask the STORE whether this client's App Proxy is wired to us.
+ *
+ * We request the reserved probe token through the storefront, so Shopify itself
+ * signs and proxies the request exactly as it would a real recovery link. What
+ * comes back tells us which link in the chain is broken:
+ *
+ *   our marker OK             → proxy wired, shop known, api_secret correct
+ *   our marker BAD_SIGNATURE  → proxy wired, but the api_secret we hold is wrong
+ *   our marker UNKNOWN_SHOP   → proxy wired, but the shop resolves to no org
+ *   anything else (Shopify's   → proxy NOT configured on that client's app
+ *     own themed 404, a
+ *     password page, …)
+ *
+ * This exists because the failure is otherwise SILENT: the token still mints,
+ * the WhatsApp message still sends, and only the shopper ever sees the 404.
+ */
+export async function checkShopifyAppProxy(
+  input: unknown,
+): Promise<ActionResult<AppProxyProbeResult>> {
+  await requireAdmin();
+  const parsed = orgIdSchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid organisation id");
+
+  const integration = await getShopifyIntegration(parsed.data.organisation_id);
+  if (!integration) return fail("Connect the store first");
+
+  // Probe the canonical myshopify host. Real links use the store's PRIMARY
+  // domain (from the abandoned-checkout URL), but the proxy is a storefront
+  // feature and answers on both; myshopify is the one we always know, and any
+  // redirect to the primary domain is followed.
+  const probedUrl = `https://${integration.shop_domain}${APP_PROXY_PREFIX}/r/${PROXY_PROBE_TOKEN}`;
+
+  let response: Response;
+  try {
+    response = await fetch(probedUrl, {
+      cache: "no-store",
+      redirect: "follow",
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+  } catch (err) {
+    logSkeloError("SHOPIFY", "App proxy probe could not reach the store", {
+      organisationId: parsed.data.organisation_id,
+      cause: err,
+    });
+    return ok({
+      status: "unreachable",
+      detail: err instanceof Error ? err.name : "Network error",
+      probedUrl,
+    });
+  }
+
+  const body = await response.text().catch(() => "");
+  const detail = `HTTP ${response.status}`;
+
+  if (body.includes(PROXY_PROBE_OK)) {
+    return ok({ status: "ok", detail: null, probedUrl });
+  }
+  if (body.includes(PROXY_PROBE_BAD_SIGNATURE)) {
+    return ok({ status: "bad_signature", detail, probedUrl });
+  }
+  if (body.includes(PROXY_PROBE_UNKNOWN_SHOP)) {
+    return ok({ status: "unknown_shop", detail, probedUrl });
+  }
+  // Nothing of ours came back, so the request never reached us.
+  return ok({ status: "not_configured", detail, probedUrl });
 }
 
 export async function disconnectShopify(

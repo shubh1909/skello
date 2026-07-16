@@ -28,9 +28,11 @@ export interface WhatsAppSendInput {
   // positional parameters.
   variables: Record<string, string>;
   // Positional order of the template's {{1}}..{{n}} body variables (keys into
-  // `variables`). Lets one org's template differ from another's. Omitted → the
-  // adapter's default (classic) order.
-  variableOrder?: readonly string[];
+  // `variables`). Lets one org's template differ from another's. REQUIRED: an
+  // implicit default silently sends one layout's parameters at another layout's
+  // template, which the BSP rejects as an un-itemised 400. Resolve it from the
+  // org's layout via recoveryTemplateVariableOrder().
+  variableOrder: readonly string[];
 }
 
 export interface WhatsAppSendResult {

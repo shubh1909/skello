@@ -36,7 +36,7 @@ interface DueWhatsApp extends RecoveryVariableSource {
 }
 
 const DUE_COLUMNS =
-  "id, organisation_id, lead_id, phone, whatsapp_attempt, whatsapp_max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, cart_items, offer_label, offer_code, offer_discount_value, offer_discount_kind";
+  "id, organisation_id, lead_id, phone, whatsapp_attempt, whatsapp_max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, short_token, cart_items, offer_label, offer_code, offer_code_spoken, offer_discount_value, offer_discount_kind";
 
 interface WhatsAppIntegrationRow {
   organisation_id: string;

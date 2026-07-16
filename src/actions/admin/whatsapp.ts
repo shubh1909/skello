@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { requireAdmin } from "@/lib/auth/admin";
+import { recoveryTemplateVariableOrder } from "@/lib/shopify/recovery-templates";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   whatsappIntegrationUpdateSchema,
@@ -132,9 +133,12 @@ export async function updateWhatsAppAdmin(
 }
 
 // Non-empty sample values for every recovery variable the template adapter may
-// read. All fields are populated so a test send exercises the real template
-// (name + language + parameter count) without tripping Meta's empty-param 400 —
-// a rejection here therefore points at a genuine template mismatch.
+// read — across BOTH layouts (classic and coupon_link). All fields are populated
+// so a test send exercises the real template (name + language + parameter count)
+// without tripping Meta's empty-param 400 — a rejection here therefore points at
+// a genuine template mismatch. Keys must stay in sync with
+// buildRecoveryVariables (lib/shopify/recovery.ts); a key missing here is sent
+// as "-" and silently degrades the test into a false pass.
 const TEST_VARIABLES: Record<string, string> = {
   customer_name: "Test Customer",
   top_product: "Sample Product",
@@ -148,6 +152,8 @@ const TEST_VARIABLES: Record<string, string> = {
   discount_amount: "500",
   discounted_cart_total: "4499",
   recovery_url: "https://example.com/cart",
+  store_name: "example.com",
+  discount_link: "https://example.com/discount/TEST10?redirect=/cart",
 };
 
 const testSendSchema = z.object({
@@ -162,6 +168,14 @@ interface TestSendRow {
   sender_id: string | null;
   template_name: string | null;
   template_language: string;
+}
+
+// The recovery settings that decide WHICH template the dispatcher sends and with
+// WHICH parameter order. A test that ignores these tests a different message
+// than production sends.
+interface TestSendSettingsRow {
+  whatsapp_template_name: string | null;
+  whatsapp_template_layout: string | null;
 }
 
 // Fire one real template send to a chosen number so an admin can validate a
@@ -187,7 +201,21 @@ export async function sendTestWhatsAppAdmin(
 
   if (error) return fail(error.message);
   if (!row) return fail("WhatsApp isn't connected for this workspace yet.");
-  if (!row.template_name?.trim()) {
+
+  const { data: settings } = await admin
+    .from("shopify_recovery_settings")
+    .select("whatsapp_template_name, whatsapp_template_layout")
+    .eq("organisation_id", parsed.data.organisation_id)
+    .maybeSingle<TestSendSettingsRow>();
+
+  // Mirror the dispatcher's precedence (lib/shopify/whatsapp-recovery.ts): the
+  // recovery settings' template wins over the integration-level default, so the
+  // test exercises the template production will actually send.
+  const templateName =
+    settings?.whatsapp_template_name?.trim() ||
+    row.template_name?.trim() ||
+    null;
+  if (!templateName) {
     return fail("Set an approved template name before sending a test.");
   }
 
@@ -197,10 +225,16 @@ export async function sendTestWhatsAppAdmin(
       apiToken: row.api_token,
       baseUrl: row.base_url,
       senderId: row.sender_id,
-      templateName: row.template_name,
+      templateName,
       language: row.template_language,
       toPhone: parsed.data.to_phone,
       variables: TEST_VARIABLES,
+      // Match the org's layout. Without this the adapter falls back to the
+      // classic 6-param order, so a coupon_link org (the default) gets a
+      // param-count 400 on a config that works fine in production.
+      variableOrder: recoveryTemplateVariableOrder(
+        settings?.whatsapp_template_layout,
+      ),
     });
     return ok({ providerMessageId: result.providerMessageId });
   } catch (err) {

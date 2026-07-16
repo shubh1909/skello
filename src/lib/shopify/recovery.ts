@@ -9,6 +9,10 @@ import {
 } from "@/lib/calls/connect-cap";
 import { pooledMap } from "@/lib/campaigns/dispatch";
 import {
+  buildShortRecoveryLink,
+  newShortToken,
+} from "@/lib/shopify/app-proxy";
+import {
   isWithinCallWindow,
   nextCallWindowOpen,
 } from "@/lib/shopify/call-window";
@@ -49,6 +53,7 @@ interface RecoverySettingsRow {
   agent_id: string | null;
   offer_type: string;
   offer_code: string | null;
+  offer_code_spoken: string | null;
   offer_label: string | null;
   offer_discount_value: number | null;
   offer_discount_kind: string | null;
@@ -79,7 +84,7 @@ async function loadSettings(
   const { data } = await admin
     .from("shopify_recovery_settings")
     .select(
-      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_label, offer_discount_value, offer_discount_kind, voice_enabled, whatsapp_enabled, whatsapp_template_name, call_window_start, call_window_end",
+      "enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_code_spoken, offer_label, offer_discount_value, offer_discount_kind, voice_enabled, whatsapp_enabled, whatsapp_template_name, call_window_start, call_window_end",
     )
     .eq("organisation_id", organisationId)
     .maybeSingle<RecoverySettingsRow>();
@@ -240,6 +245,7 @@ export async function scheduleRecoveryFromCheckout(input: {
   const noOffer = settings.offer_type === "none";
   const offerLabel = noOffer ? null : settings.offer_label;
   const offerCode = noOffer ? null : settings.offer_code;
+  const offerCodeSpoken = noOffer ? null : settings.offer_code_spoken;
   const offerDiscountValue = noOffer ? null : settings.offer_discount_value;
   const offerDiscountKind = noOffer ? null : settings.offer_discount_kind;
   const fromPhone = bolna?.from_phone_number ?? null;
@@ -277,6 +283,7 @@ export async function scheduleRecoveryFromCheckout(input: {
   const offerFields = {
     offer_label: offerLabel,
     offer_code: offerCode,
+    offer_code_spoken: offerCodeSpoken,
     offer_discount_value: offerDiscountValue,
     offer_discount_kind: offerDiscountKind,
   };
@@ -337,6 +344,12 @@ export async function scheduleRecoveryFromCheckout(input: {
     ...waFields,
     attempt: 0,
     whatsapp_attempt: 0,
+    // Minted once, here, for the row's whole life: this token is the public
+    // short link. Safe on the skipped→active path below (a skipped row was
+    // never messaged, so it has no token in circulation), and deliberately
+    // absent from the already-active refresh above — rotating a token we've
+    // already sent would dead-link a message sitting in someone's WhatsApp.
+    short_token: newShortToken(),
   };
 
   if (existing) {
@@ -464,9 +477,11 @@ interface DueRecovery {
   cart_total: number | null;
   currency: string | null;
   recovery_url: string | null;
+  short_token: string | null;
   cart_items: unknown;
   offer_label: string | null;
   offer_code: string | null;
+  offer_code_spoken: string | null;
   offer_discount_value: number | null;
   offer_discount_kind: string | null;
 }
@@ -573,9 +588,13 @@ export interface RecoveryVariableSource {
   cart_total: number | null;
   currency: string | null;
   recovery_url: string | null;
+  // Null on rows minted before short links, and on skipped rows (never sent) —
+  // buildMessageLink falls back to the long checkout URL.
+  short_token: string | null;
   cart_items: unknown;
   offer_label: string | null;
   offer_code: string | null;
+  offer_code_spoken: string | null;
   offer_discount_value: number | null;
   offer_discount_kind: string | null;
 }
@@ -602,14 +621,22 @@ function storeHost(recoveryUrl: string | null): string {
   }
 }
 
-// The single checkout link the coupon_link template reads out. We send the
-// shopper through Shopify's discount route so the code is auto-applied, then
-// REDIRECT them to the ORIGINAL abandoned-checkout URL. That URL is Shopify's
-// durable, cross-device recovery link, and — crucially — the completed order
-// keeps the SAME checkout_token, so the orders/create webhook attributes the
-// conversion back to this attempt (see cancelRecoveryForOrder). No coupon → just
-// the checkout link (exact cart, no discount).
-function buildDiscountLink(
+// The REAL checkout destination. We send the shopper through Shopify's discount
+// route so the code is auto-applied, then REDIRECT them to the ORIGINAL
+// abandoned-checkout URL — Shopify's durable, cross-device recovery link, whose
+// `key` restores the cart server-side with no dependence on the shopper's
+// cookies or device. No coupon → just the checkout link (exact cart, no
+// discount).
+//
+// This is what the shopper's browser ultimately lands on, but it is NOT what we
+// put in the message: at ~130+ characters of token and percent-encoding it is
+// unreadable in WhatsApp. buildRecoveryVariables sends the short link instead
+// (buildShortRecoveryLink), and the proxy route calls this to resolve it.
+//
+// NOTE: completing through this link keeps the checkout_token we stored — but
+// an express/Shop Pay checkout started elsewhere will NOT, which is why
+// cancelRecoveryForOrder also matches on cart_token and phone.
+export function buildCheckoutLink(
   recoveryUrl: string | null,
   offerCode: string | null,
 ): string {
@@ -624,6 +651,20 @@ function buildDiscountLink(
   } catch {
     return recoveryUrl;
   }
+}
+
+// What the coupon_link template actually sends: a short link on the STORE's own
+// domain, proxied back to our redirect route. Falls back to the long checkout
+// link when the row predates short tokens or the storefront origin is unknown —
+// an ugly link still recovers a cart; a missing one doesn't.
+function buildMessageLink(
+  recoveryUrl: string | null,
+  offerCode: string | null,
+  shortToken: string | null,
+): string {
+  const origin = storefrontOrigin(recoveryUrl);
+  if (shortToken && origin) return buildShortRecoveryLink(origin, shortToken);
+  return buildCheckoutLink(recoveryUrl, offerCode);
 }
 
 // Build the flat scalar context (→ Bolna {variables} / WhatsApp template params)
@@ -648,7 +689,13 @@ export function buildRecoveryVariables(
     currency: r.currency ?? "",
     cart_total: r.cart_total != null ? wholeAmount(r.cart_total) : "",
     discount_name: r.offer_label ?? "",
+    // The EXACT redeemable code — what WhatsApp and the checkout link need.
     discount_code: r.offer_code ?? "",
+    // How the agent should SAY it ("grab twenty"), because it can't reliably
+    // read "GRAB20" aloud. Blank → fall back to the exact code, which is still
+    // better than saying nothing. Voice prompts must reference THIS, not
+    // {discount_code}; see docs/cart-recovery.md.
+    discount_code_spoken: r.offer_code_spoken?.trim() || r.offer_code || "",
     discount_percentage: percentLabel,
     discount_amount: discountAmount != null ? wholeAmount(discountAmount) : "",
     discounted_cart_total:
@@ -656,7 +703,7 @@ export function buildRecoveryVariables(
     recovery_url: r.recovery_url ?? "",
     // --- coupon_link WhatsApp template ({{3}} store, {{4}} checkout link) ---
     store_name: storeHost(r.recovery_url),
-    discount_link: buildDiscountLink(r.recovery_url, r.offer_code),
+    discount_link: buildMessageLink(r.recovery_url, r.offer_code, r.short_token),
     // --- Internal correlation (not referenced by the prompt) ---
     organisation_id: r.organisation_id,
     shopify_recovery_attempt_id: r.id,
@@ -691,7 +738,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
   const { data, error } = await admin
     .from("shopify_recovery_attempts")
     .select(
-      "id, organisation_id, lead_id, phone, agent_id, from_phone, attempt, max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, cart_items, offer_label, offer_code, offer_discount_value, offer_discount_kind",
+      "id, organisation_id, lead_id, phone, agent_id, from_phone, attempt, max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, short_token, cart_items, offer_label, offer_code, offer_code_spoken, offer_discount_value, offer_discount_kind",
     )
     .eq("status", "pending")
     // Never dial a cart that already converted. cancelRecoveryForOrder normally
