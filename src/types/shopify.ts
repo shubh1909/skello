@@ -103,6 +103,10 @@ export interface RecoveryMessageRow {
   provider_message_id: string | null;
   status: RecoveryMessageStatus;
   error_message: string | null;
+  // Meta's numeric code for a rejection (131049 = per-user marketing cap,
+  // 132001 = template not found, …). The stable half of the failure — the text
+  // beside it is the provider's and changes wording without notice.
+  error_code: number | null;
   sent_at: string | null;
   delivered_at: string | null;
   read_at: string | null;

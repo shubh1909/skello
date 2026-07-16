@@ -318,6 +318,7 @@ export async function applyWhatsAppDeliveryUpdate(input: {
   providerMessageId: string;
   status: WhatsAppDeliveryStatus;
   errorMessage?: string | null;
+  errorCode?: number | null;
 }): Promise<"updated" | "not_found" | "noop"> {
   const admin = createAdminClient();
 
@@ -330,7 +331,21 @@ export async function applyWhatsAppDeliveryUpdate(input: {
       shopify_recovery_attempt_id: string | null;
       status: string;
     }>();
-  if (!msg) return "not_found";
+  // Correlation miss. This is the ONE failure that looks like success: the
+  // message sits at "sent" forever while Meta actually rejected it, and nothing
+  // anywhere says so. Almost always an ID-shape mismatch — we store the id the
+  // send response returns (KwikEngage's own Mongo-style queue id), so a webhook
+  // reporting Meta's `wamid.…` instead will never match. Loud on purpose: the
+  // caller discards this return value, so this log is the only evidence.
+  if (!msg) {
+    console.warn("[whatsapp delivery] no message matches this id — update dropped", {
+      providerMessageId: input.providerMessageId,
+      looksLikeMetaWamid: input.providerMessageId.startsWith("wamid."),
+      status: input.status,
+      errorCode: input.errorCode ?? null,
+    });
+    return "not_found";
+  }
 
   // Monotonic: ignore backward/duplicate transitions (out-of-order webhooks).
   const currentRank = STATUS_RANK[msg.status] ?? 0;
@@ -345,6 +360,9 @@ export async function applyWhatsAppDeliveryUpdate(input: {
   else if (input.status === "read") patch.read_at = now;
   else if (input.status === "failed") {
     patch.error_message = input.errorMessage ?? "Delivery failed";
+    // Stored as its own column, not left buried in the message text — it's the
+    // stable part of the failure and the only thing worth querying on.
+    patch.error_code = input.errorCode ?? null;
   }
 
   await admin.from("shopify_recovery_messages").update(patch).eq("id", msg.id);
@@ -354,7 +372,7 @@ export async function applyWhatsAppDeliveryUpdate(input: {
   // Classify Meta's reason: a per-user cap / opt-out / undeliverable is a soft
   // "skipped" (not a red failure), everything else stays "failed".
   if (input.status === "failed" && msg.shopify_recovery_attempt_id) {
-    const info = classifyWhatsAppError(input.errorMessage);
+    const info = classifyWhatsAppError(input.errorMessage, input.errorCode);
     const terminal = terminalStatusFor(info.disposition) ?? "failed";
     await admin
       .from("shopify_recovery_attempts")

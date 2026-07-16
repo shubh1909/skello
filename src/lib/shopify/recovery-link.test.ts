@@ -5,6 +5,7 @@ import {
   buildRecoveryVariables,
   type RecoveryVariableSource,
 } from "@/lib/shopify/recovery";
+import { RECOVERY_TEMPLATE_LAYOUTS } from "@/lib/shopify/recovery-templates";
 
 const RECOVERY_URL =
   "https://maishalifestyle.com/12345678/checkouts/1a2b3c4d5e6f7a8b/recover?key=abcdef1234567890";
@@ -142,29 +143,45 @@ describe("buildRecoveryVariables — written vs spoken discount code", () => {
   });
 });
 
-describe("buildRecoveryVariables — coupon_link template contract", () => {
-  // The coupon_link layout maps these four positionally ({{1}}..{{4}}). A key
-  // missing from this output is sent to Meta as "-", which reads as a broken
-  // message rather than a failure — so assert every one is present and non-empty.
-  it("emits every variable the coupon_link layout orders", () => {
-    const vars = buildRecoveryVariables(source());
-    for (const key of ["customer_name", "top_product", "store_name", "discount_link"]) {
-      expect(String(vars[key] ?? "")).not.toBe("");
-    }
-  });
+describe("template layout contract", () => {
+  // Derived from the real layout definitions, not a copy of them: a key that
+  // exists in a variableOrder but not in buildRecoveryVariables is sent to Meta
+  // as "-", which reads as a broken message rather than a failure. Hardcoding
+  // the list here is how that drift survives — this way, adding a layout or
+  // renaming a variable fails the test instead.
+  for (const [layout, meta] of Object.entries(RECOVERY_TEMPLATE_LAYOUTS)) {
+    it(`emits every variable the ${layout} layout orders`, () => {
+      const vars = buildRecoveryVariables(source());
+      for (const key of meta.variableOrder) {
+        expect(
+          String(vars[key] ?? ""),
+          `${layout} orders "${key}" but buildRecoveryVariables didn't emit it`,
+        ).not.toBe("");
+      }
+    });
+  }
 
-  it("emits every variable the classic layout orders", () => {
-    const vars = buildRecoveryVariables(source());
-    for (const key of [
-      "customer_name",
-      "top_product",
-      "cart_total",
-      "discounted_cart_total",
-      "discount_code",
-      "recovery_url",
-    ]) {
-      expect(String(vars[key] ?? "")).not.toBe("");
-    }
+  // Both layouts send the shopper through our redirect, so a classic org can
+  // register clicks too — on the old raw `recovery_url` it never could.
+  for (const [layout, meta] of Object.entries(RECOVERY_TEMPLATE_LAYOUTS)) {
+    it(`${layout} sends the short link, not the raw checkout URL`, () => {
+      const vars = buildRecoveryVariables(source());
+      const linkKeys = meta.variableOrder.filter((k) => k.includes("link"));
+      expect(linkKeys.length).toBeGreaterThan(0);
+      for (const key of linkKeys) {
+        expect(String(vars[key])).toContain("/apps/skelo/r/");
+      }
+      // The raw Shopify URL must not be what we hand the shopper — it bypasses
+      // our redirect, so the click is invisible.
+      expect(meta.variableOrder).not.toContain("recovery_url");
+    });
+  }
+
+  it("keeps the variable COUNT stable so approved templates still match", () => {
+    // Meta rejects on parameter count. Changing which URL {{6}} carries is safe;
+    // changing how many params classic sends would 400 every live classic org.
+    expect(RECOVERY_TEMPLATE_LAYOUTS.classic.variableOrder).toHaveLength(6);
+    expect(RECOVERY_TEMPLATE_LAYOUTS.coupon_link.variableOrder).toHaveLength(4);
   });
 
   it("speaks the customer's first name only", () => {
