@@ -236,6 +236,27 @@ export async function sendTestWhatsAppAdmin(
         settings?.whatsapp_template_layout,
       ),
     });
+
+    // Record the test in the message ledger, with no attempt attached — a test
+    // belongs to no cart. Two reasons this matters:
+    //   1. The provider fires delivery webhooks for test sends too. With no row
+    //      to correlate against, every one logs "no message matches this id" —
+    //      false alarms that drown out a REAL correlation miss.
+    //   2. A test send is the main way to prove the channel works, and its
+    //      delivery outcome (delivered? capped? template rejected?) is the whole
+    //      point. Without a row that outcome was discarded and the admin only
+    //      ever saw "accepted by the BSP", which proves almost nothing.
+    await admin.from("shopify_recovery_messages").insert({
+      organisation_id: parsed.data.organisation_id,
+      shopify_recovery_attempt_id: null,
+      to_phone: parsed.data.to_phone,
+      template_name: templateName,
+      provider: row.provider,
+      provider_message_id: result.providerMessageId,
+      status: "sent",
+      sent_at: new Date().toISOString(),
+    });
+
     return ok({ providerMessageId: result.providerMessageId });
   } catch (err) {
     if (err instanceof WhatsAppSendError) {

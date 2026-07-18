@@ -165,9 +165,15 @@ export interface RecoveryAttemptRow {
   // WhatsApp channel track (parallel to the voice status/attempt fields above).
   whatsapp_status: RecoveryWhatsAppTrackStatus;
   whatsapp_sent_at: string | null;
+  // When the WhatsApp track is next due to send (its own schedule, distinct from
+  // voice's next_attempt_at). Surfaced as the "next" time on a queued WA chip.
+  whatsapp_next_at: string | null;
   // Why the WhatsApp track was skipped (e.g. marketing_cap, opted_out,
   // undeliverable, no_template) — set for whatsapp_status = 'skipped'.
   whatsapp_skip_reason: string | null;
+  // The last WhatsApp error text (send-time or Meta delivery). Set for
+  // whatsapp_status = 'failed'; classified for the compact reason on the chip.
+  whatsapp_error: string | null;
   // When the shopper FIRST opened the short recovery link. Cart-level, not
   // per-message: the token belongs to the attempt, so a click can't be pinned
   // to one message when retries sent several. Proves our message drove the

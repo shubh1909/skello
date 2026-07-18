@@ -151,6 +151,9 @@ export interface OrderRecoveryKeys {
   checkoutToken: string | null;
   cartToken: string | null;
   phone: string | null;
+  // The order's creation time — bounds the phone fallback so a stale attempt
+  // isn't credited for an unrelated later purchase.
+  orderCreatedAt: string | null;
 }
 
 // Pull every identifier an order can be matched back to its abandoned cart by.
@@ -159,7 +162,7 @@ export interface OrderRecoveryKeys {
 // (Shopify's own recovery-attribution key) and the buyer phone as a last resort.
 export function orderRecoveryKeys(payload: unknown): OrderRecoveryKeys {
   if (!payload || typeof payload !== "object") {
-    return { checkoutToken: null, cartToken: null, phone: null };
+    return { checkoutToken: null, cartToken: null, phone: null, orderCreatedAt: null };
   }
   const p = payload as Json;
   const customer = (p.customer as Json | undefined) ?? {};
@@ -169,5 +172,6 @@ export function orderRecoveryKeys(payload: unknown): OrderRecoveryKeys {
     checkoutToken: asString(p.checkout_token),
     cartToken: asString(p.cart_token),
     phone: firstPhone(p.phone, customer.phone, shipping.phone, billing.phone),
+    orderCreatedAt: asString(p.created_at),
   };
 }

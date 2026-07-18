@@ -1,16 +1,12 @@
 "use client";
 
-import * as React from "react";
 import { CheckIcon, MousePointerClickIcon, XIcon } from "lucide-react";
 
 import {
   classifyWhatsAppError,
   whatsappReasonLabel,
 } from "@/lib/whatsapp/error-codes";
-import type {
-  RecoveryMessageRow,
-  RecoveryMessageStatus,
-} from "@/types/shopify";
+import type { RecoveryMessageRow } from "@/types/shopify";
 
 // The delivery journey of one WhatsApp message, both sides of it:
 //
@@ -214,50 +210,7 @@ export function WhatsAppClickStep({ clickedAt }: { clickedAt: string | null }) {
   );
 }
 
-const DELIVERY_LABEL: Record<RecoveryMessageStatus, string> = {
-  queued: "Queued",
-  sent: "Sent",
-  delivered: "Delivered",
-  read: "Read",
-  failed: "Failed",
-};
-
-const DELIVERY_CLASS: Record<RecoveryMessageStatus, string> = {
-  queued: "text-muted-foreground",
-  sent: "text-muted-foreground",
-  delivered: "text-foreground",
-  read: "text-emerald-600",
-  failed: "text-destructive",
-};
-
-// Compact one-line cell for the cart TABLE: how far Meta got it, plus whether
-// the shopper actually opened the link. `delivery` is the derived furthest
-// state (see attachDeliveryState) — the table has no per-message rows.
-export function WhatsAppReachSummary({
-  delivery,
-  clickedAt,
-}: {
-  delivery: RecoveryMessageStatus | null | undefined;
-  clickedAt: string | null;
-}) {
-  if (!delivery && !clickedAt) {
-    return <span className="text-xs text-muted-foreground/60">—</span>;
-  }
-  return (
-    <span className="flex items-center gap-1.5 whitespace-nowrap text-xs">
-      {delivery ? (
-        <span className={DELIVERY_CLASS[delivery]}>
-          {DELIVERY_LABEL[delivery]}
-        </span>
-      ) : null}
-      {/* A click is the strongest evidence the message worked — it outranks
-          "read", so it always shows even if delivery state is missing. */}
-      {clickedAt ? (
-        <span className="flex items-center gap-1 text-emerald-600">
-          <MousePointerClickIcon className="size-3 shrink-0" />
-          Clicked
-        </span>
-      ) : null}
-    </span>
-  );
-}
+// The compact table cell that showed Meta's furthest delivery state + click was
+// folded into the single Outreach column (recovery-badges.tsx OutreachStatus),
+// so the carts table has one channel-status column instead of two. The
+// per-message timeline + click step above remain, for the cart drawer.

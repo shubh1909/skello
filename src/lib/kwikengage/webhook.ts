@@ -56,23 +56,61 @@ function asNumber(value: unknown): number | null {
   return null;
 }
 
-// Meta reports a failure as an ARRAY OF OBJECTS, never a plain string:
+// Where the human-readable failure lives. KwikEngage uses `error_reason`; other
+// BSPs / Meta's own webhook use `error`, `error_message`, or errors[].title.
+const ERROR_TEXT_KEYS = [
+  "error_reason",
+  "error_message",
+  "error",
+  "reason",
+] as const;
+
+// "whatsapp::error::131049" → 131049 · "(#131049) Delivery restricted…" → 131049
+// The code is what we actually act on, so dig it out of whatever wrapper the BSP
+// puts around it rather than trusting one field to be clean.
+function codeFromString(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const inlined = /\(#(\d+)\)/.exec(value);
+  if (inlined) return Number(inlined[1]);
+  const trailing = /(?:^|[^\d])(\d{2,6})\s*$/.exec(value.trim());
+  return trailing ? Number(trailing[1]) : null;
+}
+
+// KwikEngage sends the SAME code three ways on one payload:
+//   meta_error_code: "131049"                  ← clean, prefer this
+//   error_code:      "whatsapp::error::131049" ← namespaced; asNumber() → NaN
+//   error_reason:    "(#131049) Delivery restricted…"
+// Reading only a numeric `error_code` (as we first did) yields null on all of it.
+function codeFrom(src: Record<string, unknown>): number | null {
+  const direct =
+    asNumber(src.meta_error_code) ??
+    asNumber(src.error_code) ??
+    asNumber(src.code);
+  if (direct !== null) return direct;
+  return (
+    codeFromString(src.error_code) ??
+    codeFromString(src.code) ??
+    codeFromString(src.meta_error_code) ??
+    codeFromString(src.error_reason) ??
+    codeFromString(src.error)
+  );
+}
+
+// Normalise any provider's failure into { message, code }.
 //
-//   "errors": [{ code: 131049, title: "…", error_data: { details: "…" } }]
+// Two shapes in the wild, and we must read both:
+//   Meta (documented):  errors: [{ code, title, error_data: { details } }]
+//   KwikEngage (real):  flat — error_reason / meta_error_code / error_code
 //
-// `pick` only accepts strings, and the key is `errors` (plural) — so a payload
-// like this used to fall straight through, leaving errorMessage null. That
-// silently discarded the code and left classifyWhatsAppError with nothing to
-// classify, collapsing every Meta rejection into a generic "Delivery failed".
-//
-// We render it back into the "(#code) title: details" shape classifyWhatsAppError
-// already parses, AND return the code separately so nothing depends on the text.
+// Returns the code separately so nothing downstream depends on parsing prose,
+// and renders the text into the "(#code) …" form classifyWhatsAppError also
+// understands, for the paths that only have text.
 function errorFrom(
   src: Record<string, unknown>,
 ): { message: string | null; code: number | null } {
   const raw = src.errors ?? src.error;
 
-  // The real Meta shape.
+  // --- Meta's documented array-of-objects shape ---
   const list = Array.isArray(raw) ? raw : null;
   const first =
     list && list[0] && typeof list[0] === "object"
@@ -82,7 +120,7 @@ function errorFrom(
         : null;
 
   if (first) {
-    const code = asNumber(first.code);
+    const code = asNumber(first.code) ?? codeFrom(first);
     const title = pick(first, ["title", "message", "error", "reason"]);
     const data = first.error_data;
     const details =
@@ -96,10 +134,10 @@ function errorFrom(
     return { message: body || null, code: null };
   }
 
-  // Fallbacks: a plain string error, or a sibling numeric code field.
-  const message = pick(src, ["error", "error_message", "reason"]);
-  const code =
-    asNumber(src.error_code) ?? asNumber(src.code) ?? null;
+  // --- KwikEngage's flat shape (and any other string-error provider) ---
+  const message = pick(src, [...ERROR_TEXT_KEYS]);
+  const code = codeFrom(src);
+  // Don't double-prefix: error_reason already leads with "(#131049)".
   if (message && code !== null && !message.includes(`#${code}`)) {
     return { message: `(#${code}) ${message}`, code };
   }

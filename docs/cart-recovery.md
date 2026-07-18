@@ -553,16 +553,52 @@ return value used to be discarded — both it and the route now log loudly
 (`no message matches this id`, with `looksLikeMetaWamid` and the raw body), which
 is the only way to tell this apart from "the webhook never fired".
 
-The **cart table** shows a compact `WhatsApp` column (`WhatsAppReachSummary`):
-the furthest state Meta reported, plus a Clicked marker. Note the neighbouring
-**Reach-out** column is a different thing — it's *our* send track
-(`whatsapp_status`: pending/sent/failed), which can read "sent" while Meta never
-delivered.
+The **cart table** shows a single **Outreach** column (`OutreachStatus`,
+`recovery-badges.tsx`) — two independent channel chips, Call · WhatsApp, each
+coloured by its own state. It replaced two separate columns (a combined
+"Reach-out" badge and a "WhatsApp" delivery cell) that between them could light a
+single row red twice.
 
-Meta's state isn't on the attempt (only messages carry it), so the table derives
-it via `attachDeliveryState` — **one batched query per page**, not N. It takes
-the *furthest* state rather than the latest: when a retry lands after an earlier
-failure the cart WAS reached, so `delivered` outranks `failed`.
+The old combined badge went red whenever *either* channel technically failed —
+so a cart reached by phone still showed red because a WhatsApp template errored.
+Per-channel chips remove that: no combined verdict, so one channel can't
+red-wash the row. The colour vocabulary is deliberately calm, and **rose (the
+only alarm colour) fires only for FIXABLE errors** — couldn't place the call,
+template/param/policy problems, unset template. Customer-side and policy outcomes
+(no answer, busy, marketing cap, opted-out, undeliverable) are amber or slate,
+never red. When *both* channels finish having reached nobody, the soft misses are
+bumped slate → amber so the dead cart still stands out — but never red, because
+nobody answering isn't an error to fix.
+
+The chips fold in Meta's delivery signal (`whatsapp_delivery`) and the click
+(`clicked_at`), so nothing was lost by dropping the separate column — "Clicked"
+is elevated to the top WhatsApp state, since it's the strongest engagement signal
+we have. Meta's state isn't on the attempt (only messages carry it), so the table
+derives it via `attachDeliveryState` — **one batched query per page**, not N. It
+takes the *furthest* state rather than the latest: when a retry lands after an
+earlier failure the cart WAS reached, so `delivered` outranks `failed`.
+
+Three states that used to be ambiguous or hidden:
+
+- **Bought** — a converted cart. Both channels get `canceled` on conversion,
+  which rendered "Stopped · Stopped" — a win disguised as a dead cart. Now, when
+  `converted_at` is set, the column collapses to a single emerald **Bought**
+  chip. (Recovered-vs-organic attribution still lives in the Cart column, so an
+  organic buy isn't over-claimed as our win — Bought just states the fact.)
+- **Capped** — the per-lead 48h connected-call cap (`per_lead_cap_reached`)
+  suppresses voice to `skipped` and cancels the WhatsApp track. Both now read
+  **Capped** (amber) with a tooltip, instead of the call chip vanishing and the
+  WhatsApp chip reading a bare "Stopped". Distinct from Meta's own marketing cap
+  (`marketing_cap`), which also reads Capped but tooltips differently.
+- **Scheduled** — a queued chip (`Waiting` / `Queued`) carries its own
+  next-attempt time (`next_attempt_at` for voice, `whatsapp_next_at` for
+  WhatsApp — the two schedules differ), shown as a "Next: …" tooltip on hover.
+  The decision layer keeps the raw ISO; `ChipView` formats it, so
+  `computeOutreachChips` stays timezone-independent for tests.
+
+The pure chip-decision logic (`computeOutreachChips`) is exported and unit-tested
+(`outreach-status.test.ts`) — there's no jsdom in the test env, so the branch
+logic is tested without rendering.
 
 ### Recovered = strict ROI attribution
 
@@ -571,9 +607,39 @@ call actually **completed** (we reached the shopper) **and that call ended befor
 the order was placed (`attributedAttemptIds` in `actions/shopify-recovery.ts`). Any
 other conversion (bought before we called, never connected) is shown as
 **Organic** on the Converted tab and excluded from ROI. `converted_at` itself is
-set by the `orders/create` webhook matching the tracked cart on **either token**
-(`checkout_token` or the stable `cart_token`), with the buyer's phone as a
-last-resort safety net — see `cancelRecoveryForOrder`.
+set by the `orders/create` webhook (`cancelRecoveryForOrder`) matching the tracked
+cart in two tiers.
+
+**Matching an order back to a cart.** Tier 1 is the tokens — `checkout_token` or
+the stable `cart_token`. A token is unique to one cart, so every token match is
+credited. Tier 2 is the **phone fallback**, and it carries real weight because a
+whole class of orders has *no tokens at all*:
+
+> **GoKwik (and any custom checkout) carries neither `checkout_token` nor
+> `cart_token`** — both are absent on the order, so tier 1 is structurally
+> impossible. The buyer phone (present in the native `phone` / `customer.phone` /
+> `shipping`/`billing` fields even on a GoKwik order) is the ONLY key. Verified
+> from a real `#…` GoKwik order: `source_name`/`app_id` = the GoKwik app, tags
+> `GoKwik, UPI`, tokens `(none)`, phone in every native field.
+
+The phone tier has three properties the token tier doesn't need, each guarding a
+specific failure:
+
+1. **It includes `succeeded` attempts.** A *connected* call flips the row to
+   `succeeded`; the old net looked only at `pending`/`in_flight`, so a cart we
+   actually reached could never be phone-matched — the harder we worked, the less
+   we could attribute. This was a real miss: a connected + coupon-used GoKwik
+   conversion sat unattributed.
+2. **It credits exactly ONE attempt.** Revenue sums `cart_total` across every
+   converted row, and one buyer can have several open attempts (re-abandoned
+   carts). `selectPhoneConversion` picks one — preferring a *connected* attempt
+   (keeps it attributable), then the most recent — while still stopping outreach
+   on the others (never call someone who bought). Crediting all would
+   double-count.
+3. **It is time-bounded** (`PHONE_ATTRIBUTION_WINDOW_MS`, 3 days) so an unrelated
+   purchase weeks later can't be mis-credited to a stale recovery.
+
+The pure selector is unit-tested (`phone-conversion.test.ts`).
 
 **Reach-once, then stop** (`applyShopifyRecoveryOutcome`): "connected" means the
 dial was **answered** (`in_progress`) or **completed** — either signal stamps
@@ -679,7 +745,8 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Org Shopify status (read-only) | `actions/shopify.ts` · `components/app/shopify-status-card.tsx` |
 | Admin analytics source | `actions/admin/dashboard-catalog.ts` · `lib/validations/dashboard-widget.ts` |
 | Dashboard UI | `components/app/cart-recovery-*.tsx`, `recovery-call-detail.tsx` |
-| Status/outcome badges · voice agent card | `components/app/recovery-badges.tsx` · `recovery-agent-card.tsx` |
+| Status/outcome badges · Outreach chips (+ test) | `components/app/recovery-badges.tsx` · `outreach-status.test.ts` |
+| Voice agent card | `components/app/recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
 | Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql`, `20260717000000_recovery_message_error_code.sql` |
 

@@ -380,6 +380,94 @@ interface CancelCandidate {
   whatsapp_status: string;
   converted_at: string | null;
   phone: string | null;
+  created_at: string;
+}
+
+// How far back a phone-only match may reach. GoKwik (and any tokenless) orders
+// can ONLY be matched by phone, and one buyer may have several open attempts
+// (re-abandoned carts). Bounding by time stops an unrelated purchase weeks later
+// from being mis-credited to a stale recovery. 3 days comfortably covers the
+// outreach window (wait + retries, ~a day) plus a couple days of deliberation.
+export const PHONE_ATTRIBUTION_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+// Forward tolerance for clock/timezone skew between the order and our stored
+// checkout time — an attempt a little "after" the order is still a match.
+const PHONE_ATTRIBUTION_GRACE_MS = 60 * 60 * 1000;
+
+export interface PhoneCandidate {
+  id: string;
+  status: string;
+  created_at: string;
+  converted_at: string | null;
+}
+
+export interface PhoneConversionPlan {
+  // The single attempt to stamp `converted_at` on. null → nothing to credit.
+  creditId: string | null;
+  // Live attempts (pending/in-flight) to stop outreach on — they bought, so we
+  // must never call them, even for a DIFFERENT abandoned cart.
+  cancelIds: string[];
+}
+
+// Decide which of several same-phone attempts a tokenless (GoKwik) order should
+// credit. Pure + exported so the branch logic is unit-tested without the DB.
+//
+// Two separate jobs, deliberately not conflated:
+//   • STOP outreach on every still-live attempt for this buyer (safety).
+//   • CREDIT the conversion to exactly ONE — crediting all of them would
+//     double-count revenue, which sums cart_total across every converted row.
+// Credit prefers a CONNECTED attempt (status 'succeeded') so the recovery stays
+// attributable, then the most recent — the cart closest to the purchase.
+export function selectPhoneConversion(
+  candidates: PhoneCandidate[],
+  orderCreatedAtMs: number,
+  windowMs: number,
+): PhoneConversionPlan {
+  const inWindow = candidates.filter((c) => {
+    if (c.converted_at) return false;
+    const t = Date.parse(c.created_at);
+    if (Number.isNaN(t)) return false;
+    // Abandoned before the order (± skew grace) and no older than the window.
+    return (
+      t <= orderCreatedAtMs + PHONE_ATTRIBUTION_GRACE_MS &&
+      orderCreatedAtMs - t <= windowMs
+    );
+  });
+  if (inWindow.length === 0) return { creditId: null, cancelIds: [] };
+
+  const cancelIds = inWindow
+    .filter((c) => c.status === "pending" || c.status === "in_flight")
+    .map((c) => c.id);
+
+  const ranked = [...inWindow].sort((a, b) => {
+    // Connected first (keeps the conversion attributable), then most recent.
+    const aConn = a.status === "succeeded" ? 1 : 0;
+    const bConn = b.status === "succeeded" ? 1 : 0;
+    if (aConn !== bConn) return bConn - aConn;
+    return Date.parse(b.created_at) - Date.parse(a.created_at);
+  });
+  return { creditId: ranked[0].id, cancelIds };
+}
+
+// Build the update for an attempt we're marking converted (and stopping outreach
+// on if it's still live).
+function convertPatch(
+  attempt: CancelCandidate,
+  now: string,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {
+    converted_at: attempt.converted_at ?? now,
+  };
+  if (attempt.status === "pending" || attempt.status === "in_flight") {
+    patch.status = "canceled";
+    patch.canceled_at = now;
+  }
+  if (
+    attempt.whatsapp_status === "pending" ||
+    attempt.whatsapp_status === "in_flight"
+  ) {
+    patch.whatsapp_status = "canceled";
+  }
+  return patch;
 }
 
 export async function cancelRecoveryForOrder(input: {
@@ -387,6 +475,7 @@ export async function cancelRecoveryForOrder(input: {
   checkoutToken: string | null;
   cartToken: string | null;
   phone: string | null;
+  orderCreatedAt: string | null;
 }): Promise<void> {
   const orgId = input.integration.organisation_id;
   const admin = createAdminClient();
@@ -396,67 +485,106 @@ export async function cancelRecoveryForOrder(input: {
   //    where the shopper completed in a different checkout session (Shop Pay /
   //    express / new checkout) and checkout_token no longer equals the one we
   //    saw on checkouts/* — Shopify attributes recovery via cart_token.
+  //    A token is unique to one cart, so converting every match is safe here.
   const tokenOr: string[] = [];
   if (input.checkoutToken) {
     tokenOr.push(`checkout_token.eq.${input.checkoutToken}`);
   }
   if (input.cartToken) tokenOr.push(`cart_token.eq.${input.cartToken}`);
 
-  let matched: CancelCandidate[] = [];
   if (tokenOr.length > 0) {
     const { data } = await admin
       .from("shopify_recovery_attempts")
-      .select("id, status, whatsapp_status, converted_at, phone")
+      .select("id, status, whatsapp_status, converted_at, phone, created_at")
       .eq("organisation_id", orgId)
       .or(tokenOr.join(","))
       .returns<CancelCandidate[]>();
-    matched = data ?? [];
-  }
-
-  // 2) Safety net: no token matched, but we know who bought. Stop any LIVE
-  //    recovery for that phone so we never call someone who already purchased.
-  //    Compared on last-10 digits so a country-code/format drift between the
-  //    checkout and order payloads doesn't defeat the match.
-  if (matched.length === 0 && input.phone) {
-    const target = phoneKey(input.phone);
-    if (target) {
-      const { data } = await admin
-        .from("shopify_recovery_attempts")
-        .select("id, status, whatsapp_status, converted_at, phone")
-        .eq("organisation_id", orgId)
-        .in("status", ["pending", "in_flight"])
-        .is("converted_at", null)
-        .not("phone", "is", null)
-        .returns<CancelCandidate[]>();
-      matched = (data ?? []).filter((r) => phoneKey(r.phone) === target);
+    const matched = data ?? [];
+    if (matched.length > 0) {
+      const now = new Date().toISOString();
+      await Promise.all(
+        matched.map((a) =>
+          admin
+            .from("shopify_recovery_attempts")
+            .update(convertPatch(a, now))
+            .eq("id", a.id),
+        ),
+      );
+      return;
     }
   }
 
-  if (matched.length === 0) return;
+  // 2) Phone fallback — the ONLY key for tokenless orders (GoKwik carries no
+  //    checkout_token or cart_token at all). Matches on last-10 digits so a
+  //    country-code/format drift can't defeat it.
+  //
+  //    Critically this includes `succeeded` attempts: a CONNECTED call flips the
+  //    row to succeeded, and the old net only looked at pending/in_flight — so a
+  //    cart we actually reached could never be phone-matched, and the harder we
+  //    worked the less we could attribute. It also credits exactly ONE attempt
+  //    (revenue sums cart_total across every converted row) and bounds by time
+  //    so an unrelated later purchase isn't mis-credited.
+  if (!input.phone) return;
+  const target = phoneKey(input.phone);
+  if (!target) return;
+
+  const { data } = await admin
+    .from("shopify_recovery_attempts")
+    .select("id, status, whatsapp_status, converted_at, phone, created_at")
+    .eq("organisation_id", orgId)
+    .in("status", ["pending", "in_flight", "succeeded"])
+    .is("converted_at", null)
+    .not("phone", "is", null)
+    .returns<CancelCandidate[]>();
+  const cands = (data ?? []).filter((r) => phoneKey(r.phone) === target);
+  if (cands.length === 0) return;
+
+  const orderMs = input.orderCreatedAt
+    ? Date.parse(input.orderCreatedAt)
+    : Date.now();
+  const plan = selectPhoneConversion(
+    cands,
+    Number.isNaN(orderMs) ? Date.now() : orderMs,
+    PHONE_ATTRIBUTION_WINDOW_MS,
+  );
+  if (!plan.creditId && plan.cancelIds.length === 0) return;
 
   const now = new Date().toISOString();
-  await Promise.all(
-    matched.map((attempt) => {
-      const patch: Record<string, unknown> = {
-        converted_at: attempt.converted_at ?? now,
-      };
-      // Stop a pending/in-flight recovery on both channels — they already bought.
-      if (attempt.status === "pending" || attempt.status === "in_flight") {
-        patch.status = "canceled";
-        patch.canceled_at = now;
-      }
-      if (
-        attempt.whatsapp_status === "pending" ||
-        attempt.whatsapp_status === "in_flight"
-      ) {
-        patch.whatsapp_status = "canceled";
-      }
-      return admin
+  const byId = new Map(cands.map((c) => [c.id, c] as const));
+  const updates: Array<PromiseLike<unknown>> = [];
+
+  if (plan.creditId) {
+    const credited = byId.get(plan.creditId)!;
+    updates.push(
+      admin
         .from("shopify_recovery_attempts")
-        .update(patch)
-        .eq("id", attempt.id);
-    }),
-  );
+        .update(convertPatch(credited, now))
+        .eq("id", plan.creditId),
+    );
+    // Observability — this path was silent before, and it's the one we just
+    // fixed. Log which order/phone credited which attempt.
+    console.log("[shopify recovery] phone-matched conversion (tokenless order)", {
+      organisationId: orgId,
+      creditedAttempt: plan.creditId,
+      alsoCanceled: plan.cancelIds.filter((id) => id !== plan.creditId).length,
+    });
+  }
+
+  // Stop outreach on the OTHER live attempts for this buyer — they bought, so
+  // don't call them for a different cart — but do NOT credit them (no double).
+  for (const id of plan.cancelIds) {
+    if (id === plan.creditId) continue;
+    const c = byId.get(id)!;
+    const patch: Record<string, unknown> = { status: "canceled", canceled_at: now };
+    if (c.whatsapp_status === "pending" || c.whatsapp_status === "in_flight") {
+      patch.whatsapp_status = "canceled";
+    }
+    updates.push(
+      admin.from("shopify_recovery_attempts").update(patch).eq("id", id),
+    );
+  }
+
+  await Promise.all(updates);
 }
 
 // =============================================================================
