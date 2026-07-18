@@ -35,7 +35,7 @@ const SETTINGS_COLUMNS =
   "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_code_spoken, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, whatsapp_template_layout, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
-  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_skip_reason, clicked_at";
+  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_next_at, whatsapp_skip_reason, whatsapp_error, clicked_at";
 
 const MESSAGE_COLUMNS =
   "id, to_phone, template_name, provider, provider_message_id, status, error_message, error_code, sent_at, delivered_at, read_at, created_at";

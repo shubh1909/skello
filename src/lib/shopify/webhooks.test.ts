@@ -96,32 +96,43 @@ describe("normalizeAbandonedCheckout — cart token", () => {
 });
 
 describe("orderRecoveryKeys", () => {
-  it("reads checkout_token, cart_token and buyer phone", () => {
+  it("reads checkout_token, cart_token, buyer phone and order time", () => {
     expect(
       orderRecoveryKeys({
         checkout_token: "chk_123",
         cart_token: "cart_9",
         phone: "+919962004406",
+        created_at: "2026-07-17T13:10:00Z",
       }),
     ).toEqual({
       checkoutToken: "chk_123",
       cartToken: "cart_9",
       phone: "+919962004406",
+      orderCreatedAt: "2026-07-17T13:10:00Z",
     });
   });
 
-  it("falls back to customer / shipping phone and nulls when absent", () => {
+  // GoKwik's real shape: no tokens at all, phone in the native fields.
+  it("handles a tokenless (GoKwik) order — phone only", () => {
     expect(
-      orderRecoveryKeys({ customer: { phone: "+910000000000" } }),
+      orderRecoveryKeys({
+        customer: { phone: "+917990664995" },
+        created_at: "2026-07-17T13:10:56Z",
+      }),
     ).toEqual({
       checkoutToken: null,
       cartToken: null,
-      phone: "+910000000000",
+      phone: "+917990664995",
+      orderCreatedAt: "2026-07-17T13:10:56Z",
     });
+  });
+
+  it("nulls every key when absent", () => {
     expect(orderRecoveryKeys({})).toEqual({
       checkoutToken: null,
       cartToken: null,
       phone: null,
+      orderCreatedAt: null,
     });
   });
 });

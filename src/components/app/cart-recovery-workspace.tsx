@@ -16,11 +16,10 @@ import { Card } from "@/components/ui/card";
 import {
   CallStatusBadge,
   CartOutcomeBadge,
-  ReachOutStatusBadge,
+  OutreachStatus,
 } from "@/components/app/recovery-badges";
 import { RecoveryCallDetail } from "@/components/app/recovery-call-detail";
 import { RecoveryCartDetail } from "@/components/app/recovery-cart-detail";
-import { WhatsAppReachSummary } from "@/components/app/whatsapp-timeline";
 import {
   formatDateTime,
   formatDuration,
@@ -392,8 +391,9 @@ function CartTable({
   onToggleSort?: () => void;
 }) {
   const isConverted = variant === "converted";
-  // +1 for the WhatsApp delivery/click column, on both variants.
-  const colSpan = isConverted ? 8 : 10;
+  // Columns: Shopper, Phone, Cart value, Products, Offer, [Cart], Outreach,
+  // Abandoned, Recovered/Next. Cart only on the abandoned variant.
+  const colSpan = isConverted ? 8 : 9;
   return (
     <Card className="overflow-hidden p-0">
       <div className="overflow-x-auto">
@@ -408,13 +408,8 @@ function CartTable({
               {!isConverted ? (
                 <th className="px-4 py-3 font-medium">Cart</th>
               ) : null}
-              {!isConverted ? (
-                <th className="whitespace-nowrap px-4 py-3 font-medium">
-                  Reach-out
-                </th>
-              ) : null}
               <th className="whitespace-nowrap px-4 py-3 font-medium">
-                WhatsApp
+                Outreach
               </th>
               <th className="px-4 py-3 font-medium">
                 {!isConverted && onToggleSort ? (
@@ -474,21 +469,22 @@ function CartTable({
                       />
                     </td>
                   ) : null}
-                  {!isConverted ? (
-                    <td className="whitespace-nowrap px-4 py-3">
-                      <ReachOutStatusBadge
-                        voiceStatus={r.status}
-                        voiceLastStatus={r.last_status}
-                        whatsappStatus={r.whatsapp_status}
-                      />
-                    </td>
-                  ) : null}
-                  {/* Reach-out above is OUR send track; this is Meta's delivery
-                      signal + whether the shopper opened the link. */}
-                  <td className="px-4 py-3">
-                    <WhatsAppReachSummary
-                      delivery={r.whatsapp_delivery}
+                  {/* One cell, two independent channel chips — Meta's delivery
+                      signal + click are folded in via whatsapp_delivery /
+                      clicked_at, so a single channel failing never reds the row. */}
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <OutreachStatus
+                      voiceStatus={r.status}
+                      voiceLastStatus={r.last_status}
+                      voiceSkipReason={r.skip_reason}
+                      voiceNextAttemptAt={r.next_attempt_at}
+                      whatsappStatus={r.whatsapp_status}
+                      whatsappSkipReason={r.whatsapp_skip_reason}
+                      whatsappError={r.whatsapp_error}
+                      whatsappDelivery={r.whatsapp_delivery}
+                      whatsappNextAt={r.whatsapp_next_at}
                       clickedAt={r.clicked_at}
+                      convertedAt={r.converted_at}
                     />
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">

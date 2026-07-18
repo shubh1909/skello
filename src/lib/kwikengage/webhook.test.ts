@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  classifyWhatsAppError,
+  terminalStatusFor,
+} from "@/lib/whatsapp/error-codes";
 import { mapKwikEngageStatus, parseKwikEngageWebhook } from "./webhook";
 
 describe("mapKwikEngageStatus", () => {
@@ -45,6 +49,95 @@ describe("parseKwikEngageWebhook", () => {
     expect(parseKwikEngageWebhook({ status: "delivered" })).toBeNull();
     expect(parseKwikEngageWebhook({ message_id: "x", status: "typing" })).toBeNull();
     expect(parseKwikEngageWebhook(null)).toBeNull();
+  });
+});
+
+// KwikEngage's REAL payloads, copied verbatim from production logs. Not Meta's
+// documented shape — the BSP wraps it, flattens it, and namespaces the code. We
+// built against the docs first and every one of these returned errorCode: null.
+describe("parseKwikEngageWebhook — KwikEngage's real payloads", () => {
+  it("reads a delivered event", () => {
+    expect(
+      parseKwikEngageWebhook({
+        messageId: "6a5a2d54f5a4f896d76b934b",
+        status: "delivered",
+        timestamp: 1784294746,
+      }),
+    ).toEqual({
+      providerMessageId: "6a5a2d54f5a4f896d76b934b",
+      status: "delivered",
+      errorMessage: null,
+      errorCode: null,
+    });
+  });
+
+  it("maps their 'accepted' to our 'sent'", () => {
+    expect(
+      parseKwikEngageWebhook({
+        messageId: "6a5a2d54f5a4f896d76b934b",
+        status: "accepted",
+        timestamp: 1784294745,
+      })?.status,
+    ).toBe("sent");
+  });
+
+  // The payload that exposed the bug. Three encodings of one code, none of them
+  // a plain numeric `error_code`.
+  const realFailure = {
+    error_code: "whatsapp::error::131049",
+    error_reason:
+      "(#131049) Delivery restricted due to Meta's Marketing Message Limit",
+    messageId: "6a5a2d6895362d0648d0fc3f",
+    meta_error_code: "131049",
+    status: "failed",
+    timestamp: 1784294764,
+  };
+
+  it("extracts the code from meta_error_code", () => {
+    expect(parseKwikEngageWebhook(realFailure)?.errorCode).toBe(131049);
+  });
+
+  it("reads the reason from error_reason", () => {
+    expect(parseKwikEngageWebhook(realFailure)?.errorMessage).toBe(
+      "(#131049) Delivery restricted due to Meta's Marketing Message Limit",
+    );
+  });
+
+  it("does not double-prefix a reason that already carries (#code)", () => {
+    expect(parseKwikEngageWebhook(realFailure)?.errorMessage).not.toContain(
+      "(#131049) (#131049)",
+    );
+  });
+
+  it("classifies end-to-end as a marketing cap, not a red failure", () => {
+    const parsed = parseKwikEngageWebhook(realFailure)!;
+    const info = classifyWhatsAppError(parsed.errorMessage, parsed.errorCode);
+    expect(info.disposition).toBe("capped");
+    expect(info.reason).toBe("marketing_cap");
+    // Capped is the shopper's own limit — not something to retry or alarm on.
+    expect(terminalStatusFor(info.disposition)).toBe("skipped");
+  });
+
+  it("digs the code out of the namespaced error_code alone", () => {
+    // Defensive: if meta_error_code ever goes missing, the namespaced string is
+    // still the only other place the number exists.
+    expect(
+      parseKwikEngageWebhook({
+        messageId: "x",
+        status: "failed",
+        error_code: "whatsapp::error::132001",
+      })?.errorCode,
+    ).toBe(132001);
+  });
+
+  it("survives a failure with no code anywhere", () => {
+    const parsed = parseKwikEngageWebhook({
+      messageId: "x",
+      status: "failed",
+      error_reason: "something went wrong",
+    });
+    expect(parsed?.errorCode).toBeNull();
+    expect(parsed?.errorMessage).toBe("something went wrong");
   });
 });
 
