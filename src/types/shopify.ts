@@ -179,6 +179,10 @@ export interface RecoveryAttemptRow {
   // to one message when retries sent several. Proves our message drove the
   // visit — independent of any checkout/cart token join.
   clicked_at: string | null;
+  // How the conversion matched its order: 'token' (Shopify attributes the same
+  // way) or 'phone' (tokenless GoKwik order — Shopify can't see it as recovered).
+  // Null until converted. Explains our-vs-Shopify discrepancies.
+  conversion_match: "token" | "phone" | null;
   // Converted tab only: was the conversion attributable to a completed call
   // that ended before the order (strict ROI attribution)?
   attributed?: boolean;

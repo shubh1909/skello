@@ -35,7 +35,7 @@ const SETTINGS_COLUMNS =
   "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_code_spoken, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, whatsapp_template_layout, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
-  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_next_at, whatsapp_skip_reason, whatsapp_error, clicked_at";
+  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_next_at, whatsapp_skip_reason, whatsapp_error, clicked_at, conversion_match";
 
 const MESSAGE_COLUMNS =
   "id, to_phone, template_name, provider, provider_message_id, status, error_message, error_code, sent_at, delivered_at, read_at, created_at";
@@ -154,7 +154,6 @@ export async function getRecoveryOverview(): Promise<
     settingsRes,
     bolnaRes,
     whatsappRes,
-    abandonedRes,
     callsMadeRes,
     convertedRes,
   ] = await Promise.all([
@@ -189,12 +188,6 @@ export async function getRecoveryOverview(): Promise<
         template_name: string | null;
         enabled: boolean;
       }>(),
-    // Actioned carts (excludes skipped) — closer to Shopify's "abandoned".
-    admin
-      .from("shopify_recovery_attempts")
-      .select("id", { count: "exact", head: true })
-      .eq("organisation_id", orgId)
-      .neq("status", "skipped"),
     admin
       .from("shopify_recovery_attempts")
       .select("id", { count: "exact", head: true })
@@ -274,6 +267,28 @@ export async function getRecoveryOverview(): Promise<
     sender: waRow?.sender_id ?? null,
     templateName: waTemplate,
   };
+
+  // "Carts abandoned" gated to match Shopify's notion, so the number reconciles
+  // instead of looking inflated:
+  //   • has contact info  — we only act on carts with a phone
+  //   • the wait has elapsed — a checkout still inside its grace window isn't
+  //     "abandoned" yet (Shopify wouldn't count it); measured from when we
+  //     recorded it + the org's wait_minutes
+  //   • not converted — an instantly-completed or already-recovered cart went to
+  //     Orders and was never abandoned; those live in the "Recovered" tile
+  // Excludes `skipped` (no phone / no channel — never actioned) as before.
+  const waitMinutes = settingsRes.data?.wait_minutes ?? 45;
+  const abandonedCutoff = new Date(
+    Date.now() - waitMinutes * 60_000,
+  ).toISOString();
+  const abandonedRes = await admin
+    .from("shopify_recovery_attempts")
+    .select("id", { count: "exact", head: true })
+    .eq("organisation_id", orgId)
+    .neq("status", "skipped")
+    .not("phone", "is", null)
+    .is("converted_at", null)
+    .lte("created_at", abandonedCutoff);
 
   const metrics: RecoveryMetrics = {
     abandoned: abandonedRes.count ?? 0,

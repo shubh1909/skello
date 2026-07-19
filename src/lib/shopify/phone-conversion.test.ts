@@ -2,9 +2,58 @@ import { describe, expect, it } from "vitest";
 
 import {
   PHONE_ATTRIBUTION_WINDOW_MS,
+  convertPatch,
   selectPhoneConversion,
   type PhoneCandidate,
 } from "@/lib/shopify/recovery";
+
+const NOW = "2026-07-17T13:11:00Z";
+
+function attempt(over: Record<string, unknown> = {}) {
+  return {
+    id: "a-1",
+    status: "succeeded",
+    whatsapp_status: "sent",
+    converted_at: null,
+    phone: "+917990664995",
+    created_at: "2026-07-17T12:22:00Z",
+    ...over,
+  } as Parameters<typeof convertPatch>[0];
+}
+
+describe("convertPatch — records how the order matched", () => {
+  it("tags a token match", () => {
+    expect(convertPatch(attempt(), NOW, "token")).toMatchObject({
+      converted_at: NOW,
+      conversion_match: "token",
+    });
+  });
+
+  it("tags a phone match (GoKwik)", () => {
+    expect(convertPatch(attempt(), NOW, "phone").conversion_match).toBe("phone");
+  });
+
+  it("does NOT overwrite match/time on an already-converted row", () => {
+    // A re-delivered orders/create webhook must not rewrite the original source.
+    const patch = convertPatch(
+      attempt({ converted_at: "2026-07-17T13:00:00Z" }),
+      NOW,
+      "phone",
+    );
+    expect(patch.converted_at).toBe("2026-07-17T13:00:00Z");
+    expect(patch.conversion_match).toBeUndefined();
+  });
+
+  it("stops live outreach on both channels when converting", () => {
+    const patch = convertPatch(
+      attempt({ status: "pending", whatsapp_status: "pending" }),
+      NOW,
+      "phone",
+    );
+    expect(patch.status).toBe("canceled");
+    expect(patch.whatsapp_status).toBe("canceled");
+  });
+});
 
 const ORDER = Date.parse("2026-07-17T13:10:00Z");
 

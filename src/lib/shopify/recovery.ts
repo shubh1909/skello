@@ -449,14 +449,19 @@ export function selectPhoneConversion(
 }
 
 // Build the update for an attempt we're marking converted (and stopping outreach
-// on if it's still live).
-function convertPatch(
+// on if it's still live). `match` records HOW we tied the order back — 'token'
+// (Shopify attributes the same way) or 'phone' (tokenless GoKwik order). Only
+// stamped when we're NEWLY converting, so a re-delivered webhook can't rewrite it.
+export function convertPatch(
   attempt: CancelCandidate,
   now: string,
+  match: "token" | "phone",
 ): Record<string, unknown> {
+  const newlyConverting = attempt.converted_at == null;
   const patch: Record<string, unknown> = {
     converted_at: attempt.converted_at ?? now,
   };
+  if (newlyConverting) patch.conversion_match = match;
   if (attempt.status === "pending" || attempt.status === "in_flight") {
     patch.status = "canceled";
     patch.canceled_at = now;
@@ -506,7 +511,7 @@ export async function cancelRecoveryForOrder(input: {
         matched.map((a) =>
           admin
             .from("shopify_recovery_attempts")
-            .update(convertPatch(a, now))
+            .update(convertPatch(a, now, "token"))
             .eq("id", a.id),
         ),
       );
@@ -558,7 +563,7 @@ export async function cancelRecoveryForOrder(input: {
     updates.push(
       admin
         .from("shopify_recovery_attempts")
-        .update(convertPatch(credited, now))
+        .update(convertPatch(credited, now, "phone"))
         .eq("id", plan.creditId),
     );
     // Observability — this path was silent before, and it's the one we just

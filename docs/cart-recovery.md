@@ -641,6 +641,36 @@ specific failure:
 
 The pure selector is unit-tested (`phone-conversion.test.ts`).
 
+**Reconciling with Shopify.** Because tier 2 attributes conversions Shopify
+structurally can't (tokenless GoKwik orders), our "recovered" set is a *superset*
+of Shopify's. Each conversion records **how** it matched, in
+`shopify_recovery_attempts.conversion_match`:
+
+- `token` — matched on checkout/cart token. Shopify attributes the same way, so
+  it also shows as recovered there.
+- `phone` — matched on the buyer phone off a tokenless order. Shopify shows a
+  plain order in its Orders tab, never "recovered".
+
+The cart drawer surfaces this as a **Matched by** field ("Order token · Shopify
+agrees" vs "Phone · GoKwik-style") with a tooltip, so a discrepancy reads as an
+explanation, not a data error. Set once, on the newly-converting row only, so a
+re-delivered webhook can't rewrite the source (see `convertPatch`).
+
+**What counts as "abandoned".** The dashboard's *Carts abandoned* tile is gated to
+match Shopify's notion rather than counting every checkout event: **has a phone**,
+the **wait has elapsed** (`created_at ≤ now − wait_minutes` — a checkout still in
+its grace window isn't abandoned yet), and **not converted** (an
+instantly-completed or already-recovered cart went to Orders and was never
+abandoned; those live in the *Recovered* tile). Still excludes `skipped`. The
+working *list* is unchanged — it stays the full queue; only the headline count is
+gated.
+
+**Timestamps are labelled for what they are** (they used to look alike and get
+confused with Shopify): *Checkout started* = Shopify's checkout time (matches the
+store), *Received by us* = our webhook receipt (later, not a Shopify time), *Marked
+recovered* = when we recorded the order (≈ Shopify's order time). Each carries a
+tooltip in the cart drawer and on the table headers.
+
 **Reach-once, then stop** (`applyShopifyRecoveryOutcome`): "connected" means the
 dial was **answered** (`in_progress`) or **completed** — either signal stamps
 `connected_at`, flips the attempt to `succeeded`, and stops all further dials. Only
@@ -748,7 +778,7 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Status/outcome badges · Outreach chips (+ test) | `components/app/recovery-badges.tsx` · `outreach-status.test.ts` |
 | Voice agent card | `components/app/recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
-| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql`, `20260717000000_recovery_message_error_code.sql` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql`, `20260717000000_recovery_message_error_code.sql`, `20260719000000_recovery_conversion_match.sql` |
 
 ## Going live: setup checklist
 
