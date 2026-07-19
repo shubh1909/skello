@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Loader2Icon } from "lucide-react";
+import { InfoIcon, Loader2Icon } from "lucide-react";
 
 import {
   Sheet,
@@ -10,6 +10,11 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   AttemptStatusBadge,
   CallStatusBadge,
@@ -36,12 +41,42 @@ import type {
   RecoveryMessageRow,
 } from "@/types/shopify";
 
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
+function Field({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: React.ReactNode;
+  // Fuller explanation on hover — used to disambiguate the several timestamps
+  // (checkout time vs our receipt time vs order time) that otherwise look alike.
+  hint?: string;
+}) {
   if (value === null || value === undefined || value === "") return null;
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-xs uppercase tracking-wider text-muted-foreground">
+      <span className="inline-flex items-center gap-1 text-xs uppercase tracking-wider text-muted-foreground">
         {label}
+        {hint ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`About ${label}`}
+                  className="inline-flex cursor-help text-muted-foreground/60 hover:text-foreground"
+                />
+              }
+            >
+              <InfoIcon className="size-3" />
+            </TooltipTrigger>
+            {/* max-w-xs on TooltipContent wraps the text to a readable column
+                instead of the browser's full-width native title. */}
+            <TooltipContent className="max-w-[16rem] leading-snug">
+              {hint}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
       </span>
       <span className="text-sm">{value}</span>
     </div>
@@ -149,21 +184,47 @@ export function RecoveryCartDetail({
 
           <div className="grid grid-cols-2 gap-4 border-t pt-4">
             <Field
-              label="Abandoned"
+              label="Checkout started"
+              hint="When the shopper reached checkout in Shopify. This is Shopify's checkout timestamp — it should match the store."
               value={formatDateTime(cart.abandoned_at ?? cart.created_at)}
             />
-            <Field label="Recorded" value={formatDateTime(cart.created_at)} />
+            <Field
+              label="Received by us"
+              hint="When our system received the checkout webhook — a few moments after the checkout. This is our receipt time, not a Shopify time."
+              value={formatDateTime(cart.created_at)}
+            />
             {cart.status === "pending" ? (
               <Field
                 label="Next call"
+                hint="When the next recovery call is scheduled (in the store's timezone)."
                 value={formatDateTime(cart.next_attempt_at)}
               />
             ) : null}
             <Field
               label="WhatsApp sent"
+              hint="When we handed the WhatsApp message to the provider."
               value={formatDateTime(cart.whatsapp_sent_at)}
             />
-            <Field label="Recovered" value={formatDateTime(cart.converted_at)} />
+            <Field
+              label="Marked recovered"
+              hint="When we recorded the matching order (≈ the order time in Shopify)."
+              value={formatDateTime(cart.converted_at)}
+            />
+            {cart.converted_at && cart.conversion_match ? (
+              <Field
+                label="Matched by"
+                hint={
+                  cart.conversion_match === "token"
+                    ? "Matched to the order by checkout/cart token — Shopify attributes this the same way, so it also shows as recovered in Shopify."
+                    : "Matched by phone because the order carried no tokens (GoKwik / custom checkout). Shopify can't attribute these — it shows a plain order, never 'recovered'."
+                }
+                value={
+                  cart.conversion_match === "token"
+                    ? "Order token · Shopify agrees"
+                    : "Phone · GoKwik-style"
+                }
+              />
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-2 border-t pt-4">

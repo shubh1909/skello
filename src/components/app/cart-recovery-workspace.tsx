@@ -11,8 +11,15 @@ import {
   getRecoveryCalls,
 } from "@/actions/shopify-recovery";
 import { createClient } from "@/lib/supabase/client";
+import { InfoIcon } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   CallStatusBadge,
   CartOutcomeBadge,
@@ -371,6 +378,30 @@ function EmptyRow({ colSpan, children }: { colSpan: number; children: React.Reac
   );
 }
 
+// A small (i) after a column header whose tooltip wraps to a readable width
+// (max-w) and portals out of the table's horizontal-scroll clipping — unlike a
+// native `title`, which the browser renders full-width and unstyled.
+function HeaderHint({ hint }: { hint: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label="Column help"
+            className="inline-flex cursor-help align-middle text-muted-foreground/60 hover:text-foreground"
+          />
+        }
+      >
+        <InfoIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[16rem] leading-snug normal-case">
+        {hint}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function CartTable({
   rows,
   variant,
@@ -412,25 +443,37 @@ function CartTable({
                 Outreach
               </th>
               <th className="px-4 py-3 font-medium">
-                {!isConverted && onToggleSort ? (
-                  <button
-                    type="button"
-                    onClick={onToggleSort}
-                    className="inline-flex items-center gap-1 font-medium uppercase tracking-wider transition-colors hover:text-foreground"
-                  >
-                    Abandoned
-                    {sort === "asc" ? (
-                      <ArrowUpIcon className="size-3.5" />
-                    ) : (
-                      <ArrowDownIcon className="size-3.5" />
-                    )}
-                  </button>
-                ) : (
-                  "Abandoned"
-                )}
+                <span className="inline-flex items-center gap-1">
+                  {!isConverted && onToggleSort ? (
+                    <button
+                      type="button"
+                      onClick={onToggleSort}
+                      className="inline-flex items-center gap-1 font-medium uppercase tracking-wider transition-colors hover:text-foreground"
+                    >
+                      Abandoned
+                      {sort === "asc" ? (
+                        <ArrowUpIcon className="size-3.5" />
+                      ) : (
+                        <ArrowDownIcon className="size-3.5" />
+                      )}
+                    </button>
+                  ) : (
+                    "Abandoned"
+                  )}
+                  <HeaderHint hint="When the shopper reached checkout in Shopify — Shopify's checkout time, shown in the store's timezone." />
+                </span>
               </th>
               <th className="px-4 py-3 font-medium">
-                {isConverted ? "Recovered" : "Next call"}
+                <span className="inline-flex items-center gap-1">
+                  {isConverted ? "Recovered" : "Next call"}
+                  <HeaderHint
+                    hint={
+                      isConverted
+                        ? "When we recorded the matching order (≈ the order time in Shopify)."
+                        : "When the next recovery call is scheduled."
+                    }
+                  />
+                </span>
               </th>
             </tr>
           </thead>

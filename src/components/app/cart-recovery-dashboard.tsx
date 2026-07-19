@@ -20,7 +20,7 @@ export function CartRecoveryDashboard({
         label="Carts abandoned"
         value={metrics.abandoned.toLocaleString()}
         icon={<ShoppingCartIcon />}
-        hint="Carts we acted on"
+        hint="Open carts past the wait, not yet recovered"
       />
       <StatCard
         label="Calls made"
