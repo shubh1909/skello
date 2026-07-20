@@ -7,6 +7,7 @@ import { requireSession } from "@/lib/auth/session";
 import { logSkeloError } from "@/lib/errors";
 import { ShopifyApiError, listDiscountOffers } from "@/lib/shopify/client";
 import { getShopifyIntegration } from "@/lib/shopify/integration";
+import { ABANDONMENT_THRESHOLD_MINUTES } from "@/lib/shopify/recovery";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { type ActionResult, fail, ok } from "@/types/action";
 import type {
@@ -35,7 +36,7 @@ const SETTINGS_COLUMNS =
   "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_code_spoken, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, whatsapp_template_layout, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
-  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_next_at, whatsapp_skip_reason, whatsapp_error, clicked_at, conversion_match";
+  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_next_at, whatsapp_skip_reason, whatsapp_error, clicked_at, conversion_match, is_recovery";
 
 const MESSAGE_COLUMNS =
   "id, to_phone, template_name, provider, provider_message_id, status, error_message, error_code, sent_at, delivered_at, read_at, created_at";
@@ -194,11 +195,14 @@ export async function getRecoveryOverview(): Promise<
       .eq("organisation_id", orgId)
       .gt("attempt", 0),
     // Every conversion (attributed + organic) — attribution computed below.
+    // Genuine recoveries only (is_recovery): the cart was abandoned past the
+    // ~10-min window and THEN converted. Instant sales (bought inside the window,
+    // never abandoned) are excluded — they were never ours to recover.
     admin
       .from("shopify_recovery_attempts")
       .select("id, cart_total, currency, converted_at")
       .eq("organisation_id", orgId)
-      .not("converted_at", "is", null)
+      .eq("is_recovery", true)
       .limit(5000)
       .returns<
         Array<{
@@ -213,8 +217,8 @@ export async function getRecoveryOverview(): Promise<
   const converted = convertedRes.data ?? [];
   const attributed = await attributedAttemptIds(admin, converted);
   const attributedRows = converted.filter((r) => attributed.has(r.id));
-  // Revenue across ALL recovered carts (call-driven + organic) — matches the
-  // "Recovered by AI" count, which is every conversion, not just the attributed.
+  // Revenue across genuine recoveries (call-driven + organic-after-abandonment) —
+  // matches the recovered count, which excludes instant never-abandoned sales.
   const revenue = converted.reduce((sum, r) => sum + (r.cart_total ?? 0), 0);
 
   // Resolve the voice agent recovery dials from: the recovery override, else the
@@ -268,18 +272,17 @@ export async function getRecoveryOverview(): Promise<
     templateName: waTemplate,
   };
 
-  // "Carts abandoned" gated to match Shopify's notion, so the number reconciles
-  // instead of looking inflated:
+  // "Carts abandoned" — OPEN abandoned carts only, gated to match Shopify's
+  // ~10-min abandonment threshold so the number reconciles instead of counting
+  // every checkout:
   //   • has contact info  — we only act on carts with a phone
-  //   • the wait has elapsed — a checkout still inside its grace window isn't
-  //     "abandoned" yet (Shopify wouldn't count it); measured from when we
-  //     recorded it + the org's wait_minutes
-  //   • not converted — an instantly-completed or already-recovered cart went to
-  //     Orders and was never abandoned; those live in the "Recovered" tile
-  // Excludes `skipped` (no phone / no channel — never actioned) as before.
-  const waitMinutes = settingsRes.data?.wait_minutes ?? 45;
+  //   • past the abandonment window — a checkout inside the first 10 min isn't
+  //     abandoned yet (Shopify wouldn't count it)
+  //   • not converted — a bought cart is either a recovery (its own tile) or an
+  //     instant sale (never abandoned); neither belongs in "open abandoned"
+  // Excludes `skipped` (no phone / no channel — never actioned).
   const abandonedCutoff = new Date(
-    Date.now() - waitMinutes * 60_000,
+    Date.now() - ABANDONMENT_THRESHOLD_MINUTES * 60_000,
   ).toISOString();
   const abandonedRes = await admin
     .from("shopify_recovery_attempts")
@@ -764,13 +767,23 @@ export async function getAbandonedCarts(
   // Sort on the abandoned timestamp the column displays (abandoned_at, falling
   // back to created_at for rows without Shopify's checkout time). Default newest
   // first. created_at is the stable tiebreaker.
+  // OPEN abandoned carts: past the ~10-min abandonment window with no order yet.
+  // A checkout still inside the window isn't abandoned (a fast checkout in
+  // progress), and a converted cart is either a recovery or an instant sale —
+  // neither is an "open abandoned cart". This is what stopped normal purchases
+  // (e.g. a checkout that paid within a minute) from showing here.
   const ascending = parsed.data.sort === "asc";
+  const abandonedCutoff = new Date(
+    Date.now() - ABANDONMENT_THRESHOLD_MINUTES * 60_000,
+  ).toISOString();
   const query = admin
     .from("shopify_recovery_attempts")
     .select(ATTEMPT_COLUMNS, { count: "exact" })
     .eq("organisation_id", session.organisation.id)
     .neq("status", "skipped")
-    .not("phone", "is", null);
+    .not("phone", "is", null)
+    .is("converted_at", null)
+    .lte("created_at", abandonedCutoff);
 
   const [from, to] = pageRange(page);
   const { data, count, error } = await query
@@ -818,12 +831,15 @@ export async function getConvertedCarts(
   const page = parsed.data.page ?? 0;
   const admin = createAdminClient();
 
+  // Genuine recoveries only — the cart was abandoned (past the ~10-min window)
+  // and then converted. Instant sales that never abandoned are excluded, so this
+  // tab shows real wins, not every order that passed through checkout.
   const [from, to] = pageRange(page);
   const { data, count, error } = await admin
     .from("shopify_recovery_attempts")
     .select(ATTEMPT_COLUMNS, { count: "exact" })
     .eq("organisation_id", session.organisation.id)
-    .not("converted_at", "is", null)
+    .eq("is_recovery", true)
     .order("converted_at", { ascending: false })
     .range(from, to)
     .returns<RecoveryAttemptRow[]>();

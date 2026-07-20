@@ -20,7 +20,7 @@ export function CartRecoveryDashboard({
         label="Carts abandoned"
         value={metrics.abandoned.toLocaleString()}
         icon={<ShoppingCartIcon />}
-        hint="Open carts past the wait, not yet recovered"
+        hint="Open carts past the 10-min mark, not yet recovered"
       />
       <StatCard
         label="Calls made"
@@ -32,7 +32,7 @@ export function CartRecoveryDashboard({
         label="Carts Recovered "
         value={metrics.conversions_total.toLocaleString()}
         icon={<CheckCircle2Icon />}
-        hint="Abandoned carts that converted"
+        hint="Abandoned carts won back (excludes instant sales)"
       />
       <StatCard
         label="Revenue recovered"

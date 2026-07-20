@@ -31,6 +31,19 @@ const BATCH_LIMIT = 100;
 const CONCURRENCY = 25;
 const STUCK_IN_FLIGHT_MS = 30 * 60 * 1000;
 
+// A checkout is NOT an abandoned cart the moment it's created — Shopify only
+// considers it abandoned ~10 minutes after contact info is added without the
+// order completing. We mirror that threshold exactly: until it elapses with no
+// order, the cart is "in checkout", not abandoned. A purchase inside this window
+// was never abandoned (a normal fast checkout) — it's neither shown as abandoned
+// nor counted as a recovery. This is SEPARATE from the call delay
+// (settings.wait_minutes): the call clock starts only once the cart becomes
+// abandoned, i.e. first dial = checkout + this threshold + wait_minutes. The
+// stored `is_recovery` column applies the same 10-minute rule in the DB (see the
+// 20260720 migration) so paginated queries can filter on it.
+export const ABANDONMENT_THRESHOLD_MINUTES = 10;
+const ABANDONMENT_THRESHOLD_MS = ABANDONMENT_THRESHOLD_MINUTES * 60_000;
+
 // Clamp a candidate dial instant into the org's calling window (evaluated in
 // APP_TIMEZONE). Outside the window → the next window open; inside, or no window
 // configured → unchanged. Applied wherever we WRITE next_attempt_at so the stored
@@ -274,11 +287,16 @@ export async function scheduleRecoveryFromCheckout(input: {
       settings.call_window_end,
     ).toISOString();
 
-  const voiceWhen = clampToWindow(waitMs);
+  // Outreach starts only AFTER the cart becomes abandoned: the call/WhatsApp
+  // clock is anchored at (now + abandonment threshold), then the configured wait
+  // runs on top. So first dial = checkout + 10 min + wait_minutes, never before
+  // Shopify would even call the cart abandoned.
+  const abandonMs = ABANDONMENT_THRESHOLD_MS;
+  const voiceWhen = clampToWindow(abandonMs + waitMs);
   // Upper bound on how long the voice track can run before it is exhausted.
   const voiceBudgetMs =
     waitMs + settings.max_attempts * settings.retry_interval_seconds * 1000;
-  const waWhen = clampToWindow(bothRun ? voiceBudgetMs : waitMs);
+  const waWhen = clampToWindow(abandonMs + (bothRun ? voiceBudgetMs : waitMs));
 
   const offerFields = {
     offer_label: offerLabel,
