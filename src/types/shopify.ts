@@ -183,6 +183,10 @@ export interface RecoveryAttemptRow {
   // way) or 'phone' (tokenless GoKwik order — Shopify can't see it as recovered).
   // Null until converted. Explains our-vs-Shopify discrepancies.
   conversion_match: "token" | "phone" | null;
+  // A genuine recovery: the cart survived the ~10-min abandonment window and then
+  // converted. False for instant sales (bought inside the window — never
+  // abandoned) and never-converted carts. Generated in the DB.
+  is_recovery: boolean;
   // Converted tab only: was the conversion attributable to a completed call
   // that ended before the order (strict ROI attribution)?
   attributed?: boolean;

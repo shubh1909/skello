@@ -656,14 +656,34 @@ agrees" vs "Phone · GoKwik-style") with a tooltip, so a discrepancy reads as an
 explanation, not a data error. Set once, on the newly-converting row only, so a
 re-delivered webhook can't rewrite the source (see `convertPatch`).
 
-**What counts as "abandoned".** The dashboard's *Carts abandoned* tile is gated to
-match Shopify's notion rather than counting every checkout event: **has a phone**,
-the **wait has elapsed** (`created_at ≤ now − wait_minutes` — a checkout still in
-its grace window isn't abandoned yet), and **not converted** (an
-instantly-completed or already-recovered cart went to Orders and was never
-abandoned; those live in the *Recovered* tile). Still excludes `skipped`. The
-working *list* is unchanged — it stays the full queue; only the headline count is
-gated.
+**A checkout is not an abandoned cart yet.** We record a recovery attempt the
+moment Shopify fires `checkouts/create` — but that event means "reached checkout",
+not "abandoned". Shopify only considers a checkout abandoned **~10 minutes** after
+contact info is added, if no order follows. We mirror that exactly
+(`ABANDONMENT_THRESHOLD_MINUTES = 10`):
+
+- **Bought inside the 10-min window** → *never abandoned*. A normal fast checkout
+  (e.g. paid within a minute). It does not appear in the abandoned list, isn't
+  counted, and is **not a recovery** — it was just a sale.
+- **10 min passes with no order** → *now* it's a genuine abandoned cart (list +
+  count).
+- **Bought later, after being abandoned** → a recovery.
+
+This threshold is **separate from the call delay**. Outreach is anchored at the
+abandonment moment: first dial = `checkout + 10 min + wait_minutes` (the call
+clock only starts once the cart is actually abandoned).
+
+The classification is stored, not recomputed everywhere: a generated column
+`is_recovery` = `converted_at ≥ created_at + 10 min` applies the same rule to every
+row (including historical ones, no backfill) and is filterable in paginated
+queries. So:
+- *Carts abandoned* tile / abandoned tab = has a phone, **past the 10-min mark**,
+  **not converted**, not `skipped` — i.e. open abandoned carts.
+- *Recovered* tab + the recovered/revenue metrics = `is_recovery` — genuine
+  recoveries only, excluding instant never-abandoned sales.
+
+This is what stopped a checkout that paid within a minute (Ramesh's ₹1,689) from
+showing as "Recovered" and inflating the revenue figure.
 
 **Timestamps are labelled for what they are** (they used to look alike and get
 confused with Shopify): *Checkout started* = Shopify's checkout time (matches the
@@ -778,7 +798,7 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Status/outcome badges · Outreach chips (+ test) | `components/app/recovery-badges.tsx` · `outreach-status.test.ts` |
 | Voice agent card | `components/app/recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
-| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql`, `20260717000000_recovery_message_error_code.sql`, `20260719000000_recovery_conversion_match.sql` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql`, `20260717000000_recovery_message_error_code.sql`, `20260719000000_recovery_conversion_match.sql`, `20260720000000_recovery_is_recovery.sql` |
 
 ## Going live: setup checklist
 
