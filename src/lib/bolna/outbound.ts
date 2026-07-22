@@ -8,6 +8,7 @@ import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
 import { applyShopifyRecoveryOutcome } from "@/lib/shopify/recovery";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveOrgByAgentId } from "@/lib/bolna/routing";
+import { parseProviderTimestamp } from "@/lib/time";
 import type { CallStatus, CallTranscriptStatus } from "@/types/call";
 
 interface RecordOutboundResultArgs {
@@ -38,24 +39,42 @@ export async function recordOutboundResult(
   const admin = createAdminClient();
   const { payload, externalId } = args;
 
-  const { data: existingCall, error: findErr } = await admin
+  // `bolna_call_id` is unique per-org, not globally. Fetch 2 so a cross-tenant
+  // collision is detected instead of silently resolving to whichever row the
+  // planner returned first.
+  const { data: matches, error: findErr } = await admin
     .from("calls")
     .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id")
     .eq("bolna_call_id", externalId)
-    .maybeSingle<{
-      id: string;
-      organisation_id: string;
-      lead_id: string | null;
-      is_test: boolean;
-      campaign_contact_id: string | null;
-      scheduled_callback_id: string | null;
-      shopify_recovery_attempt_id: string | null;
-    }>();
+    .limit(2)
+    .returns<
+      Array<{
+        id: string;
+        organisation_id: string;
+        lead_id: string | null;
+        is_test: boolean;
+        campaign_contact_id: string | null;
+        scheduled_callback_id: string | null;
+        shopify_recovery_attempt_id: string | null;
+      }>
+    >();
 
   if (findErr) {
     console.error("[outbound] call lookup failed", findErr);
     return { callId: null, transcriptStatus: "failed", matchedExisting: false };
   }
+
+  if (matches && matches.length > 1) {
+    // Refuse rather than guess — merging one tenant's extraction into another
+    // tenant's call and lead is worse than dropping the update.
+    console.error(
+      "[outbound] bolna_call_id matched calls in multiple organisations — update refused",
+      { externalId, organisationIds: matches.map((m) => m.organisation_id) },
+    );
+    return { callId: null, transcriptStatus: "failed", matchedExisting: false };
+  }
+
+  const existingCall = matches?.[0] ?? null;
 
   let call = existingCall;
   const matchedExisting = !!existingCall;
@@ -108,7 +127,9 @@ export async function recordOutboundResult(
         transcript,
         transcript_status: transcriptStatus,
         transcript_fetched_at: transcript ? new Date().toISOString() : null,
-        ended_at: payload.updated_at ?? null,
+        // Provider timestamps are naive wall-clock in the app's zone, not UTC.
+        // Parsing them raw silently shifts every value by the zone offset.
+        ended_at: parseProviderTimestamp(payload.updated_at),
         error_message: payload.error_message ?? null,
         summary: payload.summary ?? null,
       })
@@ -169,7 +190,8 @@ export async function recordOutboundResult(
       transcript,
       transcript_status: transcriptStatus,
       transcript_fetched_at: transcript ? new Date().toISOString() : null,
-      ended_at: payload.updated_at ?? null,
+      // Naive wall-clock in the app's zone — see parseProviderTimestamp.
+      ended_at: parseProviderTimestamp(payload.updated_at),
       error_message: payload.error_message ?? null,
       summary: payload.summary ?? null,
       lead_id: call.lead_id ?? merge.leadId,
@@ -287,7 +309,10 @@ async function bootstrapDirectOutboundCall(
     payload.telephony_data?.from_number?.trim() ||
     payload.agent_number?.trim() ||
     null;
-  const startedAt = payload.initiated_at ?? payload.created_at ?? null;
+  // Naive wall-clock in the app's zone — see parseProviderTimestamp.
+  const startedAt = parseProviderTimestamp(
+    payload.initiated_at ?? payload.created_at,
+  );
 
   const { data: inserted, error: insertErr } = await admin
     .from("calls")

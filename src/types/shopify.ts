@@ -121,6 +121,20 @@ export interface RecoveryVoiceAgent {
   configured: boolean; // an agent is set and enabled
 }
 
+// What a settled cart was worth to us. Stamped ONCE when the order is settled
+// (lib/shopify/recovery.ts → planOrderSettlement) and never re-derived — this is
+// the single source of truth for every recovery metric.
+//   recovered_by_us   — we reached this BUYER (call connected or WhatsApp sent)
+//                       before the order landed. The ROI number.
+//   recovered_organic — genuinely abandoned past the window, but they came back
+//                       unaided. Real revenue; not ours to claim.
+//   instant_sale      — bought without ever abandoning. Never ours.
+// Null while the cart is still open.
+export type RecoveryOutcome =
+  | "recovered_by_us"
+  | "recovered_organic"
+  | "instant_sale";
+
 export type RecoveryAttemptStatus =
   | "pending"
   | "in_flight"
@@ -183,13 +197,22 @@ export interface RecoveryAttemptRow {
   // way) or 'phone' (tokenless GoKwik order — Shopify can't see it as recovered).
   // Null until converted. Explains our-vs-Shopify discrepancies.
   conversion_match: "token" | "phone" | null;
-  // A genuine recovery: the cart survived the ~10-min abandonment window and then
-  // converted. False for instant sales (bought inside the window — never
-  // abandoned) and never-converted carts. Generated in the DB.
-  is_recovery: boolean;
-  // Converted tab only: was the conversion attributable to a completed call
-  // that ended before the order (strict ROI attribution)?
-  attributed?: boolean;
+  // The recovery verdict, stamped at settlement. Null while the cart is open.
+  // INTERNAL: the UI deliberately does not surface the by-us / organic split —
+  // the merchant sees one "Recovered" state. Kept for our own ROI reporting.
+  recovery_outcome: RecoveryOutcome | null;
+  // The real order behind the conversion. order_total is what the shopper
+  // ACTUALLY paid — cart_total is the pre-discount snapshot at abandonment and
+  // overstates every discounted recovery. Null on rows settled before
+  // 20260722000001; fall back to cart_total there.
+  order_id: string | null;
+  order_number: string | null;
+  order_total: number | null;
+  order_currency: string | null;
+  // The touch that justifies `recovered_by_us` — the earliest call-connect or
+  // WhatsApp send to this BUYER that preceded the order. Non-null exactly when
+  // recovery_outcome is recovered_by_us; it is the evidence for the label.
+  first_contact_at: string | null;
   // Furthest state META reported across this cart's messages — derived from
   // shopify_recovery_messages, not stored on the attempt (whatsapp_status above
   // is only OUR send track and can't tell you whether it landed). Batch-loaded
@@ -257,11 +280,21 @@ export interface RecoveryPage<T> {
 
 // Headline metrics for the cart-recovery dashboard.
 export interface RecoveryMetrics {
-  abandoned: number; // actioned carts (excludes skipped)
+  abandoned: number; // open carts past the 10-min mark (excludes skipped)
   calls_made: number; // attempts that reached at least one dial
-  recovered: number; // call-attributed recoveries (reached + converted after)
-  conversions_total: number; // all conversions (incl. organic)
-  revenue_recovered: number; // sum of cart_total for attributed recoveries
+  // DISPLAYED. Every abandoned cart that came back — ours plus other channels
+  // (GoKwik and whatever else the merchant runs). This matches how Shopify's own
+  // abandoned-checkout reporting counts a recovery: abandoned, then converted.
+  // Instant sales are excluded — they never abandoned.
+  recovered: number;
+  // Revenue for the above, using the REAL order total where we have it.
+  revenue_recovered: number;
+  // INTERNAL ONLY — not rendered. The subset we can actually prove we caused
+  // (we reached the buyer before the order). Keep it: it is how we answer
+  // "does this work", price the product, and survive a merchant asking.
+  recovered_by_us: number;
+  revenue_by_us: number;
+  conversions_total: number; // every conversion, incl. instant sales
   currency: string | null;
 }
 

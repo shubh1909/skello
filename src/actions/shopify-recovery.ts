@@ -17,6 +17,7 @@ import type {
   RecoveryMessageRow,
   RecoveryMessageStatus,
   RecoveryMetrics,
+  RecoveryOutcome,
   RecoveryPage,
   RecoveryVoiceAgent,
   RecoveryWhatsAppStatus,
@@ -36,7 +37,7 @@ const SETTINGS_COLUMNS =
   "organisation_id, enabled, wait_minutes, max_attempts, retry_interval_seconds, agent_id, offer_type, offer_code, offer_code_spoken, offer_label, offer_discount_value, offer_discount_kind, call_window_start, call_window_end, voice_enabled, whatsapp_enabled, whatsapp_template_name, whatsapp_template_layout, created_at, updated_at";
 
 const ATTEMPT_COLUMNS =
-  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_next_at, whatsapp_skip_reason, whatsapp_error, clicked_at, conversion_match, is_recovery";
+  "id, status, skip_reason, customer_name, email, phone, marketing_consent, cart_total, currency, cart_items, offer_label, offer_code, offer_code_spoken, attempt, max_attempts, last_status, created_at, abandoned_at, scheduled_at, next_attempt_at, canceled_at, converted_at, whatsapp_status, whatsapp_sent_at, whatsapp_next_at, whatsapp_skip_reason, whatsapp_error, clicked_at, conversion_match, recovery_outcome, first_contact_at";
 
 const MESSAGE_COLUMNS =
   "id, to_phone, template_name, provider, provider_message_id, status, error_message, error_code, sent_at, delivered_at, read_at, created_at";
@@ -102,44 +103,11 @@ async function attachDeliveryState<T extends { id: string }>(
   }));
 }
 
-// Strict ROI attribution: a conversion counts only when a recovery call actually
-// completed (we reached the shopper) AND that call ended before the order was
-// placed. Returns the subset of the given converted attempts that qualify.
-async function attributedAttemptIds(
-  admin: ReturnType<typeof createAdminClient>,
-  converted: Array<{ id: string; converted_at: string | null }>,
-): Promise<Set<string>> {
-  const attributed = new Set<string>();
-  const ids = converted.map((a) => a.id);
-  if (ids.length === 0) return attributed;
-
-  const { data: calls } = await admin
-    .from("calls")
-    .select("shopify_recovery_attempt_id, ended_at")
-    .in("shopify_recovery_attempt_id", ids)
-    .eq("status", "completed")
-    .not("ended_at", "is", null)
-    .returns<
-      Array<{ shopify_recovery_attempt_id: string; ended_at: string }>
-    >();
-
-  // Earliest completed-call end per attempt.
-  const firstEnd = new Map<string, number>();
-  for (const c of calls ?? []) {
-    const t = new Date(c.ended_at).getTime();
-    const prev = firstEnd.get(c.shopify_recovery_attempt_id);
-    if (prev === undefined || t < prev) {
-      firstEnd.set(c.shopify_recovery_attempt_id, t);
-    }
-  }
-  for (const a of converted) {
-    const end = firstEnd.get(a.id);
-    if (a.converted_at && end !== undefined && end <= new Date(a.converted_at).getTime()) {
-      attributed.add(a.id);
-    }
-  }
-  return attributed;
-}
+// NOTE: attribution is no longer computed here. It used to be a third, separate
+// definition of "recovered" (a completed call that ended before converted_at),
+// which disagreed with both `converted_at` and the old `is_recovery` column and
+// ignored WhatsApp entirely. It is now stamped once at settlement as
+// `recovery_outcome` — see lib/shopify/recovery.ts → planOrderSettlement.
 
 // Dashboard read — settings + headline metrics + recent activity. Org-scoped to
 // the caller's own workspace (resolved from the session, never the client).
@@ -194,15 +162,15 @@ export async function getRecoveryOverview(): Promise<
       .select("id", { count: "exact", head: true })
       .eq("organisation_id", orgId)
       .gt("attempt", 0),
-    // Every conversion (attributed + organic) — attribution computed below.
-    // Genuine recoveries only (is_recovery): the cart was abandoned past the
-    // ~10-min window and THEN converted. Instant sales (bought inside the window,
-    // never abandoned) are excluded — they were never ours to recover.
+    // Every settled conversion, with its stamped verdict. Splitting happens in
+    // memory below — one query, one definition, no re-derivation.
     admin
       .from("shopify_recovery_attempts")
-      .select("id, cart_total, currency, converted_at")
+      .select(
+        "id, cart_total, currency, converted_at, recovery_outcome, order_total, order_currency",
+      )
       .eq("organisation_id", orgId)
-      .eq("is_recovery", true)
+      .not("converted_at", "is", null)
       .limit(5000)
       .returns<
         Array<{
@@ -210,16 +178,31 @@ export async function getRecoveryOverview(): Promise<
           cart_total: number | null;
           currency: string | null;
           converted_at: string | null;
+          recovery_outcome: RecoveryOutcome | null;
+          order_total: number | null;
+          order_currency: string | null;
         }>
       >(),
   ]);
 
   const converted = convertedRes.data ?? [];
-  const attributed = await attributedAttemptIds(admin, converted);
-  const attributedRows = converted.filter((r) => attributed.has(r.id));
-  // Revenue across genuine recoveries (call-driven + organic-after-abandonment) —
-  // matches the recovered count, which excludes instant never-abandoned sales.
-  const revenue = converted.reduce((sum, r) => sum + (r.cart_total ?? 0), 0);
+  // What the shopper ACTUALLY paid. cart_total is the pre-discount snapshot at
+  // abandonment — with a discount offer running it overstates every recovery.
+  // Fall back to it only for rows settled before we captured the order.
+  const realValue = (r: { order_total: number | null; cart_total: number | null }) =>
+    r.order_total ?? r.cart_total ?? 0;
+
+  // DISPLAYED: every cart that genuinely abandoned and then came back, whatever
+  // brought it back — us, GoKwik, or the shopper's own return. Instant sales are
+  // excluded (they never abandoned).
+  const recovered = converted.filter(
+    (r) =>
+      r.recovery_outcome === "recovered_by_us" ||
+      r.recovery_outcome === "recovered_organic",
+  );
+  // INTERNAL: the provable subset. Not rendered, but carried so ROI stays
+  // answerable — see RecoveryMetrics.
+  const ours = converted.filter((r) => r.recovery_outcome === "recovered_by_us");
 
   // Resolve the voice agent recovery dials from: the recovery override, else the
   // org's default agent. Its friendly name comes from the voice_agents registry.
@@ -296,10 +279,15 @@ export async function getRecoveryOverview(): Promise<
   const metrics: RecoveryMetrics = {
     abandoned: abandonedRes.count ?? 0,
     calls_made: callsMadeRes.count ?? 0,
-    recovered: attributedRows.length,
+    recovered: recovered.length,
+    revenue_recovered: recovered.reduce((s, r) => s + realValue(r), 0),
+    recovered_by_us: ours.length,
+    revenue_by_us: ours.reduce((s, r) => s + realValue(r), 0),
     conversions_total: converted.length,
-    revenue_recovered: revenue,
-    currency: converted.find((r) => r.currency)?.currency ?? null,
+    currency:
+      converted.find((r) => r.order_currency)?.order_currency ??
+      converted.find((r) => r.currency)?.currency ??
+      null,
   };
 
   return ok({
@@ -661,6 +649,14 @@ interface ExportRow {
   offer_code: string | null;
   attempt: number;
   converted_at: string | null;
+  recovery_outcome: RecoveryOutcome | null;
+  whatsapp_status: string | null;
+  whatsapp_sent_at: string | null;
+  connected_at: string | null;
+  clicked_at: string | null;
+  order_number: string | null;
+  order_total: number | null;
+  order_currency: string | null;
 }
 
 // RFC-4180-ish field escaping: wrap in quotes when the value holds a comma,
@@ -678,10 +674,14 @@ export async function exportRecoveryAttempts(): Promise<
   const orgId = session.organisation.id;
   const admin = createAdminClient();
 
+  // The export used to carry neither the outcome nor the order, so a reader had
+  // only `converted_at` and a `status` column that means the VOICE track — a
+  // recovered cart reads "canceled" there, because we stop outreach when the
+  // order lands. Filtering on it made recoveries look like a handful.
   const { data, error } = await admin
     .from("shopify_recovery_attempts")
     .select(
-      "created_at, customer_name, email, phone, status, skip_reason, cart_total, currency, offer_label, offer_code, attempt, converted_at",
+      "created_at, customer_name, email, phone, status, skip_reason, cart_total, currency, offer_label, offer_code, attempt, converted_at, recovery_outcome, whatsapp_status, whatsapp_sent_at, connected_at, clicked_at, order_number, order_total, order_currency",
     )
     .eq("organisation_id", orgId)
     .order("created_at", { ascending: false })
@@ -697,19 +697,36 @@ export async function exportRecoveryAttempts(): Promise<
     );
   }
 
+  // "Cart outcome" is the column a reader actually wants: Recovered / Bought -
+  // not abandoned / Open. It mirrors the badge in the UI, so it does NOT split
+  // recovered carts by which channel brought them back.
+  const cartOutcome = (r: ExportRow): string => {
+    if (!r.converted_at) return "Open";
+    if (r.recovery_outcome === "instant_sale") return "Bought - not abandoned";
+    return "Recovered";
+  };
+
   const header = [
     "Created",
     "Shopper",
     "Email",
     "Phone",
-    "Status",
+    "Cart outcome",
+    "Voice status",
     "Skip reason",
     "Cart total",
     "Currency",
     "Offer",
     "Discount code",
-    "Attempts",
+    "Call attempts",
+    "Call connected at",
+    "WhatsApp status",
+    "WhatsApp sent at",
+    "Link clicked at",
     "Converted at",
+    "Order",
+    "Order total",
+    "Order currency",
   ];
   const rows = (data ?? []).map((r) =>
     [
@@ -717,6 +734,7 @@ export async function exportRecoveryAttempts(): Promise<
       r.customer_name,
       r.email,
       r.phone,
+      cartOutcome(r),
       r.status,
       r.skip_reason,
       r.cart_total,
@@ -724,7 +742,14 @@ export async function exportRecoveryAttempts(): Promise<
       r.offer_label,
       r.offer_code,
       r.attempt,
+      r.connected_at,
+      r.whatsapp_status,
+      r.whatsapp_sent_at,
+      r.clicked_at,
       r.converted_at,
+      r.order_number,
+      r.order_total,
+      r.order_currency,
     ]
       .map(csvField)
       .join(","),
@@ -801,27 +826,22 @@ export async function getAbandonedCarts(
     );
   }
 
-  // Flag the converted rows on this page as call-attributed (strict ROI) or
-  // organic, so the table's cart-status column can distinguish "recovered by us".
+  // The cart-status column reads recovery_outcome straight off the row — no
+  // second query and no re-derivation.
   const rows = data ?? [];
-  const convertedOnPage = rows.filter((r) => r.converted_at);
-  const [attributed, withDelivery] = await Promise.all([
-    attributedAttemptIds(
-      admin,
-      convertedOnPage.map((r) => ({ id: r.id, converted_at: r.converted_at })),
-    ),
-    attachDeliveryState(admin, session.organisation.id, rows),
-  ]);
-  return ok({
-    rows: withDelivery.map((r) =>
-      r.converted_at ? { ...r, attributed: attributed.has(r.id) } : r,
-    ),
-    total: count ?? 0,
-  });
+  const withDelivery = await attachDeliveryState(
+    admin,
+    session.organisation.id,
+    rows,
+  );
+  return ok({ rows: withDelivery, total: count ?? 0 });
 }
 
-// Converted = order placed against the checkout. Each row is flagged as
-// call-attributed (strict) or organic.
+// The Recovered tab: carts that genuinely abandoned and then converted, whether
+// we drove it (recovered_by_us) or the shopper returned on their own
+// (recovered_organic). Instant sales are excluded — they never abandoned, so
+// they were never ours to recover, and showing them here is what made this tab
+// look like "every order that passed through checkout".
 export async function getConvertedCarts(
   input: unknown,
 ): Promise<ActionResult<RecoveryPage<RecoveryAttemptRow>>> {
@@ -831,15 +851,12 @@ export async function getConvertedCarts(
   const page = parsed.data.page ?? 0;
   const admin = createAdminClient();
 
-  // Genuine recoveries only — the cart was abandoned (past the ~10-min window)
-  // and then converted. Instant sales that never abandoned are excluded, so this
-  // tab shows real wins, not every order that passed through checkout.
   const [from, to] = pageRange(page);
   const { data, count, error } = await admin
     .from("shopify_recovery_attempts")
     .select(ATTEMPT_COLUMNS, { count: "exact" })
     .eq("organisation_id", session.organisation.id)
-    .eq("is_recovery", true)
+    .in("recovery_outcome", ["recovered_by_us", "recovered_organic"])
     .order("converted_at", { ascending: false })
     .range(from, to)
     .returns<RecoveryAttemptRow[]>();
@@ -853,18 +870,12 @@ export async function getConvertedCarts(
     );
   }
 
-  const rows = data ?? [];
-  const [attributed, withDelivery] = await Promise.all([
-    attributedAttemptIds(
-      admin,
-      rows.map((r) => ({ id: r.id, converted_at: r.converted_at })),
-    ),
-    attachDeliveryState(admin, session.organisation.id, rows),
-  ]);
-  return ok({
-    rows: withDelivery.map((r) => ({ ...r, attributed: attributed.has(r.id) })),
-    total: count ?? 0,
-  });
+  const withDelivery = await attachDeliveryState(
+    admin,
+    session.organisation.id,
+    data ?? [],
+  );
+  return ok({ rows: withDelivery, total: count ?? 0 });
 }
 
 interface RawCallRow {

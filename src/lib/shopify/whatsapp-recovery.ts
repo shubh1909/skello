@@ -322,15 +322,47 @@ export async function applyWhatsAppDeliveryUpdate(input: {
 }): Promise<"updated" | "not_found" | "noop"> {
   const admin = createAdminClient();
 
-  const { data: msg } = await admin
+  // `provider_message_id` is unique per-org, not globally, so fetch 2: a
+  // cross-tenant collision must be distinguishable from a clean miss. The
+  // query error is captured too — discarding it made every DB fault look
+  // identical to "no such message".
+  const { data: msgs, error: lookupError } = await admin
     .from("shopify_recovery_messages")
-    .select("id, shopify_recovery_attempt_id, status")
+    .select("id, organisation_id, shopify_recovery_attempt_id, status")
     .eq("provider_message_id", input.providerMessageId)
-    .maybeSingle<{
-      id: string;
-      shopify_recovery_attempt_id: string | null;
-      status: string;
-    }>();
+    .limit(2)
+    .returns<
+      Array<{
+        id: string;
+        organisation_id: string;
+        shopify_recovery_attempt_id: string | null;
+        status: string;
+      }>
+    >();
+
+  if (lookupError) {
+    console.error("[whatsapp delivery] message lookup failed — update dropped", {
+      providerMessageId: input.providerMessageId,
+      status: input.status,
+      cause: lookupError,
+    });
+    return "not_found";
+  }
+
+  if (msgs && msgs.length > 1) {
+    // Refuse rather than guess — crediting a delivery/failure to the wrong
+    // tenant's attempt would also advance that tenant's WhatsApp track.
+    console.error(
+      "[whatsapp delivery] provider_message_id matched messages in multiple organisations — update refused",
+      {
+        providerMessageId: input.providerMessageId,
+        organisationIds: msgs.map((m) => m.organisation_id),
+      },
+    );
+    return "not_found";
+  }
+
+  const msg = msgs?.[0] ?? null;
   // Correlation miss. This is the ONE failure that looks like success: the
   // message sits at "sent" forever while Meta actually rejected it, and nothing
   // anywhere says so. Almost always an ID-shape mismatch — we store the id the

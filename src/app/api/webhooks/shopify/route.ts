@@ -9,11 +9,12 @@ import {
 } from "@/lib/rate-limit";
 import { resolveShopifyIntegrationByShop } from "@/lib/shopify/integration";
 import {
-  cancelRecoveryForOrder,
+  recordAndSettleOrder,
   scheduleRecoveryFromCheckout,
 } from "@/lib/shopify/recovery";
 import { normalizeShopDomain } from "@/lib/shopify/util";
 import {
+  SHOPIFY_ORDER_TOPICS,
   orderRecoveryKeys,
   verifyWebhookHmac,
 } from "@/lib/shopify/webhooks";
@@ -75,10 +76,26 @@ export async function POST(request: NextRequest) {
     try {
       if (topic === "checkouts/create" || topic === "checkouts/update") {
         await scheduleRecoveryFromCheckout({ integration, payload });
-      } else if (topic === "orders/create") {
-        await cancelRecoveryForOrder({
-          integration,
-          ...orderRecoveryKeys(payload),
+      } else if (SHOPIFY_ORDER_TOPICS.includes(topic)) {
+        const keys = orderRecoveryKeys(payload);
+        // No order id → nothing to key idempotency on. Refuse rather than settle
+        // a payload we can't recognise again on redelivery.
+        if (!keys.orderId) {
+          warnSkelo("SHOPIFY", "Order webhook without an id", { shop, topic });
+          return;
+        }
+        await recordAndSettleOrder({
+          organisationId: integration.organisation_id,
+          shopDomain: integration.shop_domain,
+          topic,
+          orderId: keys.orderId,
+          checkoutToken: keys.checkoutToken,
+          cartToken: keys.cartToken,
+          phone: keys.phone,
+          orderCreatedAt: keys.orderCreatedAt,
+          orderNumber: keys.orderNumber,
+          orderTotal: keys.orderTotal,
+          orderCurrency: keys.orderCurrency,
         });
       }
     } catch (err) {

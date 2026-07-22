@@ -28,17 +28,21 @@ export function CartRecoveryDashboard({
         icon={<PhoneIcon />}
         hint="Carts we dialled"
       />
+      {/* Every abandoned cart that came back, across all channels. Deliberately
+          NOT split by who drove it — metrics.recovered_by_us carries that and is
+          kept out of the merchant view. The wording stays factual ("came back")
+          rather than claiming we caused each one. */}
       <StatCard
-        label="Carts Recovered "
-        value={metrics.conversions_total.toLocaleString()}
+        label="Carts recovered"
+        value={metrics.recovered.toLocaleString()}
         icon={<CheckCircle2Icon />}
-        hint="Abandoned carts won back (excludes instant sales)"
+        hint="Abandoned carts that came back and converted"
       />
       <StatCard
         label="Revenue recovered"
         value={formatMoney(metrics.revenue_recovered, metrics.currency)}
         icon={<TrendingUpIcon />}
-        hint="Across all recovered carts"
+        hint="Order value across recovered carts"
       />
     </section>
   );

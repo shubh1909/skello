@@ -508,7 +508,7 @@ function CartTable({
                     <td className="px-4 py-3">
                       <CartOutcomeBadge
                         convertedAt={r.converted_at}
-                        attributed={r.attributed}
+                        outcome={r.recovery_outcome}
                       />
                     </td>
                   ) : null}

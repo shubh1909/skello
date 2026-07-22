@@ -146,7 +146,7 @@ export function RecoveryCartDetail({
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <CartOutcomeBadge
               convertedAt={cart.converted_at}
-              attributed={cart.attributed}
+              outcome={cart.recovery_outcome}
             />
             <AttemptStatusBadge status={cart.status} />
             {cart.status === "skipped" && cart.skip_reason ? (

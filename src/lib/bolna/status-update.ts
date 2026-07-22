@@ -106,10 +106,51 @@ export async function applyCallStatusUpdate(
   if (input.errorCode) patch.error_code = input.errorCode;
   if (input.errorMessage) patch.error_message = input.errorMessage;
 
+  // Resolve the target row BEFORE mutating. `bolna_call_id` is only unique
+  // per-org, so a bare `.update().eq("bolna_call_id", …)` would write across
+  // every tenant holding that id — the error surfaces only afterwards, once
+  // the damage is done. Fetch 2 to detect ambiguity, then update by primary
+  // key so exactly one row can ever be touched.
+  const { data: candidates, error: lookupError } = await admin
+    .from("calls")
+    .select("id, organisation_id")
+    .eq("bolna_call_id", input.bolnaCallId)
+    .limit(2)
+    .returns<Array<{ id: string; organisation_id: string }>>();
+
+  if (lookupError) {
+    const message = logSkeloError(
+      "WEBHOOK-INGEST",
+      "Call status update failed",
+      { bolnaCallId: input.bolnaCallId, cause: lookupError },
+    );
+    return { kind: "error", message };
+  }
+
+  if (!candidates || candidates.length === 0) {
+    return { kind: "not_found" };
+  }
+
+  if (candidates.length > 1) {
+    // Cross-tenant id collision. Refuse rather than guess — picking either row
+    // corrupts one tenant's call log with another's outcome.
+    const message = logSkeloError(
+      "WEBHOOK-INGEST",
+      "Call status update failed",
+      {
+        bolnaCallId: input.bolnaCallId,
+        cause: new Error(
+          "bolna_call_id matched calls in multiple organisations — update refused",
+        ),
+      },
+    );
+    return { kind: "error", message };
+  }
+
   const { data, error } = await admin
     .from("calls")
     .update(patch)
-    .eq("bolna_call_id", input.bolnaCallId)
+    .eq("id", candidates[0].id)
     .select(
       "id, organisation_id, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id",
     )
