@@ -16,23 +16,29 @@ Skelo is a high-performance, multi-tenant CRM designed for scale. This project p
 Maintain this hierarchy to ensure a strict Separation of Concerns:
 
 ```
-├── app/                # Next.js App Router (Pages & Routes)
-├── actions/            # Server Actions (Business Logic & DB Mutations)
-├── components/         # UI Components (shadcn/ui & Custom)
-├── hooks/              # Reusable Client-side Logic
-├── lib/                # Config (Supabase Client, Shared Utils)
-├── services/           # Third-party Integrations (telephony provider, payments)
-├── types/              # TypeScript Interfaces & DB Schemas
+├── src/
+│   ├── app/            # Next.js App Router (Pages, Routes, API handlers)
+│   ├── actions/        # Server Actions (Business Logic & DB Mutations) — flat files
+│   ├── components/     # UI Components (shadcn/ui & Custom)
+│   ├── hooks/          # Reusable Client-side Logic
+│   ├── lib/            # Supabase clients, shared utils, AND provider integrations
+│   │                   #   (bolna/, kwikengage/, shopify/, whatsapp/, campaigns/…)
+│   └── types/          # TypeScript Interfaces & DB Schemas
 └── supabase/           # Migrations & RLS Policy Definitions
 ```
+
+**There is no top-level `services/` directory.** Third-party integrations live under `src/lib/<provider>/`. Tests are colocated as `src/**/*.test.ts`.
 
 ## Project Laws (Strict Adherence Required)
 
 ### 1. Multi-Tenancy First
 
-- **The Global Filter:** Every database query must include an `organization_id` filter.
-- **No Leaks:** Never use `SELECT *` without a `WHERE organization_id = ...` clause.
-- **Backend Security:** All Server Actions must verify the user's `organization_id` from the session before execution.
+- **The Global Filter:** Every database query must include an `organisation_id` filter.
+  - **Spelling is British.** The column is `organisation_id`; the table is `organisations`. `organization_id` does **not** exist in this codebase.
+  - **`leads` is the exception:** it carries both `organisation_id` and a legacy `org_slug`. Filter by `organisation_id`, but write **both** on insert. See the `skelo-tenancy` skill before touching `leads`.
+- **No Leaks:** Never use `SELECT *`, and never query without an org filter.
+- **Backend Security:** All Server Actions must resolve the user's `organisation_id` from the session before execution — never from the client payload.
+- **Service-role bypasses everything.** `createAdminClient()` drops both RLS tenant isolation *and* soft-delete filtering. Those paths must scope by hand.
 
 ### 2. Bespoke Engineering Only
 
@@ -46,10 +52,12 @@ Maintain this hierarchy to ensure a strict Separation of Concerns:
 
 ### 4. Error & Edge Case Protocol
 
-- **Standardized Response:** Every Server Action must return this shape:
+- **Standardized Response:** Every Server Action returns `ActionResult<T>` from `src/types/action.ts` — a **discriminated union**, not an optional-field bag. Use the `ok()` / `fail()` helpers; narrow on `success` before touching `data`.
 
   ```ts
-  { success: boolean, data?: T, error?: string }
+  type ActionResult<T> =
+    | { success: true; data: T }
+    | { success: false; error: string };
   ```
 
 - **Early Returns:** Handle edge cases (missing IDs, null values) at the top of functions to avoid "Pyramid of Doom" nesting.
@@ -74,7 +82,8 @@ Maintain this hierarchy to ensure a strict Separation of Concerns:
 ### Current domain model (headline tables)
 
 - `organisations` — one per workspace; `owner_id = auth.uid()`.
-- `leads` — CRM core. Tenant scope via `org_slug`. Columns include pipeline `status` (enum: new → contacted → qualified → negotiating → won/lost), temperature `lead_intent` (hot/warm/cold), `source` (enum: inbound_call / whatsapp / manual / import / web_form), plus `notes`, `city`, `pincode`, and a free-form `customer_status` ("buyer type"). See [docs/api.md § Leads](docs/api.md#leads).
+- `leads` — CRM core. Tenant scope via `organisation_id` (with a legacy `org_slug` still written alongside). Pipeline `status` (enum: new → contacted → qualified → negotiating → won/lost), temperature **`current_intent`** (hot/warm/cold), `source` (enum: inbound_call / whatsapp / manual / import / web_form / shopify), plus `notes`, `city`, `pincode`.
+  - ⚠️ **`lead_intent`, `interest`, and `customer_status` are NOT columns** — they were dropped in `20260517000003_cleanup.sql` and are derived on read from the `lead_data` JSONB. The `Lead` TypeScript type is **not** the table shape. Load the `skelo-leads` skill before querying. See [docs/api.md § Leads](docs/api.md#leads).
 - `calls` — inbound + outbound. `direction` enum distinguishes them; `transcript` stores the raw blob; `transcript_status` drives the ingestion lifecycle. Tenant scope via `organisation_id`.
 - `call_transcripts` — child table, one row per utterance. FTS GIN index on `to_tsvector('simple', text)` for multi-language search.
 - `bolna_integrations` — per-org provider config (API key, agent id). RLS enabled with no authenticated policies; service-role only.
@@ -96,16 +105,38 @@ Skelo is provider-agnostic at the product layer. A pluggable telephony provider 
 
 - **Inbound Lead Capture:** The provider sends call transcripts, caller metadata, and extracted lead fields to a Skelo webhook. The webhook persists the lead under the correct `organization_id` (see Law #1).
 - **Outbound Call Initiation:** Server Actions trigger the provider's API to place outbound calls (follow-ups, nurture sequences, verification). Call status updates flow back via webhook.
-- **Implementation Location (internal):**
-  - Provider client + API wrappers → `services/<provider>/` (current: `services/bolna/`)
-  - Webhook handlers → `app/api/webhooks/<provider>/`
-  - Outbound call Server Actions → `actions/calls/`
+- **Implementation Location (internal, as it actually exists on disk):**
+  - Provider client + core logic → `src/lib/bolna/` (**not** `services/bolna/` — that directory does not exist)
+  - Webhook handlers → `src/app/api/webhooks/bolna/{leads,calls}/`
+  - Outbound call Server Actions → `src/actions/calls.ts` (a flat file, **not** an `actions/calls/` directory)
+  - A future rename to `services/telephony/` is tracked but **not executed**. Trust the filesystem over this document.
 - **Security:** Verify webhook signatures before processing. Never trust `organization_id` from the webhook payload — resolve it server-side from the agent/phone-number mapping.
 - **Internal note only (do not surface in UI):** the current implementation is Bolna.ai; a future rename of `services/bolna/` → `services/telephony/` is tracked but not yet executed.
 
+## Domain Skills (load these before investigating, fixing, or extending)
+
+This codebase has several traps that produce confident-but-wrong answers — dropped columns still present in TypeScript types, two competing implementations of the same concept, a half-finished tenancy migration, and paths this very document once described incorrectly. Each skill below carries verified `file:line` anchors, real column names, and a "known issues" section.
+
+**Load the matching skill *before* reading code in that area. When unsure, load `skelo-tenancy`.**
+
+| Skill | Load it for |
+|---|---|
+| `skelo-tenancy` | **Any** tenant-scoped query, Supabase client choice, auth/session, RLS, migrations, soft-delete. Highest frequency — the default. |
+| `skelo-leads` | `leads`, `reminders`, `campaign_contacts`, `lead_data`/`custom_data` JSONB, extraction/merge, dedupe |
+| `skelo-voice-agent` | `calls`, `call_transcripts`, `bolna_integrations`, `voice_agents`, dialling, call webhooks, transcripts |
+| `skelo-whatsapp` | Template sends, delivery status, `whatsapp_integrations`, `shopify_recovery_messages`, KwikEngage |
+| `skelo-recovery` | `shopify_recovery_*`, the Shopify webhook, App Proxy short links, conversion attribution, recovery metrics |
+| `skelo-platform` | Cron, observability/Sentry, rate limits, campaign dispatch, analytics, CSV import/export, tests |
+
+Domains overlap — a cart-recovery WhatsApp bug wants `skelo-recovery` **and** `skelo-whatsapp` **and** `skelo-tenancy`. Load all that apply.
+
+### Where this document is wrong
+
+This file has carried errors that actively caused bad code. If a skill contradicts `CLAUDE.md` or `backend-engineer-agent.md`, **the skill wins** — skills are verified against source. Corrected here so far: the org column spelling, the `services/bolna/` path, the `ActionResult` shape, and the `leads` column list. `docs/sitemap.md` dispatch throughput numbers are also stale.
+
 ## Agents
 
-- **Backend Engineer:** See [backend-engineer-agent.md](backend-engineer-agent.md) — owns Server Actions, Supabase schema/auth/realtime, webhooks, and third-party integrations.
+- **Backend Engineer:** See [backend-engineer-agent.md](backend-engineer-agent.md) — owns Server Actions, Supabase schema/auth/realtime, webhooks, and third-party integrations. Note it repeats the `organization_id` misspelling and describes webhook signing as HMAC-verified; both are corrected in `skelo-tenancy` and `skelo-voice-agent`.
 
 ## External References
 

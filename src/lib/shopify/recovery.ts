@@ -21,7 +21,11 @@ import { normalizeAbandonedCheckout } from "@/lib/shopify/webhooks";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { APP_TIMEZONE } from "@/lib/time";
 import type { CallStatus } from "@/types/call";
-import type { RecoveryCartItem, ShopifyIntegration } from "@/types/shopify";
+import type {
+  RecoveryCartItem,
+  RecoveryOutcome,
+  ShopifyIntegration,
+} from "@/types/shopify";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -35,12 +39,16 @@ const STUCK_IN_FLIGHT_MS = 30 * 60 * 1000;
 // considers it abandoned ~10 minutes after contact info is added without the
 // order completing. We mirror that threshold exactly: until it elapses with no
 // order, the cart is "in checkout", not abandoned. A purchase inside this window
-// was never abandoned (a normal fast checkout) — it's neither shown as abandoned
-// nor counted as a recovery. This is SEPARATE from the call delay
+// was never abandoned (a normal fast checkout), so it is neither dialled nor
+// listed as abandoned. This is SEPARATE from the call delay
 // (settings.wait_minutes): the call clock starts only once the cart becomes
-// abandoned, i.e. first dial = checkout + this threshold + wait_minutes. The
-// stored `is_recovery` column applies the same 10-minute rule in the DB (see the
-// 20260720 migration) so paginated queries can filter on it.
+// abandoned, i.e. first dial = checkout + this threshold + wait_minutes.
+//
+// SCOPE: this is a scheduling + display rule and nothing more. It does NOT
+// define a recovery — that is `recovery_outcome`, stamped at settlement from
+// whether we actually reached the buyer first. The 20260720 migration borrowed
+// this threshold to answer that question and got 21% precision; 20260722 undid
+// it. Keep the two concerns apart.
 export const ABANDONMENT_THRESHOLD_MINUTES = 10;
 const ABANDONMENT_THRESHOLD_MS = ABANDONMENT_THRESHOLD_MINUTES * 60_000;
 
@@ -381,7 +389,16 @@ export async function scheduleRecoveryFromCheckout(input: {
 }
 
 // =============================================================================
-// CANCEL / CONVERT — an order completed, so the cart was recovered.
+// SETTLE — an order arrived. Decide what it means for this BUYER's carts.
+// =============================================================================
+//
+// The unit of work here is the BUYER, not the checkout session. Shopify mints a
+// new checkout_token every time a shopper re-enters checkout, so one purchase
+// decision can leave three or four rows behind — but only ONE order, which can
+// only name one of them. Settling per-row (the old two-tier "token match, else
+// phone match" with an early return on the token hit) left the siblings open:
+// we kept dialling shoppers who had already paid, and credited the young session
+// the order happened to name rather than the cart we actually worked.
 // =============================================================================
 
 // Last-10-digits key for tolerant phone matching across payload shapes — a
@@ -411,75 +428,161 @@ export const PHONE_ATTRIBUTION_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 // checkout time — an attempt a little "after" the order is still a match.
 const PHONE_ATTRIBUTION_GRACE_MS = 60 * 60 * 1000;
 
-export interface PhoneCandidate {
+// One of this buyer's carts, as seen when an order lands. Every status is
+// included on purpose: a cart can be `failed` (voice gave up) or `canceled` and
+// still be the one that did the recovering, because the WhatsApp fallback fires
+// precisely when voice gives up. Filtering those out is what made a WhatsApp-led
+// recovery impossible to credit.
+export interface SettleCandidate {
   id: string;
   status: string;
   created_at: string;
   converted_at: string | null;
+  connected_at: string | null;
+  whatsapp_sent_at: string | null;
+  // The order named this exact cart by checkout_token / cart_token.
+  matchedByToken: boolean;
 }
 
-export interface PhoneConversionPlan {
-  // The single attempt to stamp `converted_at` on. null → nothing to credit.
+export interface SettlementPlan {
+  // The single cart to stamp `converted_at` on. null → nothing to credit.
   creditId: string | null;
-  // Live attempts (pending/in-flight) to stop outreach on — they bought, so we
-  // must never call them, even for a DIFFERENT abandoned cart.
+  match: "token" | "phone" | null;
+  outcome: RecoveryOutcome | null;
+  // The touch that justifies `recovered_by_us`. Null for the other outcomes.
+  firstContactAt: string | null;
+  // Live carts (pending/in_flight) to stop outreach on — this buyer has paid, so
+  // we must not call them again, not even about a DIFFERENT cart.
   cancelIds: string[];
 }
 
-// Decide which of several same-phone attempts a tokenless (GoKwik) order should
-// credit. Pure + exported so the branch logic is unit-tested without the DB.
+// Decide what an order means for every cart belonging to one buyer. Pure +
+// exported so the branch logic is unit-tested without the DB.
 //
-// Two separate jobs, deliberately not conflated:
-//   • STOP outreach on every still-live attempt for this buyer (safety).
-//   • CREDIT the conversion to exactly ONE — crediting all of them would
-//     double-count revenue, which sums cart_total across every converted row.
-// Credit prefers a CONNECTED attempt (status 'succeeded') so the recovery stays
-// attributable, then the most recent — the cart closest to the purchase.
-export function selectPhoneConversion(
-  candidates: PhoneCandidate[],
+// Three separate jobs, deliberately not conflated:
+//   • STOP outreach on every still-live cart for this buyer (safety).
+//   • CREDIT exactly ONE — crediting all would double-count revenue, which sums
+//     cart_total across converted rows.
+//   • LABEL the conversion by whether we actually reached this buyer FIRST. That
+//     label is the recovery metric; cart age alone never answers it.
+export function planOrderSettlement(
+  candidates: SettleCandidate[],
   orderCreatedAtMs: number,
   windowMs: number,
-): PhoneConversionPlan {
+  abandonmentMs: number,
+): SettlementPlan {
+  const empty: SettlementPlan = {
+    creditId: null,
+    match: null,
+    outcome: null,
+    firstContactAt: null,
+    cancelIds: [],
+  };
+
   const inWindow = candidates.filter((c) => {
-    if (c.converted_at) return false;
     const t = Date.parse(c.created_at);
     if (Number.isNaN(t)) return false;
-    // Abandoned before the order (± skew grace) and no older than the window.
+    // Started before the order (± skew grace) and no older than the window.
     return (
       t <= orderCreatedAtMs + PHONE_ATTRIBUTION_GRACE_MS &&
       orderCreatedAtMs - t <= windowMs
     );
   });
-  if (inWindow.length === 0) return { creditId: null, cancelIds: [] };
+  if (inWindow.length === 0) return empty;
+
+  // The evidence: the earliest time we reached this BUYER before they ordered.
+  // Buyer-scoped, not cart-scoped — the call may sit on the cart they abandoned
+  // while the order names the fresh checkout they came back through.
+  let firstContactAt: string | null = null;
+  let firstContactMs = Number.POSITIVE_INFINITY;
+  for (const c of inWindow) {
+    for (const iso of [c.connected_at, c.whatsapp_sent_at]) {
+      if (!iso) continue;
+      const t = Date.parse(iso);
+      if (Number.isNaN(t) || t > orderCreatedAtMs) continue;
+      if (orderCreatedAtMs - t > windowMs) continue;
+      if (t < firstContactMs) {
+        firstContactMs = t;
+        firstContactAt = iso;
+      }
+    }
+  }
 
   const cancelIds = inWindow
     .filter((c) => c.status === "pending" || c.status === "in_flight")
     .map((c) => c.id);
 
-  const ranked = [...inWindow].sort((a, b) => {
-    // Connected first (keeps the conversion attributable), then most recent.
-    const aConn = a.status === "succeeded" ? 1 : 0;
-    const bConn = b.status === "succeeded" ? 1 : 0;
-    if (aConn !== bConn) return bConn - aConn;
+  const creditable = inWindow.filter((c) => !c.converted_at);
+  if (creditable.length === 0) return { ...empty, firstContactAt, cancelIds };
+
+  // Prefer the token-matched cart: it IS the cart that became the order, so its
+  // cart_total is the order's real value. Then a cart we actually worked, then
+  // the most recent — the one closest to the purchase.
+  const ranked = [...creditable].sort((a, b) => {
+    if (a.matchedByToken !== b.matchedByToken) return a.matchedByToken ? -1 : 1;
+    const aTouched = a.connected_at || a.whatsapp_sent_at ? 1 : 0;
+    const bTouched = b.connected_at || b.whatsapp_sent_at ? 1 : 0;
+    if (aTouched !== bTouched) return bTouched - aTouched;
     return Date.parse(b.created_at) - Date.parse(a.created_at);
   });
-  return { creditId: ranked[0].id, cancelIds };
+  const credit = ranked[0];
+
+  // Contact before the order is the ONLY thing that makes a sale ours. Without
+  // it, fall back to whether this buyer's OLDEST cart had genuinely abandoned
+  // (past the threshold) or whether they walked straight through checkout.
+  const oldestAge = Math.max(
+    ...inWindow.map((c) => orderCreatedAtMs - Date.parse(c.created_at)),
+  );
+  const outcome: RecoveryOutcome = firstContactAt
+    ? "recovered_by_us"
+    : oldestAge >= abandonmentMs
+      ? "recovered_organic"
+      : "instant_sale";
+
+  return {
+    creditId: credit.id,
+    match: credit.matchedByToken ? "token" : "phone",
+    outcome,
+    firstContactAt,
+    cancelIds,
+  };
 }
 
-// Build the update for an attempt we're marking converted (and stopping outreach
-// on if it's still live). `match` records HOW we tied the order back — 'token'
-// (Shopify attributes the same way) or 'phone' (tokenless GoKwik order). Only
-// stamped when we're NEWLY converting, so a re-delivered webhook can't rewrite it.
+// Build the update for a cart we're marking converted (and stopping outreach on
+// if it's still live). `match` records HOW we tied the order back — 'token'
+// (Shopify attributes the same way) or 'phone' (tokenless GoKwik order).
+// `outcome` is the recovery label, stamped here and never re-derived.
+// Both are written ONLY when we're NEWLY converting, so a re-delivered webhook
+// can't rewrite the original verdict.
 export function convertPatch(
   attempt: CancelCandidate,
   now: string,
-  match: "token" | "phone",
+  settlement: {
+    match: "token" | "phone";
+    outcome: RecoveryOutcome;
+    firstContactAt: string | null;
+    // The real order. Written on every settlement (not just the first) so a
+    // later orders/updated can correct a total that changed after placement —
+    // unlike the verdict, the amount is allowed to be restated.
+    orderId?: string | null;
+    orderNumber?: string | null;
+    orderTotal?: number | null;
+    orderCurrency?: string | null;
+  },
 ): Record<string, unknown> {
   const newlyConverting = attempt.converted_at == null;
   const patch: Record<string, unknown> = {
     converted_at: attempt.converted_at ?? now,
   };
-  if (newlyConverting) patch.conversion_match = match;
+  if (newlyConverting) {
+    patch.conversion_match = settlement.match;
+    patch.recovery_outcome = settlement.outcome;
+    patch.first_contact_at = settlement.firstContactAt;
+  }
+  if (settlement.orderId) patch.order_id = settlement.orderId;
+  if (settlement.orderNumber) patch.order_number = settlement.orderNumber;
+  if (settlement.orderTotal != null) patch.order_total = settlement.orderTotal;
+  if (settlement.orderCurrency) patch.order_currency = settlement.orderCurrency;
   if (attempt.status === "pending" || attempt.status === "in_flight") {
     patch.status = "canceled";
     patch.canceled_at = now;
@@ -493,22 +596,50 @@ export function convertPatch(
   return patch;
 }
 
-export async function cancelRecoveryForOrder(input: {
-  integration: ShopifyIntegration;
+// The columns settlement needs. connected_at / whatsapp_sent_at are the contact
+// evidence; without them we cannot tell a recovery from a coincidence.
+const SETTLE_COLUMNS =
+  "id, status, whatsapp_status, converted_at, phone, created_at, connected_at, whatsapp_sent_at";
+
+// Ceiling on the per-order phone scan. Comfortably above any real store's carts
+// in a 3-day window, and explicit so PostgREST's default page size can't silently
+// truncate the sweep.
+const SETTLE_SCAN_LIMIT = 2000;
+
+interface SettleRow extends CancelCandidate {
+  connected_at: string | null;
+  whatsapp_sent_at: string | null;
+}
+
+export interface OrderSettlementInput {
+  organisationId: string;
   checkoutToken: string | null;
   cartToken: string | null;
   phone: string | null;
   orderCreatedAt: string | null;
-}): Promise<void> {
-  const orgId = input.integration.organisation_id;
+  // The real order, captured so revenue stops reading the pre-discount cart
+  // snapshot and the UI can deep-link to the order in Shopify admin.
+  orderId?: string | null;
+  orderNumber?: string | null;
+  orderTotal?: number | null;
+  orderCurrency?: string | null;
+}
+
+export async function settleRecoveryForOrder(
+  input: OrderSettlementInput,
+): Promise<void> {
+  const orgId = input.organisationId;
   const admin = createAdminClient();
 
-  // 1) Authoritative match: the order references the tracked cart by EITHER
-  //    token. checkout_token is the classic key; cart_token catches the cases
-  //    where the shopper completed in a different checkout session (Shop Pay /
-  //    express / new checkout) and checkout_token no longer equals the one we
-  //    saw on checkouts/* — Shopify attributes recovery via cart_token.
-  //    A token is unique to one cart, so converting every match is safe here.
+  const parsed = input.orderCreatedAt ? Date.parse(input.orderCreatedAt) : NaN;
+  const orderAtMs = Number.isNaN(parsed) ? Date.now() : parsed;
+
+  const byId = new Map<string, SettleRow>();
+  const tokenIds = new Set<string>();
+
+  // 1) Token match — the order names this exact cart. checkout_token is the
+  //    classic key; cart_token catches a completion in a different checkout
+  //    session (Shop Pay / express), which Shopify itself attributes that way.
   const tokenOr: string[] = [];
   if (input.checkoutToken) {
     tokenOr.push(`checkout_token.eq.${input.checkoutToken}`);
@@ -518,87 +649,108 @@ export async function cancelRecoveryForOrder(input: {
   if (tokenOr.length > 0) {
     const { data } = await admin
       .from("shopify_recovery_attempts")
-      .select("id, status, whatsapp_status, converted_at, phone, created_at")
+      .select(SETTLE_COLUMNS)
       .eq("organisation_id", orgId)
       .or(tokenOr.join(","))
-      .returns<CancelCandidate[]>();
-    const matched = data ?? [];
-    if (matched.length > 0) {
-      const now = new Date().toISOString();
-      await Promise.all(
-        matched.map((a) =>
-          admin
-            .from("shopify_recovery_attempts")
-            .update(convertPatch(a, now, "token"))
-            .eq("id", a.id),
-        ),
-      );
-      return;
+      .returns<SettleRow[]>();
+    for (const r of data ?? []) {
+      byId.set(r.id, r);
+      tokenIds.add(r.id);
     }
   }
 
-  // 2) Phone fallback — the ONLY key for tokenless orders (GoKwik carries no
-  //    checkout_token or cart_token at all). Matches on last-10 digits so a
-  //    country-code/format drift can't defeat it.
+  // 2) The buyer's OTHER carts, by phone. This runs ALWAYS — including after a
+  //    token hit, which is the fix. A shopper who re-enters checkout gets a new
+  //    row, so the order names the young session while the cart we actually
+  //    called sits open under the same phone. Returning early on the token match
+  //    left those siblings live: we dialled shoppers who had already paid, and
+  //    credited a cart we never worked. It is also the ONLY key for tokenless
+  //    (GoKwik) orders, which carry neither token.
   //
-  //    Critically this includes `succeeded` attempts: a CONNECTED call flips the
-  //    row to succeeded, and the old net only looked at pending/in_flight — so a
-  //    cart we actually reached could never be phone-matched, and the harder we
-  //    worked the less we could attribute. It also credits exactly ONE attempt
-  //    (revenue sums cart_total across every converted row) and bounds by time
-  //    so an unrelated later purchase isn't mis-credited.
-  if (!input.phone) return;
+  //    No status filter: a `failed` cart (voice gave up) still carries the
+  //    WhatsApp send that did the recovering, because the fallback fires exactly
+  //    when voice gives up.
   const target = phoneKey(input.phone);
-  if (!target) return;
+  if (target) {
+    const windowStart = new Date(
+      orderAtMs - PHONE_ATTRIBUTION_WINDOW_MS,
+    ).toISOString();
+    // The last-10-digits key can't be expressed in the query builder (stored
+    // phones carry country codes and spaces), so we bound hard in SQL — this
+    // org, this 3-day window — and match in JS. Newest first with an explicit
+    // limit so that if a very busy store ever exceeds it, we keep the carts
+    // closest to the purchase rather than truncating arbitrarily.
+    const { data } = await admin
+      .from("shopify_recovery_attempts")
+      .select(SETTLE_COLUMNS)
+      .eq("organisation_id", orgId)
+      .not("phone", "is", null)
+      .gte("created_at", windowStart)
+      .order("created_at", { ascending: false })
+      .limit(SETTLE_SCAN_LIMIT)
+      .returns<SettleRow[]>();
+    for (const r of data ?? []) {
+      if (phoneKey(r.phone) === target) byId.set(r.id, r);
+    }
+  }
 
-  const { data } = await admin
-    .from("shopify_recovery_attempts")
-    .select("id, status, whatsapp_status, converted_at, phone, created_at")
-    .eq("organisation_id", orgId)
-    .in("status", ["pending", "in_flight", "succeeded"])
-    .is("converted_at", null)
-    .not("phone", "is", null)
-    .returns<CancelCandidate[]>();
-  const cands = (data ?? []).filter((r) => phoneKey(r.phone) === target);
-  if (cands.length === 0) return;
+  if (byId.size === 0) return;
 
-  const orderMs = input.orderCreatedAt
-    ? Date.parse(input.orderCreatedAt)
-    : Date.now();
-  const plan = selectPhoneConversion(
-    cands,
-    Number.isNaN(orderMs) ? Date.now() : orderMs,
+  const plan = planOrderSettlement(
+    [...byId.values()].map((r) => ({
+      id: r.id,
+      status: r.status,
+      created_at: r.created_at,
+      converted_at: r.converted_at,
+      connected_at: r.connected_at,
+      whatsapp_sent_at: r.whatsapp_sent_at,
+      matchedByToken: tokenIds.has(r.id),
+    })),
+    orderAtMs,
     PHONE_ATTRIBUTION_WINDOW_MS,
+    ABANDONMENT_THRESHOLD_MS,
   );
   if (!plan.creditId && plan.cancelIds.length === 0) return;
 
   const now = new Date().toISOString();
-  const byId = new Map(cands.map((c) => [c.id, c] as const));
   const updates: Array<PromiseLike<unknown>> = [];
 
-  if (plan.creditId) {
+  if (plan.creditId && plan.match && plan.outcome) {
     const credited = byId.get(plan.creditId)!;
     updates.push(
       admin
         .from("shopify_recovery_attempts")
-        .update(convertPatch(credited, now, "phone"))
+        .update(
+          convertPatch(credited, now, {
+            match: plan.match,
+            outcome: plan.outcome,
+            firstContactAt: plan.firstContactAt,
+            orderId: input.orderId ?? null,
+            orderNumber: input.orderNumber ?? null,
+            orderTotal: input.orderTotal ?? null,
+            orderCurrency: input.orderCurrency ?? null,
+          }),
+        )
         .eq("id", plan.creditId),
     );
-    // Observability — this path was silent before, and it's the one we just
-    // fixed. Log which order/phone credited which attempt.
-    console.log("[shopify recovery] phone-matched conversion (tokenless order)", {
+    console.log("[shopify recovery] order settled", {
       organisationId: orgId,
       creditedAttempt: plan.creditId,
-      alsoCanceled: plan.cancelIds.filter((id) => id !== plan.creditId).length,
+      match: plan.match,
+      outcome: plan.outcome,
+      siblingsStopped: plan.cancelIds.filter((id) => id !== plan.creditId).length,
     });
   }
 
-  // Stop outreach on the OTHER live attempts for this buyer — they bought, so
-  // don't call them for a different cart — but do NOT credit them (no double).
+  // Stop outreach on this buyer's OTHER live carts — they bought, so don't call
+  // them about a different cart — but do NOT credit them (no double-count).
   for (const id of plan.cancelIds) {
     if (id === plan.creditId) continue;
     const c = byId.get(id)!;
-    const patch: Record<string, unknown> = { status: "canceled", canceled_at: now };
+    const patch: Record<string, unknown> = {
+      status: "canceled",
+      canceled_at: now,
+    };
     if (c.whatsapp_status === "pending" || c.whatsapp_status === "in_flight") {
       patch.whatsapp_status = "canceled";
     }
@@ -608,6 +760,162 @@ export async function cancelRecoveryForOrder(input: {
   }
 
   await Promise.all(updates);
+}
+
+// =============================================================================
+// ORDER LEDGER — make settlement survive a failure.
+// =============================================================================
+// The webhook 200s Shopify immediately and settles inside next/after(), so a
+// transient DB error is invisible to Shopify and never retried: the conversion
+// is lost for good and the cart keeps getting dialled. Every order is therefore
+// written to shopify_order_events FIRST; the cron tick drains whatever is still
+// unprocessed. The unique (organisation_id, order_id) makes redelivery — and
+// orders/create followed by orders/paid for the same order — settle exactly once.
+// =============================================================================
+
+const ORDER_EVENT_MAX_ATTEMPTS = 5;
+const ORDER_EVENT_BATCH = 50;
+
+export interface ShopifyOrderEventInput extends OrderSettlementInput {
+  shopDomain: string;
+  topic: string;
+  orderId: string;
+}
+
+async function markSettled(
+  admin: Admin,
+  eventId: string,
+  attempts: number,
+  args: OrderSettlementInput,
+): Promise<void> {
+  try {
+    await settleRecoveryForOrder(args);
+    await admin
+      .from("shopify_order_events")
+      .update({
+        processed_at: new Date().toISOString(),
+        attempts: attempts + 1,
+        last_error: null,
+      })
+      .eq("id", eventId);
+  } catch (err) {
+    // Leave processed_at null so the tick replays it.
+    await admin
+      .from("shopify_order_events")
+      .update({
+        attempts: attempts + 1,
+        last_error: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+      })
+      .eq("id", eventId);
+    throw err;
+  }
+}
+
+/**
+ * Record an order webhook, then settle it. Idempotent per (org, order): a repeat
+ * delivery inserts nothing and returns without re-settling.
+ */
+export async function recordAndSettleOrder(
+  input: ShopifyOrderEventInput,
+): Promise<void> {
+  const admin = createAdminClient();
+
+  // ON CONFLICT DO NOTHING — .select() returns a row only when WE inserted it.
+  const { data: claimed } = await admin
+    .from("shopify_order_events")
+    .upsert(
+      {
+        organisation_id: input.organisationId,
+        shop_domain: input.shopDomain,
+        order_id: input.orderId,
+        topic: input.topic,
+        checkout_token: input.checkoutToken,
+        cart_token: input.cartToken,
+        phone: input.phone,
+        order_created_at: input.orderCreatedAt,
+        order_number: input.orderNumber ?? null,
+        order_total: input.orderTotal ?? null,
+        order_currency: input.orderCurrency ?? null,
+      },
+      { onConflict: "organisation_id,order_id", ignoreDuplicates: true },
+    )
+    .select("id")
+    .maybeSingle<{ id: string }>();
+
+  // Already seen: either settled, or queued for the tick to retry.
+  if (!claimed) return;
+
+  await markSettled(admin, claimed.id, 0, {
+    organisationId: input.organisationId,
+    checkoutToken: input.checkoutToken,
+    cartToken: input.cartToken,
+    phone: input.phone,
+    orderCreatedAt: input.orderCreatedAt,
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+    orderTotal: input.orderTotal,
+    orderCurrency: input.orderCurrency,
+  });
+}
+
+/**
+ * Replay orders whose settlement never completed. Runs on every recovery tick,
+ * before dispatch — so a cart whose order we just recovered can't be dialled in
+ * the same pass.
+ */
+export async function drainUnsettledOrders(): Promise<number> {
+  const admin = createAdminClient();
+  const { data } = await admin
+    .from("shopify_order_events")
+    .select(
+      "id, organisation_id, order_id, checkout_token, cart_token, phone, order_created_at, order_number, order_total, order_currency, attempts",
+    )
+    .is("processed_at", null)
+    .lt("attempts", ORDER_EVENT_MAX_ATTEMPTS)
+    .order("created_at", { ascending: true })
+    .limit(ORDER_EVENT_BATCH)
+    .returns<
+      Array<{
+        id: string;
+        organisation_id: string;
+        order_id: string;
+        checkout_token: string | null;
+        cart_token: string | null;
+        phone: string | null;
+        order_created_at: string | null;
+        order_number: string | null;
+        order_total: number | null;
+        order_currency: string | null;
+        attempts: number;
+      }>
+    >();
+
+  const pending = data ?? [];
+  if (pending.length === 0) return 0;
+
+  let settled = 0;
+  for (const e of pending) {
+    try {
+      await markSettled(admin, e.id, e.attempts, {
+        organisationId: e.organisation_id,
+        checkoutToken: e.checkout_token,
+        cartToken: e.cart_token,
+        phone: e.phone,
+        orderCreatedAt: e.order_created_at,
+        orderId: e.order_id,
+        orderNumber: e.order_number,
+        orderTotal: e.order_total,
+        orderCurrency: e.order_currency,
+      });
+      settled += 1;
+    } catch {
+      // markSettled already recorded the error; keep draining the rest.
+    }
+  }
+  if (settled > 0) {
+    console.log("[shopify recovery] replayed unsettled orders", { settled });
+  }
+  return settled;
 }
 
 // =============================================================================
@@ -786,7 +1094,7 @@ function storeHost(recoveryUrl: string | null): string {
 //
 // NOTE: completing through this link keeps the checkout_token we stored — but
 // an express/Shop Pay checkout started elsewhere will NOT, which is why
-// cancelRecoveryForOrder also matches on cart_token and phone.
+// settleRecoveryForOrder also matches on cart_token and phone.
 export function buildCheckoutLink(
   recoveryUrl: string | null,
   offerCode: string | null,
@@ -884,6 +1192,9 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
   const admin = createAdminClient();
   const nowIso = new Date().toISOString();
 
+  // Replay any order whose settlement failed BEFORE selecting what to dial —
+  // otherwise a shopper whose order we lost gets called again this very tick.
+  await drainUnsettledOrders();
   await reconcileStuckRecoveries(admin);
 
   const { data, error } = await admin
@@ -892,7 +1203,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
       "id, organisation_id, lead_id, phone, agent_id, from_phone, attempt, max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, short_token, cart_items, offer_label, offer_code, offer_code_spoken, offer_discount_value, offer_discount_kind",
     )
     .eq("status", "pending")
-    // Never dial a cart that already converted. cancelRecoveryForOrder normally
+    // Never dial a cart that already converted. settleRecoveryForOrder normally
     // flips these to `canceled`, but guard here too so an order landing mid-tick
     // can't slip a dial through against a shopper who already bought.
     .is("converted_at", null)

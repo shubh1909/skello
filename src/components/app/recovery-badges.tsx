@@ -9,6 +9,7 @@ import {
 import type {
   RecoveryAttemptStatus,
   RecoveryMessageStatus,
+  RecoveryOutcome,
   RecoveryWhatsAppTrackStatus,
 } from "@/types/shopify";
 
@@ -459,25 +460,30 @@ export function OutreachStatus(props: OutreachInput) {
   );
 }
 
+// Reads the stamped recovery_outcome — the single source of truth, set once at
+// settlement so the badge never re-derives "was this ours" from timing.
+//
+// The by-us / organic split is deliberately NOT shown: a recovered cart reads as
+// one "Recovered" state regardless of which channel brought it back. The
+// distinction still lives on the row (recovery_outcome) for our own reporting.
 export function CartOutcomeBadge({
   convertedAt,
-  attributed,
+  outcome,
 }: {
   convertedAt: string | null;
-  attributed?: boolean;
+  outcome?: RecoveryOutcome | null;
 }) {
   if (!convertedAt) {
     return <Badge className="bg-muted text-muted-foreground">Abandoned</Badge>;
   }
-  if (attributed) {
+  // Never abandoned in the first place — a straight-through purchase.
+  if (outcome === "instant_sale") {
     return (
-      <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
-        Recovered · by us
-      </Badge>
+      <Badge className="bg-muted text-muted-foreground">Bought · not abandoned</Badge>
     );
   }
   return (
-    <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300">
+    <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
       Recovered
     </Badge>
   );
