@@ -180,6 +180,82 @@ export function normalizeAbandonedCheckout(
   };
 }
 
+// What the COD-confirmation subsystem pulls from an orders/* payload. Kept in a
+// separate shape from OrderRecoveryKeys: COD confirmation is its own section and
+// reads payment-gateway fields that cart recovery never looks at.
+export interface OrderCodKeys {
+  orderId: string | null;
+  phone: string | null;
+  customerName: string | null;
+  orderName: string | null;
+  orderTotal: number | null;
+  orderCurrency: string | null;
+  orderCreatedAt: string | null;
+  // Payment signals used to detect COD (see cod-confirmation-logic.isCodOrder).
+  gateway: string | null;
+  paymentGatewayNames: string[];
+  financialStatus: string | null;
+}
+
+// Pull the fields the COD-confirmation flow needs from an orders/* payload,
+// including the payment-gateway labels (`gateway`, `payment_gateway_names`) and
+// `financial_status` that identify a Cash-on-Delivery order. Read defensively;
+// a malformed payload yields nulls and the caller refuses to enqueue.
+export function orderCodKeys(payload: unknown): OrderCodKeys {
+  const none: OrderCodKeys = {
+    orderId: null,
+    phone: null,
+    customerName: null,
+    orderName: null,
+    orderTotal: null,
+    orderCurrency: null,
+    orderCreatedAt: null,
+    gateway: null,
+    paymentGatewayNames: [],
+    financialStatus: null,
+  };
+  if (!payload || typeof payload !== "object") return none;
+  const p = payload as Json;
+  const customer = (p.customer as Json | undefined) ?? {};
+  const shipping = (p.shipping_address as Json | undefined) ?? {};
+  const billing = (p.billing_address as Json | undefined) ?? {};
+
+  const rawId = p.id;
+  const orderId =
+    typeof rawId === "number" && Number.isFinite(rawId)
+      ? String(rawId)
+      : asString(rawId);
+
+  const nameParts = [
+    asString(customer.first_name),
+    asString(customer.last_name),
+  ].filter(Boolean);
+  const customerName =
+    nameParts.length > 0 ? nameParts.join(" ") : asString(shipping.name);
+
+  const gatewayNames = Array.isArray(p.payment_gateway_names)
+    ? p.payment_gateway_names
+        .map((g) => asString(g))
+        .filter((g): g is string => g !== null)
+    : [];
+
+  return {
+    orderId,
+    phone: firstPhone(p.phone, customer.phone, shipping.phone, billing.phone),
+    customerName,
+    orderName:
+      asString(p.name) ??
+      (typeof p.order_number === "number" ? `#${p.order_number}` : null),
+    orderTotal: numeric(p.current_total_price) ?? numeric(p.total_price),
+    orderCurrency:
+      asString(p.presentment_currency) ?? asString(p.currency),
+    orderCreatedAt: asString(p.created_at),
+    gateway: asString(p.gateway),
+    paymentGatewayNames: gatewayNames,
+    financialStatus: asString(p.financial_status),
+  };
+}
+
 export interface OrderRecoveryKeys {
   // Shopify's numeric order id as text. The idempotency key for settlement —
   // null only for a malformed payload, which we then refuse to process.

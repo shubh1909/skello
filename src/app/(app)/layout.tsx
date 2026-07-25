@@ -1,5 +1,4 @@
 import { countLeadCallActivity } from "@/actions/lead-activity";
-import { isCartRecoveryActive } from "@/actions/shopify-recovery";
 import { requireSession } from "@/lib/auth/session";
 import { Topbar } from "@/components/app/topbar";
 import { SidebarNav } from "@/components/app/sidebar-nav";
@@ -16,13 +15,10 @@ export default async function AppLayout({
 }) {
   const session = await requireSession();
 
-  const [uniqueResult, cartRecoveryActive] = await Promise.all([
-    countLeadCallActivity({
-      org_slug: session.organisation.slug,
-      include_zero_calls: true,
-    }),
-    isCartRecoveryActive(),
-  ]);
+  const uniqueResult = await countLeadCallActivity({
+    org_slug: session.organisation.slug,
+    include_zero_calls: true,
+  });
   const uniqueLeadCount = uniqueResult.success ? uniqueResult.data : 0;
 
   return (
@@ -32,7 +28,6 @@ export default async function AppLayout({
           organisationName={session.organisation.name}
           organisationSlug={session.organisation.slug}
           uniqueLeadCount={uniqueLeadCount}
-          cartRecoveryActive={cartRecoveryActive}
         />
         <div className="flex min-w-0 flex-col">
           <Topbar

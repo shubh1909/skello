@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   ArrowLeftIcon,
   ChevronRightIcon,
+  PackageCheckIcon,
   ShoppingCartIcon,
 } from "lucide-react";
 
@@ -43,6 +44,12 @@ export default async function CampaignTemplatesPage() {
           title="Cart Recovery"
           description="Automatically call shoppers who abandon checkout on your Shopify store and win the sale back with an offer."
           icon={<ShoppingCartIcon className="size-5" />}
+        />
+        <TemplateCard
+          href="/campaigns/templates/cod-confirmation"
+          title="COD Confirmation"
+          description="Automatically call shoppers who place a Cash-on-Delivery order to reconfirm the order and payment method before you ship."
+          icon={<PackageCheckIcon className="size-5" />}
         />
       </div>
     </div>

@@ -7,6 +7,7 @@ import {
   clientIpFromRequest,
   tooManyRequestsResponse,
 } from "@/lib/rate-limit";
+import { enqueueCodConfirmation } from "@/lib/shopify/cod-confirmation";
 import { resolveShopifyIntegrationByShop } from "@/lib/shopify/integration";
 import {
   recordAndSettleOrder,
@@ -84,19 +85,39 @@ export async function POST(request: NextRequest) {
           warnSkelo("SHOPIFY", "Order webhook without an id", { shop, topic });
           return;
         }
-        await recordAndSettleOrder({
-          organisationId: integration.organisation_id,
-          shopDomain: integration.shop_domain,
-          topic,
-          orderId: keys.orderId,
-          checkoutToken: keys.checkoutToken,
-          cartToken: keys.cartToken,
-          phone: keys.phone,
-          orderCreatedAt: keys.orderCreatedAt,
-          orderNumber: keys.orderNumber,
-          orderTotal: keys.orderTotal,
-          orderCurrency: keys.orderCurrency,
-        });
+        // Two independent consumers of the same order event: cart-recovery
+        // settlement and COD-confirmation enqueue. Each is wrapped so one
+        // failing can't skip the other — they are separate subsystems.
+        try {
+          await recordAndSettleOrder({
+            organisationId: integration.organisation_id,
+            shopDomain: integration.shop_domain,
+            topic,
+            orderId: keys.orderId,
+            checkoutToken: keys.checkoutToken,
+            cartToken: keys.cartToken,
+            phone: keys.phone,
+            orderCreatedAt: keys.orderCreatedAt,
+            orderNumber: keys.orderNumber,
+            orderTotal: keys.orderTotal,
+            orderCurrency: keys.orderCurrency,
+          });
+        } catch (err) {
+          logSkeloError("SHOPIFY", "Order settlement failed", {
+            shop,
+            topic,
+            cause: err,
+          });
+        }
+        try {
+          await enqueueCodConfirmation({ integration, payload });
+        } catch (err) {
+          logSkeloError("SHOPIFY", "COD confirmation enqueue failed", {
+            shop,
+            topic,
+            cause: err,
+          });
+        }
       }
     } catch (err) {
       logSkeloError("SHOPIFY", "Webhook processing failed", {
