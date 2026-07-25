@@ -1,10 +1,11 @@
 import "server-only";
 
-import type { BolnaLeadPayload } from "@/lib/bolna/extract";
+import { pickValue, toBoolean, type BolnaLeadPayload } from "@/lib/bolna/extract";
 import { mapStatus, writeTranscriptTurns } from "@/lib/bolna/inbound";
 import { mergePayloadIntoLead } from "@/lib/bolna/lead-merge";
 import { applyScheduledCallbackOutcome } from "@/lib/callbacks/outcome";
 import { applyCampaignContactOutcome } from "@/lib/campaigns/outcome";
+import { applyCodConfirmationOutcome } from "@/lib/shopify/cod-confirmation";
 import { applyShopifyRecoveryOutcome } from "@/lib/shopify/recovery";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveOrgByAgentId } from "@/lib/bolna/routing";
@@ -44,7 +45,7 @@ export async function recordOutboundResult(
   // planner returned first.
   const { data: matches, error: findErr } = await admin
     .from("calls")
-    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id")
+    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id, cod_confirmation_id")
     .eq("bolna_call_id", externalId)
     .limit(2)
     .returns<
@@ -56,6 +57,7 @@ export async function recordOutboundResult(
         campaign_contact_id: string | null;
         scheduled_callback_id: string | null;
         shopify_recovery_attempt_id: string | null;
+        cod_confirmation_id: string | null;
       }>
     >();
 
@@ -272,6 +274,27 @@ export async function recordOutboundResult(
     }
   }
 
+  // Finalise a COD confirmation dial. Reaching the customer records the
+  // extracted `confirmed` (yes/no) disposition and ends the flow; a non-connect
+  // under the cap re-dials. The disposition is read straight from the extracted
+  // payload — it isn't a first-class lead field, so it never gets a snapshot
+  // column; connectivity alone drives the retry.
+  if (call.cod_confirmation_id) {
+    try {
+      const confirmed = toBoolean(
+        pickValue(payload.extracted_data?.lead_data?.confirmed),
+      );
+      await applyCodConfirmationOutcome({
+        confirmationId: call.cod_confirmation_id,
+        callId: call.id,
+        callStatus: status,
+        confirmed,
+      });
+    } catch (err) {
+      console.error("[outbound] cod confirmation outcome failed", err);
+    }
+  }
+
   return {
     callId: call.id,
     transcriptStatus: finalStatus,
@@ -293,6 +316,7 @@ async function bootstrapDirectOutboundCall(
   campaign_contact_id: string | null;
   scheduled_callback_id: string | null;
   shopify_recovery_attempt_id: string | null;
+  cod_confirmation_id: string | null;
 } | null> {
   const agentId = payload.agent_id?.trim();
   if (!agentId) return null;
@@ -326,7 +350,7 @@ async function bootstrapDirectOutboundCall(
       status: "initiated",
       ...(startedAt ? { started_at: startedAt } : {}),
     })
-    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id")
+    .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id, cod_confirmation_id")
     .single<{
       id: string;
       organisation_id: string;
@@ -335,6 +359,7 @@ async function bootstrapDirectOutboundCall(
       campaign_contact_id: string | null;
       scheduled_callback_id: string | null;
       shopify_recovery_attempt_id: string | null;
+      cod_confirmation_id: string | null;
     }>();
 
   if (!insertErr && inserted) return inserted;
@@ -343,7 +368,7 @@ async function bootstrapDirectOutboundCall(
   if (insertErr?.code === "23505") {
     const { data: refetched } = await admin
       .from("calls")
-      .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id")
+      .select("id, organisation_id, lead_id, is_test, campaign_contact_id, scheduled_callback_id, shopify_recovery_attempt_id, cod_confirmation_id")
       .eq("organisation_id", route.organisationId)
       .eq("bolna_call_id", externalId)
       .maybeSingle<{
@@ -354,6 +379,7 @@ async function bootstrapDirectOutboundCall(
         campaign_contact_id: string | null;
         scheduled_callback_id: string | null;
         shopify_recovery_attempt_id: string | null;
+        cod_confirmation_id: string | null;
       }>();
     if (refetched) return refetched;
   }

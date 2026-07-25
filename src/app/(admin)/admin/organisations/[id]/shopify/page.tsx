@@ -3,8 +3,10 @@ import { notFound } from "next/navigation";
 import { ArrowLeftIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CodAgentForm } from "@/components/admin/cod-agent-form";
 import { ShopifyConnectForm } from "@/components/admin/shopify-connect-form";
+import { getCodAgentAdmin } from "@/actions/admin/cod-confirmation";
 import { getOrganisationAdmin } from "@/actions/admin/organisations";
 import { getShopifyIntegrationStatus } from "@/actions/admin/shopify";
 import { requireAdmin } from "@/lib/auth/admin";
@@ -21,9 +23,10 @@ export default async function AdminOrganisationShopifyPage({
   await requireAdmin();
   const { id } = await params;
 
-  const [orgRes, statusRes] = await Promise.all([
+  const [orgRes, statusRes, codAgentRes] = await Promise.all([
     getOrganisationAdmin(id),
     getShopifyIntegrationStatus({ organisation_id: id }),
+    getCodAgentAdmin(id),
   ]);
 
   if (!orgRes.success) {
@@ -66,6 +69,25 @@ export default async function AdminOrganisationShopifyPage({
       </header>
 
       <ShopifyConnectForm organisationId={org.id} status={status} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>COD Confirmation</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Pick the voice agent that calls Cash-on-Delivery customers to
+            reconfirm their order. The workspace owner controls timing and the
+            on/off switch under Campaigns → COD Confirmation; the agent is set
+            here.
+          </p>
+        </CardHeader>
+        <CardContent>
+          {codAgentRes.success ? (
+            <CodAgentForm organisationId={org.id} data={codAgentRes.data} />
+          ) : (
+            <p className="text-sm text-destructive">{codAgentRes.error}</p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   LayoutGridIcon,
   LogOutIcon,
   MessageCircleIcon,
+  PackageCheckIcon,
   RadioIcon,
   SettingsIcon,
   ShoppingCartIcon,
@@ -31,12 +32,20 @@ type NavItem = {
   children?: readonly NavItem[];
 };
 
-// The Cart Recovery sub-item is only shown when the feature is switched on.
-const CART_RECOVERY_SUBITEM: NavItem = {
-  href: "/campaigns/templates/cart-recovery",
-  label: "Cart Recovery",
-  icon: ShoppingCartIcon,
-};
+// Cart Recovery and COD Confirmation are permanently mounted as Campaigns
+// sub-items. They are independent engines, surfaced side by side under Campaigns.
+const CAMPAIGN_SUBITEMS: readonly NavItem[] = [
+  {
+    href: "/campaigns/templates/cart-recovery",
+    label: "Cart Recovery",
+    icon: ShoppingCartIcon,
+  },
+  {
+    href: "/campaigns/templates/cod-confirmation",
+    label: "COD Confirmation",
+    icon: PackageCheckIcon,
+  },
+];
 
 type NavSection = {
   label: string;
@@ -86,23 +95,21 @@ export function SidebarNav({
   organisationName,
   organisationSlug,
   uniqueLeadCount,
-  cartRecoveryActive = false,
 }: {
   organisationName: string;
   organisationSlug: string;
   uniqueLeadCount: number;
-  cartRecoveryActive?: boolean;
 }) {
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
   const { collapsed } = useAppShell();
 
-  // Inject the Cart Recovery sub-item under Campaigns only when it's live.
+  // Cart Recovery and COD Confirmation are permanently mounted under Campaigns.
   const sections: readonly NavSection[] = SECTIONS.map((section) => ({
     ...section,
     items: section.items.map((item) =>
-      item.href === "/campaigns" && cartRecoveryActive
-        ? { ...item, children: [CART_RECOVERY_SUBITEM] }
+      item.href === "/campaigns"
+        ? { ...item, children: CAMPAIGN_SUBITEMS }
         : item,
     ),
   }));
