@@ -162,6 +162,200 @@ Two simple flows, both mirroring how our phone calls already work.
 
 ---
 
+## 4. Tokens vs. approval — two things people confuse
+
+These are **completely separate**, and mixing them up causes bad planning.
+
+### Getting a long-lived token is just an extra API call
+
+When an org logs in, we first get a **short-lived token** (valid ~1 hour). We then make **one
+more API call** that swaps it for a **long-lived token** (valid ~60 days), and a background job
+refreshes it before it expires. That's the whole story.
+
+**This has nothing to do with Meta's approval.** We can get a full long-lived token today, with
+zero review, for any account we control. Approval is *not* the price of a long-lived token.
+
+### Approval is about *who is allowed to connect*, not about tokens
+
+- **Development mode** (the default, no review): the login + long-lived-token flow works fully —
+  but **only for Instagram accounts we've personally added to our app** (us + our beta testers).
+  Random members of the public are blocked at the login screen.
+- **Live mode** (after approval): the login screen works for **anyone**, so real customers can
+  connect themselves.
+
+The token mechanism never changes between the two. **Only the guest list changes.**
+
+| | Long-lived token? | Which accounts can connect? |
+| --- | --- | --- |
+| **Development mode** (today, no review) | ✅ Full 60-day token | Only accounts we've added (us + testers) |
+| **Live mode** (after approval) | ✅ Same token | Anyone — real customers, self-serve |
+
+---
+
+## 5. The connection flow, step by step
+
+This is identical in Development and Live mode — the only difference is whether the connecting
+account is on our allow-list yet.
+
+```
+1. Org owner clicks "Connect Instagram" in Skelo Settings
+        │
+2. Popup opens on instagram.com — they log in and see:
+     "Skelo wants to: read messages, manage comments, send messages"
+     → they tap Allow
+        │
+3. Instagram redirects back to us with a temporary "code"
+        │
+4. [server-side] We swap the code → SHORT-lived token   (~1 hour)
+        │
+5. [server-side] We immediately swap short → LONG-lived token  (~60 days)
+        │   ← the "extra API call". No approval involved.
+        │
+6. [server-side] We tell Instagram to send this account's DMs/comments to our webhook
+        │
+7. [server-side] We store the long token (encrypted) under that org's row
+        │
+8. Owner sees "✅ Connected as @theirhandle" + a "send test DM" button
+        │
+9. [background, forever] A refresh job renews the token before it expires
+```
+
+Steps 4–5 are the token dance — always available, no gatekeeping. The only real gate is step 2:
+in Development mode, an account that isn't on our allow-list is refused there. Approval removes
+that gate for everyone.
+
+**Important:** we require the org to have an Instagram **Professional** account (Business or
+Creator). Personal accounts can't be connected. Onboarding should detect this and walk the owner
+through the free in-app conversion, instead of letting the login fail with a confusing error.
+
+---
+
+## 6. Testing: how many accounts, and what's real
+
+While the app is in Development mode, the accounts that can connect are the ones we add by hand
+under **Roles**, as **Instagram Testers**. We enter each handle; the owner accepts an invite from
+their own Instagram settings.
+
+- They must be **real Instagram Professional accounts**, added one at a time.
+- The cap is **generous — dozens, easily enough for a private beta.** It is *not* a tiny number
+  like 3–5.
+- Testers get the **full, real product**: real long-lived token, real webhooks, real DMs, real
+  comment replies. It is not a crippled sandbox.
+
+> Verify the exact current numeric cap against Meta's live docs before planning a *large* beta —
+> Meta adjusts these — but for "us + 10–20 friendly beta orgs," we're comfortably within limits.
+
+The upshot: we can build and fully test the **entire** feature right now, no approval, using a
+few of our own Professional accounts plus our beta testers.
+
+---
+
+## 7. The road to production (verification & review)
+
+Getting to "any org can connect themselves" is a checklist with **two tracks that run in
+parallel**, neither of which blocks engineering (we build in Development mode the whole time).
+
+**Track A — Business Verification** (proves *Skelo the company* is real)
+
+- Done in Meta Business settings: legal business name, address, a document or two, plus
+  phone/domain verification.
+- **Timeline: a few days to ~2 weeks.** Pure paperwork with a slow queue.
+
+**Track B — App Review** (proves *our use of each permission* is legitimate)
+
+- **Prerequisites we set up first:** a public **Privacy Policy** URL, a **Data Deletion**
+  callback/instructions, app icon, category, and a clear use-case description.
+- **Submit each permission** we need, with evidence:
+  - `instagram_business_basic`
+  - `instagram_business_manage_messages` (DMs)
+  - `instagram_business_manage_comments` (comment automation)
+  - `instagram_business_content_publish` (only if we auto-post / publicly reply)
+- Each needs a **screencast** of the real end-to-end flow (org connects → a DM arrives → we
+  reply), **step-by-step reviewer instructions**, and sometimes a **test login**.
+- **Timeline: a few days to ~2 weeks per round, expect 1–2 rounds** of back-and-forth. Normal,
+  not a failure.
+
+**Then — flip to Live.** Once Business Verification is done **and** the permissions come back
+with **Advanced Access granted**, one toggle removes the allow-list and real customers can
+self-serve. No further per-org approval after that.
+
+### Realistic timeline
+
+```
+Week 0        Build in Dev mode with our own tester accounts (full product)
+Week 0 ──┐    Start Business Verification  ─────────────┐  (parallel)
+         └──  Prep privacy policy + data deletion       │
+Week 2-3      Record screencasts, submit App Review     │
+Week 3-5      Handle 1-2 rounds of reviewer feedback ◄──┘
+Week 4-6      Advanced Access granted → flip to Live → public onboarding
+```
+
+**~4–6 weeks of calendar time to production, almost none of it blocking the build.** The two
+long poles are out of our control: **Business Verification** and a clean **screencast**. Start
+Business Verification on **day one** — it's slow, needs nothing from the finished product, and is
+the item most likely to silently delay launch.
+
+---
+
+## 8. Could we onboard real clients the "tester" way and skip approval?
+
+Short answer: **yes for a handful, as a temporary bridge — but it is not a real launch path, and
+we should not lean on it.**
+
+Mechanically it works. Accounts we add under **Roles** (tester/developer/admin) get **Standard
+Access** to the permissions and can use the full product **without App Review**. So we *could*
+manually add our first few paying design-partners as Instagram Testers and serve them for real,
+today, with no approval.
+
+Where it breaks down:
+
+- **It doesn't scale.** Every client must be added by hand *and* accept a tester invite from deep
+  inside their own Instagram settings — clunky, and definitely not self-serve.
+- **There's a cap.** Role-based users top out at a few dozen; past that, it simply stops.
+- **Lower limits.** Standard Access generally carries tighter rate limits than the Advanced Access
+  you get after review.
+- **It's against the spirit of the platform.** Tester roles exist for *development*. Using them to
+  run a production business is a way of dodging review, and Meta can treat that as circumvention —
+  a risk to the whole app if enforced.
+
+**How to use it:** as a **pilot / private-beta bridge** for our first design-partners while
+Business Verification and App Review are in flight. It lets us earn revenue and gather the exact
+screencast footage review needs. **Do not** treat it as the permanent go-to-market — get approved
+and flip to Live for real launch.
+
+---
+
+## 9. The real challenges (what bites in production)
+
+Roughly in order of how much they'll hurt:
+
+1. **Rate limits are pooled at the *app* level, not per-org.** Instagram's messaging quota is
+   shared across every connected account. One noisy tenant — or a viral post spawning thousands of
+   comments — can degrade everyone. We need per-org throttling, a priority queue, and monitoring on
+   our remaining quota. Architecturally the most important thing to get right early.
+2. **The 24-hour window + policy.** We can freely message a user only within 24h of *their* last
+   message. Outside it the options are narrow — there's no Instagram equivalent of WhatsApp's cold
+   broadcast templates. The sender tracks last-inbound-per-user-per-org and refuses (with a clear
+   reason) anything that would violate the window.
+3. **Comment automation is policy-constrained.** Meta is stricter on public comments than on DMs.
+   The blessed pattern is exactly our funnel: reply to a comment once, then move to DM. Design
+   toward that, don't fight it.
+4. **Token lifecycle at scale.** 60-day tokens across many orgs means a refresh job plus graceful
+   handling of revocation (password change, app removed, account downgraded to personal). A dead
+   token should surface as "reconnect needed" in that org's Settings, never a silent drop.
+5. **Account-type gating at connect time.** Only Professional accounts work; many owners have
+   personal accounts. Detect and guide conversion inline, or "Connect" fails mysteriously.
+6. **RAG latency and correctness.** Webhook → retrieve context → LLM → reply is a live loop inside
+   the 24h window and against rate limits. Needs dedup (Meta redelivers), fast retrieval, a fallback
+   when the model is slow/uncertain, and a guardrail so the bot never promises beyond the org's
+   knowledge base. The RAG index is **per-org** — fits our tenancy model, but means an
+   ingestion/embedding pipeline per org.
+7. **Webhook demux and ordering.** One app webhook receives events for *all* connected accounts. We
+   resolve the org from the trusted Instagram account ID in the payload — never from anything the
+   message claims — and handle duplicate / out-of-order delivery.
+
+---
+
 ## Bottom line
 
 The option that *looks* cheapest — renting a tool — is actually the most expensive in lost

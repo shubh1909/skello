@@ -263,7 +263,12 @@ export async function getRecoveryOverview(): Promise<
   //     abandoned yet (Shopify wouldn't count it)
   //   • not converted — a bought cart is either a recovery (its own tile) or an
   //     instant sale (never abandoned); neither belongs in "open abandoned"
-  // Excludes `skipped` (no phone / no channel — never actioned).
+  // Excludes `skipped` (no phone / no channel — never actioned) AND `canceled`.
+  // A `canceled` row is a cart whose outreach we deliberately STOPPED: the buyer
+  // bought a DIFFERENT cart (settlement cancels their other live carts, leaving
+  // converted_at null on the siblings) or recovery was switched off. Neither is
+  // an open opportunity, so counting them here double-showed a recovered buyer
+  // as still-abandoned.
   const abandonedCutoff = new Date(
     Date.now() - ABANDONMENT_THRESHOLD_MINUTES * 60_000,
   ).toISOString();
@@ -272,6 +277,7 @@ export async function getRecoveryOverview(): Promise<
     .select("id", { count: "exact", head: true })
     .eq("organisation_id", orgId)
     .neq("status", "skipped")
+    .neq("status", "canceled")
     .not("phone", "is", null)
     .is("converted_at", null)
     .lte("created_at", abandonedCutoff);
@@ -797,6 +803,12 @@ export async function getAbandonedCarts(
   // progress), and a converted cart is either a recovery or an instant sale —
   // neither is an "open abandoned cart". This is what stopped normal purchases
   // (e.g. a checkout that paid within a minute) from showing here.
+  //
+  // Also excludes `canceled`: a cart whose outreach we stopped because the buyer
+  // bought a DIFFERENT cart (settlement cancels their other live carts, which
+  // keep converted_at null) or because recovery was switched off. Without this,
+  // a recovered buyer's sibling cart lingered here as "still abandoned" while
+  // their bought cart correctly sat under Converted.
   const ascending = parsed.data.sort === "asc";
   const abandonedCutoff = new Date(
     Date.now() - ABANDONMENT_THRESHOLD_MINUTES * 60_000,
@@ -806,6 +818,7 @@ export async function getAbandonedCarts(
     .select(ATTEMPT_COLUMNS, { count: "exact" })
     .eq("organisation_id", session.organisation.id)
     .neq("status", "skipped")
+    .neq("status", "canceled")
     .not("phone", "is", null)
     .is("converted_at", null)
     .lte("created_at", abandonedCutoff);
