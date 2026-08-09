@@ -18,7 +18,7 @@ export function DailyBarChart({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
-        <span className="inline-block size-2.5 rounded-sm bg-primary" />
+        <span className="inline-block size-2.5 rounded-sm bg-chart-1" />
         <span>{seriesLabel}</span>
       </div>
 
@@ -35,7 +35,7 @@ export function DailyBarChart({
               >
                 <div
                   className={cn(
-                    "w-full rounded-t-sm bg-primary transition-opacity",
+                    "w-full rounded-t-sm bg-chart-1 transition-opacity",
                     pct === 0 && "opacity-10",
                   )}
                   style={{ height: `${pct}%` }}

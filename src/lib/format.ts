@@ -12,6 +12,46 @@ export function initialsOf(name: string | null | undefined): string {
   return parts.map((p) => p[0]?.toUpperCase() ?? "").join("") || "?";
 }
 
+/**
+ * Pick one of the eight muted avatar tones for a name, deterministically.
+ *
+ * Returns the **surface and its foreground together** — `bg-avatar-3 text-white`
+ * — because the two are not independent choices: the tones are dark enough to
+ * need white on top, and a caller pairing one with `text-muted-foreground`
+ * would land at about 1.5:1. Tailwind classes rather than a number, so the
+ * values stay in globals.css, and written out in full because Tailwind scans
+ * source *text* — `bg-avatar-${n}` produces no CSS at all.
+ *
+ * Deterministic on purpose: the same person keeps their colour across the
+ * table, the detail sheet and the pulse list, which is what makes it read as
+ * identity rather than decoration.
+ *
+ * An unknown name gets the neutral surface rather than tone 1 — otherwise every
+ * unnamed lead in a table shares a colour and looks like the same person.
+ */
+const AVATAR_TONES = [
+  "bg-avatar-1 text-white",
+  "bg-avatar-2 text-white",
+  "bg-avatar-3 text-white",
+  "bg-avatar-4 text-white",
+  "bg-avatar-5 text-white",
+  "bg-avatar-6 text-white",
+  "bg-avatar-7 text-white",
+  "bg-avatar-8 text-white",
+] as const;
+
+export function avatarTone(seed: string | null | undefined): string {
+  const key = seed?.trim();
+  if (!key) return "bg-muted text-muted-foreground";
+  // djb2-ish. Any stable hash works; this one is short and has no collisions
+  // worth caring about across eight buckets.
+  let hash = 5381;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) + hash + key.charCodeAt(i)) | 0;
+  }
+  return AVATAR_TONES[Math.abs(hash) % AVATAR_TONES.length];
+}
+
 export function formatRelative(
   iso: string | null | undefined,
   now: number = Date.now(),
@@ -34,6 +74,26 @@ export function formatRelative(
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+/**
+ * The compact variant: "Aug 8, 2:30 PM" — no year.
+ *
+ * A separate function rather than an option on `formatDateTime`, because the
+ * two are used in different places for a reason: a table column needs the
+ * narrow one to keep its width, a detail panel needs the year. `conversations-table.tsx`
+ * carried its own byte-identical copy of this.
+ */
+export function formatDateTimeShort(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d);
 }
 
 export function formatDateTime(iso: string | null | undefined): string {

@@ -1,7 +1,11 @@
 import { ShieldCheckIcon } from "lucide-react";
 
+import {
+  DataTableCard,
+  DataTableHead,
+} from "@/components/app/data-table";
+import { ErrorCard } from "@/components/app/error-card";
 import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
 import { UserRowActions } from "@/components/admin/user-row-actions";
 import { requireAdmin } from "@/lib/auth/admin";
 import { listAllUsers } from "@/actions/admin/users";
@@ -14,9 +18,9 @@ export default async function AdminUsersPage() {
   const result = await listAllUsers();
   if (!result.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {result.error}
-      </Card>
+      </ErrorCard>
     );
   }
   const users = result.data;
@@ -33,7 +37,7 @@ export default async function AdminUsersPage() {
         </p>
       </header>
 
-      <Card className="overflow-hidden p-0">
+      <DataTableCard>
         {users.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
             <ShieldCheckIcon className="size-5 text-muted-foreground" />
@@ -42,22 +46,20 @@ export default async function AdminUsersPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="border-b border-border/60 bg-muted/30">
-                <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  <th scope="col" className="px-3 py-3 font-medium">
-                    Email
-                  </th>
-                  <th scope="col" className="px-3 py-3 font-medium">
-                    Role
-                  </th>
-                  <th scope="col" className="px-3 py-3 font-medium">
-                    Joined
-                  </th>
-                  <th scope="col" className="px-3 py-3 text-right font-medium">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
+              <DataTableHead>
+                <th scope="col" className="px-3 py-3 font-medium">
+                  Email
+                </th>
+                <th scope="col" className="px-3 py-3 font-medium">
+                  Role
+                </th>
+                <th scope="col" className="px-3 py-3 font-medium">
+                  Joined
+                </th>
+                <th scope="col" className="px-3 py-3 text-right font-medium">
+                  Actions
+                </th>
+              </DataTableHead>
               <tbody className="divide-y divide-border/60">
                 {users.map((u) => (
                   <tr
@@ -97,7 +99,7 @@ export default async function AdminUsersPage() {
             </table>
           </div>
         )}
-      </Card>
+      </DataTableCard>
     </div>
   );
 }

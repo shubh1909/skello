@@ -7,6 +7,8 @@ import {
   XCircleIcon,
 } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
+import { SectionLabel } from "@/components/app/section-label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -20,9 +22,9 @@ export default async function AdminOverviewPage() {
   const result = await listAllOrganisations({ limit: 10, offset: 0 });
   if (!result.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {result.error}
-      </Card>
+      </ErrorCard>
     );
   }
 
@@ -36,9 +38,9 @@ export default async function AdminOverviewPage() {
   return (
     <div className="flex flex-col gap-6">
       <header className="space-y-1.5">
-        <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+        <SectionLabel as="p">
           Admin console
-        </p>
+        </SectionLabel>
         <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
           Overview
         </h1>

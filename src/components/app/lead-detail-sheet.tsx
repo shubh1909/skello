@@ -1,9 +1,10 @@
 "use client";
 
+import { humaniseFieldKey } from "@/lib/format/keys";
+import { formatDurationCompact } from "@/lib/format/duration";
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowLeftIcon,
   BellPlusIcon,
   CheckIcon,
   ClockIcon,
@@ -17,10 +18,28 @@ import {
   PhoneOutgoingIcon,
   Trash2Icon,
   XIcon,
+  MoreHorizontalIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  DetailSheetPanel,
+  DetailSheetShell,
+} from "@/components/app/detail-sheet";
+import {
+  CallSplitView,
+  CapturedFieldGroups,
+} from "@/components/app/call-detail";
+import { EntityAvatar } from "@/components/app/entity-avatar";
+import { PendingActionBadge } from "@/components/app/pending-action-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -34,59 +53,53 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { LeadFieldLock } from "@/components/app/lead-field-lock";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { listReminders } from "@/actions/reminders";
 import { listCalls } from "@/actions/calls";
-import { listCallTranscript } from "@/actions/call-transcripts";
 import { updateLead } from "@/actions/leads";
+import { formatDateTime, formatRelative } from "@/lib/format";
 import {
-  formatDateTime,
-  formatRelative,
-  fromLocalDateTimeInput,
-  initialsOf,
-  toLocalDateTimeInputValue,
-} from "@/lib/format";
-import { cn } from "@/lib/utils";
+  LEAD_DATA_SURFACED,
+  buildCustomFieldGroups,
+  pickLeadDataExtras,
+} from "@/lib/leads/captured-fields";
+import {
+  buildEffectiveCustomData,
+  buildEffectiveLeadData,
+} from "@/lib/leads/effective-data";
+import {
+  buildCapturedForm,
+  diffCapturedForm,
+  isCapturedPatchEmpty,
+  pickEditableCatalog,
+  type CapturedForm,
+} from "@/lib/leads/captured-form";
+import {
+  diffForm,
+  leadToForm,
+  type EditForm,
+} from "@/lib/leads/lead-form";
+import { INTENT_LABEL, INTENT_VARIANT } from "@/lib/leads/intent";
 import { useClientNow } from "@/hooks/use-client-now";
-import type { Lead, LeadIntent, LeadSource, LeadStatus } from "@/types/lead";
+import type { Lead, LeadIntent } from "@/types/lead";
 import type { LeadFieldDefinition } from "@/types/lead-field-definition";
 import type { Reminder } from "@/types/reminder";
 import type { Call, CallStatus } from "@/types/call";
-import type {
-  CallTranscriptTurn,
-  CallTurnSpeaker,
-} from "@/types/call-transcript";
+
+type LeadTab = "summary" | "calls" | "activity";
+
+/**
+ * The Summary panel's edit draft.
+ *
+ * Both halves are seeded together and saved together, so they can't disagree
+ * about which lead they belong to or be half-committed.
+ */
+interface LeadDraft {
+  details: EditForm;
+  captured: CapturedForm;
+}
 
 const CALLS_PAGE_SIZE = 20;
 const DEFAULT_VISIBLE_CALLS = 8;
-
-const SPEAKER_LABEL: Record<CallTurnSpeaker, string> = {
-  agent: "Agent",
-  user: "Caller",
-  system: "System",
-};
-
-const INTENT_VARIANT: Record<
-  LeadIntent,
-  "destructive" | "secondary" | "outline"
-> = {
-  hot: "destructive",
-  warm: "secondary",
-  cold: "outline",
-};
-
-const INTENT_LABEL: Record<LeadIntent, string> = {
-  hot: "Hot",
-  warm: "Warm",
-  cold: "Cold",
-};
 
 const CALL_STATUS_VARIANT: Record<
   CallStatus,
@@ -151,25 +164,34 @@ export function LeadDetailSheet({
   const [callsLoadingMore, setCallsLoadingMore] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [form, setForm] = React.useState<EditForm | null>(null);
-  // Captured-fields form runs independently from the main Details edit
-  // form so an operator can tweak a single voice-agent-extracted field
-  // without first entering edit mode on the whole lead record.
-  const [capturedForm, setCapturedForm] = React.useState<CapturedForm | null>(
-    null,
-  );
+  // ONE draft for the whole Summary panel.
+  //
+  // There used to be two independent edit states — one for Details, one for
+  // Captured fields — each with its own Edit, Save and Cancel. They didn't know
+  // about each other, so both could be open at once with two Save buttons on
+  // screen doing different things, and switching from one to the other
+  // discarded the first silently. There was never a server reason for the
+  // split: `updateLead` takes the row fields and both JSONB patches in a single
+  // call, which is exactly what `onSave` now sends.
+  const [draft, setDraft] = React.useState<LeadDraft | null>(null);
   const [saving, startSaveTransition] = React.useTransition();
-  const [historyMode, setHistoryMode] = React.useState(false);
+  // Replaces the old `historyMode` boolean. That boolean drove a SECOND full
+  // layout at a different sheet width; folding it into a tab means one width,
+  // no jump, and no duplicated body.
+  //
+  // Invariant, enforced by the handlers below:
+  //   `?call=<id>` present  ⟺  tab === "calls" && selectedCallId !== null
+  const [tab, setTab] = React.useState<LeadTab>("summary");
   const [selectedCallId, setSelectedCallId] = React.useState<string | null>(
     null,
   );
   const now = useClientNow();
 
   const leadId = lead?.id ?? null;
-  const editing = form !== null;
+  const editing = draft !== null;
   const urlCallId = searchParams.get("call");
 
-  // Sync history-mode state to the ?call=<id> query param.
+  // Sync the selected call to the ?call=<id> query param.
   //  - on close, strip it
   //  - on entering history mode via row click, push the selection
   //  - on landing with ?call=<id> already present, switch to history mode and
@@ -193,21 +215,22 @@ export function LeadDetailSheet({
   }, []);
 
   React.useEffect(() => {
-    setForm(null);
-    setCapturedForm(null);
+    setDraft(null);
   }, [leadId, open]);
 
-  // Hydrate history mode from the URL on open. We intentionally read the URL
-  // only when the sheet opens for a new lead — once inside, the user's
-  // interactions drive both selection and URL together via setCallInUrl.
+  // Hydrate the active tab + selection from the URL on open. We intentionally
+  // read the URL only when the sheet opens for a new lead — once inside, the
+  // user's interactions drive both selection and URL together via setCallInUrl.
+  // (useSearchParams is the SSR-correct source on first paint; it goes stale
+  // after replaceState, which is exactly why this is keyed on [open, leadId].)
   React.useEffect(() => {
     if (!open) {
-      setHistoryMode(false);
+      setTab("summary");
       setSelectedCallId(null);
       return;
     }
     if (urlCallId) {
-      setHistoryMode(true);
+      setTab("calls");
       setSelectedCallId(urlCallId);
     }
     // open changing is the only signal we need; urlCallId is read once on open.
@@ -253,15 +276,15 @@ export function LeadDetailSheet({
     };
   }, [open, leadId, organisationId]);
 
-  // If history mode is on but no call is selected (e.g. user toggled into
-  // history without a target), default to the most recent call.
+  // Landing on the Calls tab with nothing selected (e.g. clicking the tab
+  // directly) defaults to the most recent call.
   React.useEffect(() => {
-    if (!historyMode) return;
+    if (tab !== "calls") return;
     if (selectedCallId) return;
     if (calls && calls.length > 0) {
       setSelectedCallId(calls[0].id);
     }
-  }, [historyMode, selectedCallId, calls]);
+  }, [tab, selectedCallId, calls]);
 
   async function loadMoreCalls() {
     if (!leadId || callsLoadingMore) return;
@@ -283,20 +306,30 @@ export function LeadDetailSheet({
     setCallsTotal(result.data.total);
   }
 
-  function enterHistory(callId?: string) {
-    const target =
-      callId ?? selectedCallId ?? (calls && calls[0]?.id) ?? null;
-    setHistoryMode(true);
+  /** Jump to the Calls tab, optionally at a specific call. */
+  function openCalls(callId?: string) {
+    const target = callId ?? selectedCallId ?? calls?.[0]?.id ?? null;
+    setTab("calls");
     if (target) {
       setSelectedCallId(target);
       setCallInUrl(target);
     }
   }
-  function exitHistory() {
-    setHistoryMode(false);
-    setSelectedCallId(null);
+
+  function onTabChange(next: string) {
+    const nextTab = next as LeadTab;
+    setTab(nextTab);
+    if (nextTab === "calls") {
+      // Re-publish the held selection so the URL matches the visible state.
+      if (selectedCallId) setCallInUrl(selectedCallId);
+      return;
+    }
+    // Leaving Calls drops the param but KEEPS `selectedCallId` in React state,
+    // so coming back re-selects without a refetch. (The old exitHistory nulled
+    // the selection, which meant a round trip every time.)
     setCallInUrl(null);
   }
+
   function selectCall(id: string) {
     setSelectedCallId(id);
     setCallInUrl(id);
@@ -313,175 +346,104 @@ export function LeadDetailSheet({
 
   function startEdit() {
     if (!lead) return;
-    setForm(leadToForm(lead));
-    setError(null);
-  }
-  function cancelEdit() {
-    setForm(null);
-  }
-  function onSave() {
-    if (!lead || !form) return;
-    const patch = diffForm(form, lead);
-    if (Object.keys(patch).length === 0) {
-      toast.info("No changes to save");
-      setForm(null);
-      return;
-    }
-    startSaveTransition(async () => {
-      const result = await updateLead(lead.id, patch);
-      if (!result.success) {
-        toast.error(result.error);
-        return;
-      }
-      toast.success("Lead updated");
-      setForm(null);
-      router.refresh();
-    });
-  }
-
-  function startCapturedEdit() {
-    if (!lead) return;
-    const fields = pickEditableCatalog(catalog ?? []);
-    if (fields.length === 0) return;
-    // Prefill the form from the lead's actual JSONB blobs first (canonical
-    // store) and use effective values as a fallback for leads where the
-    // row is empty but call snapshots carry the captured fields. Reading
-    // from lead.custom_data directly (not effectiveCustomData) is important
-    // because effectiveCustomData drops flat ungrouped scalars during its
-    // dedupe pass.
-    setCapturedForm(
-      buildCapturedForm(
-        fields,
+    setDraft({
+      details: leadToForm(lead),
+      // Prefilled from the lead's own JSONB first, with the call-backfilled
+      // view as fallback — see buildCapturedForm for why the lead row is read
+      // directly rather than through the effective view.
+      captured: buildCapturedForm(
+        editableCatalog,
         lead.lead_data ?? null,
         lead.custom_data ?? null,
         effectiveLeadData,
         effectiveCustomData,
       ),
-    );
+    });
     setError(null);
+    // Edit lives in the pinned header, so it is reachable from any tab. The
+    // forms are on Summary, so go there rather than appearing to do nothing.
+    setTab("summary");
+    setCallInUrl(null);
   }
-  function cancelCapturedEdit() {
-    setCapturedForm(null);
+
+  function cancelEdit() {
+    setDraft(null);
   }
-  function onSaveCaptured() {
-    if (!lead || !capturedForm) return;
-    const fields = pickEditableCatalog(catalog ?? []);
-    const patch = diffCapturedForm(capturedForm, fields, lead);
+
+  /**
+   * One save for both halves of the panel.
+   *
+   * `updateLead` merges the row fields, `lead_data_patch` and
+   * `custom_data_patch` in a single statement, so this is one request and one
+   * atomic write — not two that could half-fail. The key spaces can't collide:
+   * `pickEditableCatalog` excludes every `lead_data` key the details form owns.
+   */
+  function onSave() {
+    if (!lead || !draft) return;
+
+    const detailsPatch = diffForm(draft.details, lead);
+    const capturedPatch = diffCapturedForm(
+      draft.captured,
+      editableCatalog,
+      lead,
+    );
+
     if (
-      Object.keys(patch.lead_data_patch ?? {}).length === 0 &&
-      Object.keys(patch.custom_data_patch ?? {}).length === 0
+      Object.keys(detailsPatch).length === 0 &&
+      isCapturedPatchEmpty(capturedPatch)
     ) {
       toast.info("No changes to save");
-      setCapturedForm(null);
+      setDraft(null);
       return;
     }
+
     startSaveTransition(async () => {
-      const result = await updateLead(lead.id, patch);
+      const result = await updateLead(lead.id, {
+        ...detailsPatch,
+        ...capturedPatch,
+      });
       if (!result.success) {
         toast.error(result.error);
         return;
       }
       toast.success("Lead updated");
-      setCapturedForm(null);
+      setDraft(null);
       router.refresh();
     });
   }
 
-  // useMemo must run on every render — keep it above the early return so
-  // hook order stays stable when `lead` flips between null and a value.
-  const selectedCall = React.useMemo(
-    () => (calls && selectedCallId
-      ? calls.find((c) => c.id === selectedCallId) ?? null
-      : null),
-    [calls, selectedCallId],
+  // ⚠️ The FIRST page only — never the whole paged list.
+  //
+  // `loadMoreCalls` appends, and the Summary tab's captured fields are derived
+  // from this array. Feeding it the full list made Summary grow as you scrolled
+  // the Calls tab: open a lead, see 6 fields, scroll the call list, come back
+  // to 9. Nothing about the lead had changed.
+  //
+  // Derived rather than held in its own state: `calls` is only ever set to page
+  // one or appended to, so a slice is exactly page one by construction and
+  // there is no second variable to keep in sync.
+  const backfillCalls = React.useMemo(
+    () => calls?.slice(0, CALLS_PAGE_SIZE) ?? null,
+    [calls],
   );
 
-  // Build an "effective" view of the lead's captured fields by backfilling
-  // anything missing on the lead row from the most-recent call snapshots.
-  // Why: the canonical store is `leads.custom_data` / `leads.lead_data`,
-  // which the webhook merge keeps current. But for legacy leads (created
-  // before the merge ran) or rows where the per-key merge silently failed,
-  // the lead row can be empty while every call carries the snapshot.
-  // Pulling the latest non-null per (category, key) from calls keeps the
-  // summary card useful without depending on the merge being perfect.
-  // Precedence: lead row first; calls only fill in gaps. Calls are already
-  // ordered newest-first (started_at DESC in listCalls).
-  const effectiveCustomData = React.useMemo<Record<
-    string,
-    Record<string, unknown>
-  > | null>(() => {
-    const base: Record<string, Record<string, unknown>> = {};
-    const seed = lead?.custom_data;
-    if (seed && typeof seed === "object" && !Array.isArray(seed)) {
-      for (const [cat, bag] of Object.entries(
-        seed as Record<string, unknown>,
-      )) {
-        if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
-        const cleaned: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(
-          bag as Record<string, unknown>,
-        )) {
-          if (v === null || v === undefined) continue;
-          if (typeof v === "string" && v.trim() === "") continue;
-          cleaned[k] = v;
-        }
-        if (Object.keys(cleaned).length > 0) base[cat] = cleaned;
-      }
-    }
-    if (calls) {
-      for (const call of calls) {
-        const cd = call.custom_data;
-        if (!cd || typeof cd !== "object") continue;
-        for (const [cat, bag] of Object.entries(
-          cd as Record<string, unknown>,
-        )) {
-          if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
-          for (const [k, v] of Object.entries(
-            bag as Record<string, unknown>,
-          )) {
-            if (v === null || v === undefined) continue;
-            if (typeof v === "string" && v.trim() === "") continue;
-            const target = (base[cat] ??= {});
-            if (target[k] !== undefined) continue;
-            target[k] = v;
-          }
-        }
-      }
-    }
-    return Object.keys(base).length > 0 ? base : null;
-  }, [lead?.custom_data, calls]);
-
-  const effectiveLeadData = React.useMemo<Record<string, unknown> | null>(
-    () => {
-      const base: Record<string, unknown> = {};
-      const seed = lead?.lead_data;
-      if (seed && typeof seed === "object" && !Array.isArray(seed)) {
-        for (const [k, v] of Object.entries(
-          seed as Record<string, unknown>,
-        )) {
-          if (v === null || v === undefined) continue;
-          if (typeof v === "string" && v.trim() === "") continue;
-          base[k] = v;
-        }
-      }
-      if (calls) {
-        for (const call of calls) {
-          const ld = call.lead_data;
-          if (!ld || typeof ld !== "object") continue;
-          for (const [k, v] of Object.entries(
-            ld as Record<string, unknown>,
-          )) {
-            if (v === null || v === undefined) continue;
-            if (typeof v === "string" && v.trim() === "") continue;
-            if (base[k] !== undefined) continue;
-            base[k] = v;
-          }
-        }
-      }
-      return Object.keys(base).length > 0 ? base : null;
-    },
-    [lead?.lead_data, calls],
+  // Plain calls, deliberately not `useMemo`. These are pure functions imported
+  // from `lib/`, and the React Compiler can't see across a module boundary to
+  // prove that — so a manual memo around one makes it give up on the region
+  // ("existing memoization could not be preserved") instead of optimising it.
+  // Both are bounded by one page of calls, so recomputing costs nothing.
+  const effectiveCustomData = buildEffectiveCustomData(
+    lead?.custom_data,
+    backfillCalls,
   );
+  const effectiveLeadData = buildEffectiveLeadData(
+    lead?.lead_data,
+    backfillCalls,
+  );
+
+  // Read by startEdit, onSave and the render — it was recomputed independently
+  // in all three, and the three copies had to agree for a save to be correct.
+  const editableCatalog = pickEditableCatalog(catalog ?? []);
 
   if (!lead) return null;
 
@@ -498,154 +460,117 @@ export function LeadDetailSheet({
   );
 
   return (
-    <Sheet open={open} onOpenChange={handleOpenChange}>
-      <SheetContent
-        className={cn(
-          // Match the primitive's `data-[side=right]:sm:max-w-sm` selector
-          // exactly — otherwise the attribute-prefixed default wins and the
-          // sheet is stuck at 24rem.
-          "w-full gap-0 p-0",
-          // Mobile: sheet scrolls as one column. md+: in history mode each
-          // pane scrolls itself; in summary mode the sheet still scrolls.
-          historyMode
-            ? "overflow-y-auto md:overflow-hidden data-[side=right]:w-[min(96vw,1280px)] data-[side=right]:sm:max-w-none"
-            : "overflow-y-auto data-[side=right]:w-[min(96vw,560px)] data-[side=right]:sm:max-w-none",
-        )}
-      >
-        <SheetHeader className="gap-3 border-b border-border/60 p-5 pr-12">
-          <div className="flex items-start gap-3">
-            {historyMode ? (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={exitHistory}
-                aria-label="Back to lead summary"
-                title="Back to lead summary"
-              >
-                <ArrowLeftIcon />
-              </Button>
-            ) : null}
-            <span className="grid size-12 shrink-0 place-items-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
-              {initialsOf(lead.name)}
-            </span>
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <SheetTitle className="truncate text-lg">
-                {lead.name ?? "Unnamed lead"}
-              </SheetTitle>
-              <SheetDescription className="sr-only">
-                Lead details and history
-              </SheetDescription>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={INTENT_VARIANT[intent]}>
-                  {INTENT_LABEL[intent]}
-                </Badge>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleContacted(lead);
-                  }}
-                  disabled={pending}
-                  aria-pressed={!isPending}
-                  title={
-                    isPending
-                      ? "Click to mark as done"
-                      : "Click to reopen action"
-                  }
-                  className={cn(
-                    "inline-flex h-5 items-center gap-1 rounded-4xl border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all",
-                    "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                    "disabled:cursor-not-allowed disabled:opacity-60",
-                    "[&>svg]:size-3",
-                    isPending
-                      ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
-                      : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300",
-                  )}
-                >
-                  <CheckIcon />
-                  {isPending ? "Pending" : "Done"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </SheetHeader>
-
-        {historyMode ? (
-          <HistoryView
-            lead={lead}
-            calls={calls}
-            callsTotal={callsTotal}
-            selectedCall={selectedCall}
-            onSelectCall={selectCall}
-            onLoadMore={loadMoreCalls}
-            loadingMore={callsLoadingMore}
-            now={now}
+    <DetailSheetShell
+      open={open}
+      onOpenChange={handleOpenChange}
+      // ONE width, always. This used to jump 560 -> 1280 when history mode
+      // engaged, which is what forced two entire layouts to exist. `lg` fits the
+      // Calls tab's rail + pane comfortably and gives Summary room to breathe.
+      width="lg"
+      title={lead.name ?? "Unnamed lead"}
+      description="Lead details and history"
+      avatar={
+        <EntityAvatar name={lead.name} size="lg" />
+      }
+      pills={
+        <>
+          <Badge variant={INTENT_VARIANT[intent]}>{INTENT_LABEL[intent]}</Badge>
+          <PendingActionBadge
+            pending={isPending}
+            disabled={saving || pending}
+            onToggle={() => onToggleContacted(lead)}
           />
-        ) : (
-        <div className="flex-1 space-y-5 px-5 pb-5">
-          <div className="grid grid-cols-3 gap-2">
-            <Button
-              variant="outline"
-              onClick={() => onCall(lead)}
-              disabled={pending || !hasPhone}
-              title={hasPhone ? "Place a call" : "No phone on file"}
+        </>
+      }
+      actions={
+        <>
+          {/* One Edit for the whole lead, pinned in the header rather than
+              scrolling away inside a section. Hidden while editing — Save and
+              Cancel are in the sticky bar at the foot of the Summary panel, and
+              a third, inert Edit button beside them would be noise. */}
+          {editing ? null : (
+            <Button variant="outline" size="sm" onClick={startEdit}>
+              <PencilIcon />
+              Edit
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onCall(lead)}
+            disabled={pending || !hasPhone}
+            title={hasPhone ? "Place a call" : "No phone on file"}
+          >
+            <PhoneIcon />
+            Call
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenWhatsApp(lead)}
+            disabled={!hasPhone}
+          >
+            <MessageCircleIcon />
+            WhatsApp
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenReminder(lead)}
+          >
+            <BellPlusIcon />
+            Remind
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button variant="ghost" size="icon-sm" aria-label="More actions" />
+              }
             >
-              <PhoneIcon />
-              Call
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => onOpenWhatsApp(lead)}
-              disabled={!hasPhone}
-            >
-              <MessageCircleIcon />
-              WhatsApp
-            </Button>
-            <Button variant="outline" onClick={() => onOpenReminder(lead)}>
-              <BellPlusIcon />
-              Remind
-            </Button>
-          </div>
-
-          <Separator />
-
+              <MoreHorizontalIcon />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuGroup>
+                {/* Delete lived in a persistent SheetFooter, which spent 60px of
+                    every viewport making the most destructive action the most
+                    prominent thing on screen. */}
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => onDelete(lead)}
+                  disabled={pending}
+                >
+                  <Trash2Icon />
+                  Delete lead
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
+      }
+      tabs={[
+        { value: "summary", label: "Summary" },
+        { value: "calls", label: "Calls", count: callsTotal || undefined },
+        { value: "activity", label: "Activity" },
+      ]}
+      activeTab={tab}
+      onTabChange={onTabChange}
+    >
+      <DetailSheetPanel value="summary">
+        {/* The 3-up quick-action grid moved into the shell header, where it is
+            pinned instead of scrolling away. */}
           <section className="space-y-3">
-            <div className="flex items-center justify-between">
-              <SectionTitle>Details</SectionTitle>
-              {editing ? (
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    onClick={cancelEdit}
-                    disabled={saving}
-                  >
-                    <XIcon /> Cancel
-                  </Button>
-                  <Button size="xs" onClick={onSave} disabled={saving}>
-                    {saving ? (
-                      <Loader2Icon className="animate-spin" />
-                    ) : (
-                      <CheckIcon />
-                    )}
-                    {saving ? "Saving…" : "Save"}
-                  </Button>
-                </div>
-              ) : (
-                <Button variant="ghost" size="xs" onClick={startEdit}>
-                  <PencilIcon /> Edit
-                </Button>
-              )}
-            </div>
+            <SectionTitle>Details</SectionTitle>
 
-            {editing && form ? (
+            {draft ? (
               <LeadEditForm
-                form={form}
-                onChange={setForm}
+                form={draft.details}
+                onChange={(details) =>
+                  setDraft((prev) => (prev ? { ...prev, details } : prev))
+                }
                 disabled={saving}
               />
             ) : (
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
                 <FieldWithLock
                   label="Name"
                   leadId={lead.id}
@@ -792,77 +717,84 @@ export function LeadDetailSheet({
             )}
           </section>
 
-          {(() => {
-            const editableCatalog = pickEditableCatalog(catalog ?? []);
-            const isEditingCaptured = capturedForm !== null;
-            const hasAnything =
-              leadFieldGroups.length > 0 || editableCatalog.length > 0;
-            if (!hasAnything) return null;
-            return (
-              <>
-                <Separator />
-                <section className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <SectionTitle>Captured fields</SectionTitle>
-                    {editableCatalog.length > 0 ? (
-                      isEditingCaptured ? (
-                        <div className="flex items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            onClick={cancelCapturedEdit}
-                            disabled={saving}
-                          >
-                            <XIcon /> Cancel
-                          </Button>
-                          <Button
-                            size="xs"
-                            onClick={onSaveCaptured}
-                            disabled={saving}
-                          >
-                            {saving ? (
-                              <Loader2Icon className="animate-spin" />
-                            ) : (
-                              <CheckIcon />
-                            )}
-                            {saving ? "Saving…" : "Save"}
-                          </Button>
-                        </div>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={startCapturedEdit}
-                        >
-                          <PencilIcon /> Edit
-                        </Button>
-                      )
-                    ) : null}
-                  </div>
-                  {isEditingCaptured && capturedForm ? (
-                    <CapturedFieldsEditForm
-                      fields={editableCatalog}
-                      form={capturedForm}
-                      onChange={setCapturedForm}
-                      disabled={saving}
-                    />
-                  ) : leadFieldGroups.length > 0 ? (
-                    <CustomFieldsDisplay
-                      customData={effectiveCustomData}
-                      extraLeadData={leadDataExtras}
-                    />
-                  ) : (
-                    <EmptyHint>
-                      No fields captured yet. Click Edit to add values.
-                    </EmptyHint>
-                  )}
-                </section>
-              </>
-            );
-          })()}
+          {leadFieldGroups.length > 0 || editableCatalog.length > 0 ? (
+            <>
+              <Separator />
+              <section className="space-y-3">
+                <SectionTitle>Captured fields</SectionTitle>
+                {draft && editableCatalog.length > 0 ? (
+                  <CapturedFieldsEditForm
+                    fields={editableCatalog}
+                    form={draft.captured}
+                    onChange={(captured) =>
+                      setDraft((prev) => (prev ? { ...prev, captured } : prev))
+                    }
+                    disabled={saving}
+                  />
+                ) : leadFieldGroups.length > 0 ? (
+                  <CapturedFieldGroups groups={leadFieldGroups} />
+                ) : (
+                  <EmptyHint>
+                    No fields captured yet. Use Edit to add values.
+                  </EmptyHint>
+                )}
+              </section>
+            </>
+          ) : null}
 
-          <Separator />
+          {error ? (
+            <p className="rounded-md border border-destructive/30 bg-destructive-muted px-3 py-2 text-xs text-destructive">
+              {error}
+            </p>
+          ) : null}
 
+          {/* One Save/Cancel for the whole panel, pinned to the bottom of the
+              scroller. `sticky` inside the scrolling content rather than a
+              SheetFooter: the bar only exists while editing, and a permanent
+              footer is what used to spend 60px of every viewport on a Delete
+              button. The negative margins bleed it past the panel's own p-4 so
+              it sits flush against the sheet edge. */}
+          {draft ? (
+            <div className="sticky bottom-0 -mx-4 -mb-4 mt-auto flex items-center justify-end gap-2 border-t bg-popover/95 px-4 py-3 backdrop-blur-sm">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={cancelEdit}
+                disabled={saving}
+              >
+                <XIcon /> Cancel
+              </Button>
+              <Button size="sm" onClick={onSave} disabled={saving}>
+                {saving ? (
+                  <Loader2Icon className="animate-spin" />
+                ) : (
+                  <CheckIcon />
+                )}
+                {saving ? "Saving…" : "Save changes"}
+              </Button>
+            </div>
+          ) : null}
+      </DetailSheetPanel>
+
+      {/* Calls — what used to be `historyMode`, now just a tab. Same two-pane
+          rail + pane, at the sheet's single fixed width. */}
+      <DetailSheetPanel value="calls" fill>
+        {/* The same rail + pane cart recovery and COD now use. Extracted
+            rather than copied — this view existed three times. */}
+        <CallSplitView
+          calls={calls}
+          total={callsTotal}
+          selectedId={selectedCallId}
+          onSelect={selectCall}
+          onLoadMore={loadMoreCalls}
+          loadingMore={callsLoadingMore}
+          counterpartyName={lead.name}
+          now={now}
+          emptyLabel="No calls for this lead yet."
+        />
+      </DetailSheetPanel>
+
+      <DetailSheetPanel value="activity">
           <section className="space-y-3">
             <div className="flex items-center justify-between">
               <SectionTitle>Reminders</SectionTitle>
@@ -896,7 +828,7 @@ export function LeadDetailSheet({
                 <Button
                   variant="ghost"
                   size="xs"
-                  onClick={() => enterHistory()}
+                  onClick={() => openCalls()}
                 >
                   <HistoryIcon /> Show all ({callsTotal})
                 </Button>
@@ -911,7 +843,7 @@ export function LeadDetailSheet({
                     key={c.id}
                     call={c}
                     now={now}
-                    onSelect={() => enterHistory(c.id)}
+                    onSelect={() => openCalls(c.id)}
                   />
                 ))}
               </ul>
@@ -920,27 +852,8 @@ export function LeadDetailSheet({
             )}
           </section>
 
-          {error ? (
-            <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-              {error}
-            </p>
-          ) : null}
-        </div>
-        )}
-
-        <SheetFooter className="border-t border-border/60 bg-muted/20">
-          <Button
-            variant="ghost"
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-            onClick={() => onDelete(lead)}
-            disabled={pending}
-          >
-            <Trash2Icon />
-            Delete lead
-          </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+      </DetailSheetPanel>
+    </DetailSheetShell>
   );
 }
 
@@ -962,7 +875,7 @@ function Field({
   return (
     <>
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="text-sm">{children}</dd>
+      <dd className="min-w-0 text-sm wrap-break-word">{children}</dd>
     </>
   );
 }
@@ -988,7 +901,7 @@ function FieldWithLock({
         {label}
         <LeadFieldLock leadId={leadId} fieldPath={fieldPath} value={value} />
       </dt>
-      <dd className="text-sm">{children}</dd>
+      <dd className="min-w-0 text-sm wrap-break-word">{children}</dd>
     </>
   );
 }
@@ -1066,601 +979,6 @@ function ReminderRow({
   );
 }
 
-function HistoryView({
-  lead,
-  calls,
-  callsTotal,
-  selectedCall,
-  onSelectCall,
-  onLoadMore,
-  loadingMore,
-  now,
-}: {
-  lead: Lead;
-  calls: Call[] | null;
-  callsTotal: number;
-  selectedCall: Call | null;
-  onSelectCall: (id: string) => void;
-  onLoadMore: () => void;
-  loadingMore: boolean;
-  now: number | null;
-}) {
-  const hasMore = (calls?.length ?? 0) < callsTotal;
-
-  return (
-    // Mobile: single column, sheet handles scrolling (no nested scrollers).
-    // md+: two columns, each pane scrolls independently and the outer sheet
-    // is overflow-hidden. flex-1 + min-h-0 only matter in the md+ case.
-    <div className="grid grid-cols-1 md:min-h-0 md:flex-1 md:grid-cols-[320px_1fr]">
-      {/* Left rail: paginated call list */}
-      <aside className="flex flex-col border-b border-border/60 md:min-h-0 md:border-b-0 md:border-r">
-        <header className="flex items-center justify-between border-b border-border/60 bg-muted/30 px-4 py-3">
-          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Calls
-          </div>
-          <span className="text-xs tabular-nums text-muted-foreground">
-            {calls?.length ?? 0} / {callsTotal}
-          </span>
-        </header>
-        <div className="md:min-h-0 md:flex-1 md:overflow-y-auto">
-          {calls === null ? (
-            <div className="space-y-2 p-3">
-              <Skeleton />
-              <Skeleton />
-            </div>
-          ) : calls.length === 0 ? (
-            <div className="p-4">
-              <EmptyHint>No calls for this lead yet.</EmptyHint>
-            </div>
-          ) : (
-            <ul className="divide-y divide-border/60">
-              {calls.map((c) => (
-                <HistoryRailRow
-                  key={c.id}
-                  call={c}
-                  selected={selectedCall?.id === c.id}
-                  onSelect={() => onSelectCall(c.id)}
-                  now={now}
-                />
-              ))}
-            </ul>
-          )}
-          {hasMore ? (
-            <div className="p-3">
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full"
-                onClick={onLoadMore}
-                disabled={loadingMore}
-              >
-                {loadingMore ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : null}
-                {loadingMore ? "Loading…" : "Load more"}
-              </Button>
-            </div>
-          ) : null}
-        </div>
-      </aside>
-
-      {/* Right pane: selected call detail */}
-      <div className="md:min-h-0 md:overflow-y-auto">
-        {selectedCall ? (
-          <CallDetailPane
-            call={selectedCall}
-            lead={lead}
-            now={now}
-          />
-        ) : (
-          <div className="flex min-h-80 items-center justify-center p-10 text-center text-sm text-muted-foreground md:h-full md:min-h-0">
-            Select a call on the left to see its recording, transcript, and
-            captured fields.
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function HistoryRailRow({
-  call,
-  selected,
-  onSelect,
-  now,
-}: {
-  call: Call;
-  selected: boolean;
-  onSelect: () => void;
-  now: number | null;
-}) {
-  const inbound = call.direction === "inbound";
-  const DirectionIcon = inbound ? PhoneIncomingIcon : PhoneOutgoingIcon;
-  const counterparty = inbound ? call.from_phone : call.to_phone;
-  const duration =
-    typeof call.duration_seconds === "number"
-      ? formatDuration(call.duration_seconds)
-      : null;
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={onSelect}
-        aria-current={selected ? "true" : undefined}
-        className={cn(
-          "flex w-full items-start gap-2 px-4 py-3 text-left transition-colors focus-visible:outline-none",
-          selected
-            ? "bg-muted text-foreground"
-            : "hover:bg-muted/50 focus-visible:bg-muted/50",
-        )}
-      >
-        <DirectionIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">
-            {counterparty ?? "Unknown number"}
-          </p>
-          <p
-            className="text-xs text-muted-foreground"
-            suppressHydrationWarning
-          >
-            {now === null ? "" : formatRelative(call.started_at, now)}
-            {duration ? ` · ${duration}` : ""}
-          </p>
-        </div>
-        <Badge variant={CALL_STATUS_VARIANT[call.status]} className="mt-0.5">
-          {CALL_STATUS_LABEL[call.status]}
-        </Badge>
-      </button>
-    </li>
-  );
-}
-
-function CallDetailPane({
-  call,
-  lead,
-  now,
-}: {
-  call: Call;
-  lead: Lead;
-  now: number | null;
-}) {
-  const [turns, setTurns] = React.useState<CallTranscriptTurn[] | null>(null);
-  const [loading, setLoading] = React.useState(false);
-
-  // Fetch transcript turns whenever the selected call changes. Independent
-  // of the sheet's own fetch so we don't refetch the calls list every time
-  // someone clicks a different row.
-  React.useEffect(() => {
-    let cancelled = false;
-    setTurns(null);
-    if (call.transcript_status !== "ready") {
-      // Skip the fetch entirely — there's nothing to show yet.
-      return () => {
-        cancelled = true;
-      };
-    }
-    setLoading(true);
-    (async () => {
-      const result = await listCallTranscript({ call_id: call.id });
-      if (cancelled) return;
-      setLoading(false);
-      if (!result.success) {
-        toast.error(result.error);
-        setTurns([]);
-        return;
-      }
-      setTurns(result.data);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [call.id, call.transcript_status]);
-
-  const inbound = call.direction === "inbound";
-  const DirectionIcon = inbound ? PhoneIncomingIcon : PhoneOutgoingIcon;
-  const counterparty = inbound ? call.from_phone : call.to_phone;
-  const duration =
-    typeof call.duration_seconds === "number"
-      ? formatDuration(call.duration_seconds)
-      : null;
-  const intent = call.lead_intent_extracted;
-  const extraLeadData = pickLeadDataExtras(call.lead_data, CALL_LEAD_DATA_SURFACED);
-  const customFieldGroups = buildCustomFieldGroups(call.custom_data, extraLeadData);
-  const hasExtras = customFieldGroups.length > 0;
-  const snapshotFields: Array<[string, React.ReactNode]> = [];
-  if (call.name_extracted) snapshotFields.push(["Name", call.name_extracted]);
-  if (call.interest) snapshotFields.push(["Interest", call.interest]);
-  if (intent)
-    snapshotFields.push([
-      "Intent",
-      <Badge key="intent" variant={INTENT_VARIANT[intent]}>
-        {INTENT_LABEL[intent]}
-      </Badge>,
-    ]);
-  if (call.customer_status)
-    snapshotFields.push(["Customer type", call.customer_status]);
-  if (call.visit_scheduled_at)
-    snapshotFields.push([
-      "Visit scheduled",
-      <span key="visit" suppressHydrationWarning>
-        {formatDateTime(call.visit_scheduled_at)}
-      </span>,
-    ]);
-  if (call.connect_on_whatsapp !== null)
-    snapshotFields.push([
-      "Wants WhatsApp",
-      call.connect_on_whatsapp ? "Yes" : "No",
-    ]);
-
-  return (
-    <article className="space-y-5 p-5">
-      <header className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">
-            <DirectionIcon className="size-3" /> {inbound ? "Inbound" : "Outbound"}
-          </Badge>
-          <Badge variant={CALL_STATUS_VARIANT[call.status]}>
-            {CALL_STATUS_LABEL[call.status]}
-          </Badge>
-          {duration ? (
-            <span className="text-xs text-muted-foreground">· {duration}</span>
-          ) : null}
-          <span
-            className="ml-auto text-xs text-muted-foreground"
-            suppressHydrationWarning
-          >
-            {now === null ? "" : formatRelative(call.started_at, now)}
-          </span>
-        </div>
-        <p className="font-mono text-sm tabular-nums">
-          {counterparty ?? "Unknown number"}
-          {lead.name ? (
-            <span className="ml-2 text-muted-foreground">· {lead.name}</span>
-          ) : null}
-        </p>
-        <p
-          className="text-xs text-muted-foreground"
-          suppressHydrationWarning
-        >
-          Started{" "}
-          {call.started_at ? formatDateTime(call.started_at) : "—"}
-          {call.ended_at ? ` · Ended ${formatDateTime(call.ended_at)}` : ""}
-        </p>
-      </header>
-
-      {/* Inline audio player. Browser handles play/pause/seek/volume. */}
-      {call.recording_url ? (
-        <div className="space-y-1">
-          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Recording
-          </div>
-          <audio
-            controls
-            preload="none"
-            src={call.recording_url}
-            className="w-full"
-          >
-            <track kind="captions" />
-          </audio>
-        </div>
-      ) : (
-        <p className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs italic text-muted-foreground">
-          No recording on file.
-        </p>
-      )}
-
-      {call.summary ? (
-        <section className="space-y-1.5">
-          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Summary
-          </div>
-          <p className="whitespace-pre-wrap rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm leading-relaxed">
-            {call.summary}
-          </p>
-        </section>
-      ) : null}
-
-      {call.actionable ? (
-        <section className="space-y-1.5">
-          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Actionable next step
-          </div>
-          <p className="whitespace-pre-wrap rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm leading-relaxed text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
-            {call.actionable}
-          </p>
-        </section>
-      ) : null}
-
-      {snapshotFields.length > 0 ? (
-        <section className="space-y-1.5">
-          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Captured this call
-          </div>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-md border border-border/70 bg-card px-3 py-2.5 text-sm">
-            {snapshotFields.map(([label, value]) => (
-              <React.Fragment key={label}>
-                <dt className="text-xs text-muted-foreground">{label}</dt>
-                <dd>{value}</dd>
-              </React.Fragment>
-            ))}
-          </dl>
-        </section>
-      ) : null}
-
-      {hasExtras ? (
-        <section className="space-y-1.5">
-          <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Additional fields
-          </div>
-          <CustomFieldsDisplay
-            customData={call.custom_data}
-            extraLeadData={extraLeadData}
-          />
-        </section>
-      ) : null}
-
-      <section className="space-y-2">
-        <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          Transcript
-        </div>
-        {loading && turns === null ? (
-          <div className="flex items-center gap-2 px-1 py-6 text-sm text-muted-foreground">
-            <Loader2Icon className="size-4 animate-spin" />
-            Loading transcript…
-          </div>
-        ) : turns && turns.length > 0 ? (
-          <TranscriptBody turns={turns} />
-        ) : call.transcript ? (
-          <pre className="whitespace-pre-wrap rounded-md border border-border/60 bg-muted/30 p-3 text-xs leading-relaxed">
-            {call.transcript}
-          </pre>
-        ) : (
-          <p className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs italic text-muted-foreground">
-            {transcriptEmptyCopy(call.transcript_status)}
-          </p>
-        )}
-      </section>
-    </article>
-  );
-}
-
-// Keys we already surface in the per-call "Captured this call" dl —
-// excluded from the extras section so they aren't shown twice.
-const CALL_LEAD_DATA_SURFACED = new Set([
-  "name",
-  "interest",
-  "lead_intent",
-  "actionable",
-  "customer_status",
-  "connect_on_whatsapp",
-  "date_and_time_of_visit",
-  // Internal routing key from the extractor — never user-facing.
-  "business_slug",
-]);
-
-// Same idea for the lead-level summary view.
-const LEAD_DATA_SURFACED = new Set([
-  "name",
-  "interest",
-  "lead_intent",
-  "actionable",
-  "customer_status",
-  "connect_on_whatsapp",
-  "date_and_time_of_visit",
-  "city",
-  "pincode",
-  "business_slug",
-]);
-
-// Category names that mean "ungrouped" — we hoist their entries to the top
-// level instead of rendering an empty "" header.
-const UNGROUPED_CATEGORIES = new Set(["", "__general__", "general"]);
-
-function pickLeadDataExtras(
-  data: Record<string, unknown> | null | undefined,
-  skip: ReadonlySet<string>,
-): Record<string, unknown> | null {
-  if (!data) return null;
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (skip.has(k)) continue;
-    if (v === null || v === undefined) continue;
-    if (typeof v === "string" && v.trim() === "") continue;
-    out[k] = v;
-  }
-  return Object.keys(out).length > 0 ? out : null;
-}
-
-function humaniseFieldKey(key: string): string {
-  return key
-    .replace(/[_-]+/g, " ")
-    // Insert spaces between camelCase / PascalCase boundaries.
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(" ")
-    .filter(Boolean)
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(" ");
-}
-
-function looksLikeIsoDate(s: string): boolean {
-  const t = s.trim();
-  if (t.length < 8) return false;
-  return /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(t);
-}
-
-function renderFieldValue(value: unknown): React.ReactNode {
-  if (value === null || value === undefined) {
-    return <Muted>—</Muted>;
-  }
-  if (typeof value === "boolean") {
-    return value ? "Yes" : "No";
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value.toLocaleString() : String(value);
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) return <Muted>—</Muted>;
-    const lower = trimmed.toLowerCase();
-    if (lower === "yes" || lower === "true") return "Yes";
-    if (lower === "no" || lower === "false") return "No";
-    if (looksLikeIsoDate(trimmed)) {
-      const d = new Date(trimmed);
-      if (!Number.isNaN(d.getTime())) {
-        return (
-          <span suppressHydrationWarning>{formatDateTime(trimmed)}</span>
-        );
-      }
-    }
-    return trimmed;
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) return <Muted>—</Muted>;
-    return value.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(", ");
-  }
-  // Plain object — render as a compact code block so the structure is
-  // still legible without dumping a multi-line JSON tree.
-  return (
-    <code className="wrap-break-word text-xs text-muted-foreground">
-      {JSON.stringify(value)}
-    </code>
-  );
-}
-
-interface CustomFieldsGroup {
-  category: string; // empty string for ungrouped
-  entries: Array<[string, unknown]>;
-}
-
-function buildCustomFieldGroups(
-  customData: Record<string, unknown> | null | undefined,
-  extraLeadData: Record<string, unknown> | null | undefined,
-): CustomFieldsGroup[] {
-  const groups: CustomFieldsGroup[] = [];
-  const ungrouped: Array<[string, unknown]> = [];
-
-  if (extraLeadData) {
-    for (const [k, v] of Object.entries(extraLeadData)) {
-      if (v === null || v === undefined) continue;
-      ungrouped.push([k, v]);
-    }
-  }
-
-  if (customData && typeof customData === "object") {
-    for (const [cat, bag] of Object.entries(customData)) {
-      if (!bag || typeof bag !== "object") continue;
-      const entries = Object.entries(bag as Record<string, unknown>).filter(
-        ([, v]) => v !== null && v !== undefined && !(typeof v === "string" && v.trim() === ""),
-      );
-      if (entries.length === 0) continue;
-      if (UNGROUPED_CATEGORIES.has(cat)) {
-        ungrouped.push(...entries);
-      } else {
-        groups.push({ category: cat, entries });
-      }
-    }
-  }
-
-  if (ungrouped.length > 0) {
-    groups.unshift({ category: "", entries: ungrouped });
-  }
-  return groups;
-}
-
-function CustomFieldsDisplay({
-  customData,
-  extraLeadData,
-}: {
-  customData?: Record<string, unknown> | null;
-  extraLeadData?: Record<string, unknown> | null;
-}) {
-  const groups = React.useMemo(
-    () => buildCustomFieldGroups(customData, extraLeadData),
-    [customData, extraLeadData],
-  );
-
-  if (groups.length === 0) return null;
-
-  return (
-    <div className="space-y-3">
-      {groups.map((g, i) => (
-        <div key={`${g.category || "ungrouped"}-${i}`} className="space-y-1.5">
-          {g.category ? (
-            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              {humaniseFieldKey(g.category)}
-            </div>
-          ) : null}
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-md border border-border/70 bg-card px-3 py-2.5 text-sm">
-            {g.entries.map(([k, v]) => (
-              <React.Fragment key={k}>
-                <dt className="text-xs leading-relaxed text-muted-foreground">
-                  {humaniseFieldKey(k)}
-                </dt>
-                <dd className="wrap-break-word leading-relaxed">
-                  {renderFieldValue(v)}
-                </dd>
-              </React.Fragment>
-            ))}
-          </dl>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function TranscriptBody({ turns }: { turns: CallTranscriptTurn[] }) {
-  return (
-    <ul className="flex flex-col gap-2.5">
-      {turns.map((t) => {
-        const isAgent = t.speaker === "agent";
-        const isUser = t.speaker === "user";
-        return (
-          <li
-            key={t.id}
-            className={cn(
-              "flex flex-col gap-0.5",
-              isUser ? "items-end" : "items-start",
-            )}
-          >
-            <span className="px-1 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-              {SPEAKER_LABEL[t.speaker]}
-            </span>
-            <div
-              className={cn(
-                "max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed",
-                isAgent
-                  ? "rounded-tl-sm bg-muted text-foreground"
-                  : isUser
-                    ? "rounded-tr-sm bg-primary text-primary-foreground"
-                    : "rounded-md bg-muted/60 italic text-muted-foreground",
-              )}
-            >
-              {t.text}
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function transcriptEmptyCopy(status: string): string {
-  switch (status) {
-    case "pending":
-      return "Transcript hasn't been fetched yet — check back in a moment.";
-    case "processing":
-      return "Transcript is being processed.";
-    case "failed":
-      return "We couldn't fetch this transcript.";
-    case "skipped":
-      return "No transcript was produced for this call.";
-    case "ready":
-      return "This call has no utterances on file.";
-    default:
-      return "No transcript to show.";
-  }
-}
-
 function CallRow({
   call,
   now,
@@ -1672,7 +990,7 @@ function CallRow({
 }) {
   const duration =
     typeof call.duration_seconds === "number"
-      ? formatDuration(call.duration_seconds)
+      ? formatDurationCompact(call.duration_seconds)
       : null;
   const inbound = call.direction === "inbound";
   const DirectionIcon = inbound ? PhoneIncomingIcon : PhoneOutgoingIcon;
@@ -1718,13 +1036,6 @@ function CallRow({
   );
 }
 
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return s === 0 ? `${m}m` : `${m}m ${s}s`;
-}
-
 // ---------------------------------------------------------------------------
 // Captured fields edit form — catalog-driven inline editor for the lead's
 // JSONB-backed fields (lead_data + custom_data). Each catalog row maps to
@@ -1732,200 +1043,6 @@ function formatDuration(seconds: number): string {
 // main Details form, so the captured-fields editor skips them to avoid
 // the same field appearing twice in the sheet.
 // ---------------------------------------------------------------------------
-
-// lead_data key_paths handled by the main Details form (LeadEditForm).
-// Keep in sync with splitWrites() in src/actions/leads.ts.
-const DETAILS_FORM_LEAD_DATA_KEYS = new Set<string>([
-  "interest",
-  "customer_status",
-  "connect_on_whatsapp",
-  "date_and_time_of_visit",
-]);
-
-function pickEditableCatalog(
-  catalog: LeadFieldDefinition[],
-): LeadFieldDefinition[] {
-  return catalog
-    .filter((d) => {
-      if (d.source_column === "column") return false;
-      if (
-        d.source_column === "lead_data" &&
-        DETAILS_FORM_LEAD_DATA_KEYS.has(d.key_path)
-      ) {
-        return false;
-      }
-      return true;
-    })
-    .slice()
-    .sort((a, b) => {
-      // Category first (empty/"" first so flat lead_data keys lead), then
-      // display_order, then label for stability.
-      const cat = (a.category ?? "").localeCompare(b.category ?? "");
-      if (cat !== 0) return cat;
-      if (a.display_order !== b.display_order) {
-        return a.display_order - b.display_order;
-      }
-      return (a.label ?? a.key_path).localeCompare(b.label ?? b.key_path);
-    });
-}
-
-// Form state is keyed by catalog field id and holds the raw input value
-// (string for text/number/date, "true"/"false"/"" for booleans). Coercion
-// to the wire type happens in diffCapturedForm so the input components
-// stay simple.
-type CapturedForm = Record<string, string>;
-
-function readCatalogValue(
-  def: LeadFieldDefinition,
-  leadData: Record<string, unknown> | null | undefined,
-  customData: Record<string, unknown> | null | undefined,
-): unknown {
-  if (def.source_column === "lead_data") {
-    return leadData?.[def.key_path] ?? null;
-  }
-  if (!customData) return null;
-  const cd = customData as Record<string, unknown>;
-  const category = def.category ?? "";
-  if (category === "") {
-    // Flat top-level scalar — the apply_lead_field_jsonb convention for an
-    // ungrouped category. Don't return objects here; if the key collides
-    // with a named category we'd otherwise hand back a nested bag.
-    const candidate = cd[def.key_path];
-    if (candidate !== null && typeof candidate === "object") return null;
-    return candidate ?? null;
-  }
-  const bag = cd[category];
-  if (!bag || typeof bag !== "object" || Array.isArray(bag)) return null;
-  return (bag as Record<string, unknown>)[def.key_path] ?? null;
-}
-
-function rawToFormValue(value: unknown, def: LeadFieldDefinition): string {
-  if (value === null || value === undefined) return "";
-  if (def.data_type === "boolean") {
-    if (value === true) return "true";
-    if (value === false) return "false";
-    if (typeof value === "string") {
-      const lc = value.toLowerCase();
-      if (["true", "yes", "1"].includes(lc)) return "true";
-      if (["false", "no", "0"].includes(lc)) return "false";
-    }
-    return "";
-  }
-  if (def.data_type === "date") {
-    const iso = typeof value === "string" ? value : null;
-    if (!iso) return "";
-    try {
-      return toLocalDateTimeInputValue(iso);
-    } catch {
-      return "";
-    }
-  }
-  if (def.data_type === "number") {
-    return typeof value === "number" ? String(value) : String(value);
-  }
-  if (typeof value === "string") return value;
-  return JSON.stringify(value);
-}
-
-function buildCapturedForm(
-  fields: LeadFieldDefinition[],
-  leadData: Record<string, unknown> | null | undefined,
-  customData: Record<string, unknown> | null | undefined,
-  fallbackLeadData?: Record<string, unknown> | null,
-  fallbackCustomData?: Record<string, Record<string, unknown>> | null,
-): CapturedForm {
-  const form: CapturedForm = {};
-  for (const def of fields) {
-    let value = readCatalogValue(def, leadData, customData);
-    if (
-      (value === null || value === "" || value === undefined) &&
-      (fallbackLeadData || fallbackCustomData)
-    ) {
-      // Lead row was empty — fall back to the call-snapshot-backfilled
-      // values so the form prefills with whatever the user actually saw
-      // in the read view.
-      value = readCatalogValue(
-        def,
-        fallbackLeadData ?? null,
-        fallbackCustomData ?? null,
-      );
-    }
-    form[def.id] = rawToFormValue(value, def);
-  }
-  return form;
-}
-
-function formValueToWire(
-  value: string,
-  def: LeadFieldDefinition,
-): string | number | boolean | null {
-  const trimmed = value.trim();
-  if (trimmed === "") return null;
-  if (def.data_type === "boolean") {
-    if (trimmed === "true") return true;
-    if (trimmed === "false") return false;
-    return null;
-  }
-  if (def.data_type === "number") {
-    const n = Number(trimmed);
-    return Number.isFinite(n) ? n : null;
-  }
-  if (def.data_type === "date") {
-    try {
-      return fromLocalDateTimeInput(trimmed);
-    } catch {
-      return null;
-    }
-  }
-  return trimmed;
-}
-
-interface CapturedFieldsPatch {
-  lead_data_patch?: Record<string, string | number | boolean | null>;
-  custom_data_patch?: Record<
-    string,
-    Record<string, string | number | boolean | null>
-  >;
-}
-
-function diffCapturedForm(
-  form: CapturedForm,
-  fields: LeadFieldDefinition[],
-  lead: Lead,
-): CapturedFieldsPatch {
-  const patch: CapturedFieldsPatch = {};
-  const ld: Record<string, string | number | boolean | null> = {};
-  const cd: Record<string, Record<string, string | number | boolean | null>> = {};
-
-  for (const def of fields) {
-    const raw = form[def.id] ?? "";
-    const next = formValueToWire(raw, def);
-    const currentRaw = readCatalogValue(
-      def,
-      lead.lead_data,
-      lead.custom_data,
-    );
-    const currentWire = formValueToWire(rawToFormValue(currentRaw, def), def);
-    if (next === currentWire) continue;
-    if (def.source_column === "lead_data") {
-      ld[def.key_path] = next;
-    } else {
-      const cat = def.category ?? "";
-      (cd[cat] ??= {})[def.key_path] = next;
-    }
-  }
-
-  if (Object.keys(ld).length > 0) patch.lead_data_patch = ld;
-  if (Object.keys(cd).length > 0) patch.custom_data_patch = cd;
-  return patch;
-}
-
-function humaniseCapturedKey(s: string): string {
-  return s
-    .split(/[_\s-]+/)
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(" ");
-}
 
 function CapturedFieldsEditForm({
   fields,
@@ -1962,13 +1079,13 @@ function CapturedFieldsEditForm({
         <div key={category || "_ungrouped"} className="space-y-2">
           {category ? (
             <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              {humaniseCapturedKey(category)}
+              {humaniseFieldKey(category)}
             </div>
           ) : null}
           <div className="grid gap-3 rounded-md border border-border/70 bg-card p-3">
             {defs.map((def) => {
               const inputId = `cap-${def.id}`;
-              const label = def.label ?? humaniseCapturedKey(def.key_path);
+              const label = def.label ?? humaniseFieldKey(def.key_path);
               const value = form[def.id] ?? "";
               return (
                 <div key={def.id} className="grid gap-1.5">
@@ -2057,116 +1174,6 @@ function CapturedFieldsEditForm({
 // preference moved out of the edit form for the same reason — they're
 // LLM-extracted dynamic fields exposed via the catalog UI now.
 // ---------------------------------------------------------------------------
-
-interface EditForm {
-  name: string;
-  phone: string;
-  interest: string;
-  customer_status: string;
-  lead_intent: LeadIntent | "";
-  status: LeadStatus;
-  source: LeadSource | "none";
-  city: string;
-  pincode: string;
-  notes: string;
-  wants_to_connect_on_watsapp: "yes" | "no" | "unknown";
-  visit_date_time: string;
-}
-
-function leadToForm(lead: Lead): EditForm {
-  return {
-    name: lead.name ?? "",
-    phone: lead.phone ?? "",
-    interest: lead.interest ?? "",
-    customer_status: lead.customer_status ?? "",
-    lead_intent: (lead.current_intent ?? "") as LeadIntent | "",
-    status: lead.status,
-    source: lead.source ?? "none",
-    city: lead.city ?? "",
-    pincode: lead.pincode ?? "",
-    notes: lead.notes ?? "",
-    wants_to_connect_on_watsapp:
-      lead.wants_to_connect_on_watsapp === true
-        ? "yes"
-        : lead.wants_to_connect_on_watsapp === false
-          ? "no"
-          : "unknown",
-    visit_date_time: lead.visit_date_time
-      ? toLocalDateTimeInputValue(lead.visit_date_time)
-      : "",
-  };
-}
-
-type LeadPatch = {
-  name?: string | null;
-  phone?: string | null;
-  interest?: string | null;
-  customer_status?: string | null;
-  current_intent?: LeadIntent | null;
-  status?: LeadStatus;
-  source?: LeadSource | null;
-  city?: string | null;
-  pincode?: string | null;
-  notes?: string | null;
-  wants_to_connect_on_watsapp?: boolean | null;
-  visit_date_time?: string | null;
-};
-
-function diffForm(form: EditForm, lead: Lead): LeadPatch {
-  const patch: LeadPatch = {};
-  const nextName = form.name.trim() || null;
-  if (nextName !== (lead.name ?? null)) patch.name = nextName;
-
-  const nextPhone = form.phone.trim() || null;
-  if (nextPhone !== (lead.phone ?? null)) patch.phone = nextPhone;
-
-  const nextInterest = form.interest.trim() || null;
-  if (nextInterest !== (lead.interest ?? null)) patch.interest = nextInterest;
-
-  const nextStatus = form.customer_status.trim() || null;
-  if (nextStatus !== (lead.customer_status ?? null)) {
-    patch.customer_status = nextStatus;
-  }
-
-  const nextIntent = (form.lead_intent || null) as LeadIntent | null;
-  if (nextIntent !== (lead.current_intent ?? null)) {
-    patch.current_intent = nextIntent;
-  }
-
-  if (form.status !== lead.status) patch.status = form.status;
-
-  const nextSource = form.source === "none" ? null : form.source;
-  if (nextSource !== (lead.source ?? null)) patch.source = nextSource;
-
-  const nextCity = form.city.trim() || null;
-  if (nextCity !== (lead.city ?? null)) patch.city = nextCity;
-
-  const nextPincode = form.pincode.trim() || null;
-  if (nextPincode !== (lead.pincode ?? null)) patch.pincode = nextPincode;
-
-  const nextNotes = form.notes.trim() || null;
-  if (nextNotes !== (lead.notes ?? null)) patch.notes = nextNotes;
-
-  const nextWants =
-    form.wants_to_connect_on_watsapp === "yes"
-      ? true
-      : form.wants_to_connect_on_watsapp === "no"
-        ? false
-        : null;
-  if (nextWants !== (lead.wants_to_connect_on_watsapp ?? null)) {
-    patch.wants_to_connect_on_watsapp = nextWants;
-  }
-
-  const nextVisitIso = form.visit_date_time
-    ? fromLocalDateTimeInput(form.visit_date_time)
-    : null;
-  const currentVisitIso = lead.visit_date_time
-    ? new Date(lead.visit_date_time).toISOString()
-    : null;
-  if (nextVisitIso !== currentVisitIso) patch.visit_date_time = nextVisitIso;
-
-  return patch;
-}
 
 function LeadEditForm({
   form,

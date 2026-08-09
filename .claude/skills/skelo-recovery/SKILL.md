@@ -16,12 +16,23 @@ Load `skelo-tenancy` alongside. WhatsApp send mechanics live in `skelo-whatsapp`
 | `src/app/api/shopify/install/route.ts`, `oauth/callback/route.ts` | Per-client OAuth |
 | `src/app/api/cron/campaigns/tick/route.ts` | Shared drainer tick |
 | `src/lib/shopify/recovery.ts` | The engine |
+| `src/lib/shopify/checkout-events.ts` | Checkout receipt log + replay drainer |
 
 ## Ingest
 
-`route.ts:30` resolves the tenant from the **`x-shopify-shop-domain` header, never the payload**. `:49` `resolveShopifyIntegrationByShop`; `:55` HMAC verified with **that store's** `api_secret` over the **raw body** (`webhooks.ts:21-35`, base64 + `timingSafeEqual`).
+`route.ts:32` resolves the tenant from the **`x-shopify-shop-domain` header, never the payload**. `:51` `resolveShopifyIntegrationByShop`; `:57` HMAC verified with **that store's** `api_secret` over the **raw body** (`webhooks.ts:39-53`, base64 + `timingSafeEqual`).
 
-Unknown/disabled shop → **200 ack** (`:52`) so Shopify stops retrying. Work is deferred via `after()` (`:74`) to beat Shopify's ~5s deadline — **so handler failures are invisible to Shopify** and surface only in `logSkeloError`.
+Unknown/disabled shop → **200 ack** (`:52`) so Shopify stops retrying.
+
+**`checkouts/*` is receipt-first (`:84-115`).** Every verified delivery is inserted into `shopify_checkout_events` **before** the 200, then scheduled from `after()`. Three consequences:
+
+- A failed receipt write returns **503, not 200** — the only path here that deliberately refuses to ack, so Shopify's retries still apply.
+- `x-shopify-webhook-id` is the idempotency key (unique on `organisation_id, webhook_id`). A Shopify retry of the same event returns `ignored: "duplicate_delivery"` and does no work.
+- `x-shopify-triggered-at` is stored, so `received_at - triggered_at` is **delivery lag** — the number that made a 19½-hour receipt gap on 4 Aug 2026 undiagnosable before this table existed.
+
+`orders/*` still records **inside** `after()` (`recordAndSettleOrder`), so it survives a DB error but **not** a process kill. Same defect class, not yet moved.
+
+Everything after the ack runs where Shopify can't hear us fail — that's what the two ledgers exist to compensate for. `ecosystem.config.js` sets `kill_timeout: 30000` because Next needs 10-30s to drain pending `after()` callbacks and **pm2 defaults to 1600ms**; don't remove it.
 
 ## Schedule (`checkouts/create|update` → `recovery.ts:148`)
 
@@ -48,6 +59,8 @@ Proxy route `:124` scopes the lookup by `organisation_id` from the **verified sh
 `shopify_recovery_attempts` — unique `(organisation_id, checkout_token)`; status `pending|in_flight|succeeded|failed|canceled|skipped`; **independent `whatsapp_status` track**. Added incrementally: `cart_token` (`20260715000000`), `short_token`/`clicked_at` (`20260716000001`), `conversion_match` `'token'|'phone'` (`20260719000000`), `is_recovery` (`20260720000000`).
 
 `shopify_recovery_settings` — one row per org, PK `organisation_id`; `offer_type` `none|discount_code|free_product`, `call_window_start/end`.
+
+`shopify_checkout_events` (`20260806000000`) — the checkout receipt log. Unique `(organisation_id, webhook_id)`; `payload` jsonb holds the verified body so a replay needs no Shopify call. Drained by `drainPendingCheckoutEvents()` on the tick: unprocessed, `attempts < 5`, and **older than a 60s grace** so it can't race the inline `after()` attempt. Replays are **grouped by `checkout_token` and run in arrival order** (an older payload must not overwrite newer cart context), and a replay first checks `shopify_order_events` — a cart that converted while its receipt waited is closed, never dialled. Processed rows are pruned after 14 days (PII); unprocessed rows are never pruned, because a stuck receipt is evidence.
 
 `calls.shopify_recovery_attempt_id` — the seam back to the dial pipeline.
 

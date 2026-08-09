@@ -42,8 +42,11 @@ A map of every route in the app, who can reach it, what it renders, and how the 
     ├── Leads
     │   ├── /leads          → Lead CRM table + export + column resize
     │   └── /conversations  → Inbound + outbound call log w/ filters & realtime
-    ├── Outreach
-    │   └── /campaigns      → Bulk outbound: CSV upload, schedule/run, retries, live progress
+    ├── Outreach            → three siblings; Cart Recovery and COD are independent
+    │   │                      engines that merely live under /campaigns/… in the URL
+    │   ├── /campaigns      → Bulk outbound: CSV upload, schedule/run, retries, live progress
+    │   ├── /campaigns/templates/cart-recovery   → Abandoned-checkout recovery workspace
+    │   └── /campaigns/templates/cod-confirmation → COD order-confirmation calls
     ├── System
     │   ├── /settings       → Workspace + voice agent integration
     │   ├── /developer      → Placeholder (Access denied)
@@ -66,7 +69,7 @@ A map of every route in the app, who can reach it, what it renders, and how the 
 | `/onboarding` | [src/app/onboarding/page.tsx](../src/app/onboarding/page.tsx) | Authed · redirects to `/dashboard` if user has any org | Fallback when an authed user has no org (e.g. org was deleted) |
 | `/dashboard` | [src/app/(app)/dashboard/page.tsx](../src/app/(app)/dashboard/page.tsx) | Authed + org required | **Analytics dashboard** — range toggle (24h/7d/14d/30d), 4 KPI cards (total calls, unique users, avg duration, qualified rate), Daily New Leads bar chart, Product Interest ranking, Lead Temperature stacked chart, Call Outcomes breakdown |
 | `/pulse` | [src/app/(app)/pulse/page.tsx](../src/app/(app)/pulse/page.tsx) | Authed + org required · **hidden from sidebar (2026-04-28)** — reachable only by deep link | Operator snapshot — hot-but-uncontacted alert card, recent leads, upcoming reminders, recent calls |
-| `/leads` | [src/app/(app)/leads/page.tsx](../src/app/(app)/leads/page.tsx) | Authed + org required | Leads table (tabular) + Export dialog + filter bar (Status, Intent, Source, Contacted, Wants WA) + 4 contextual stat cards. Columns are drag-resizable (persisted in `localStorage`). Realtime updates via `useLeadsRealtime`. New **Actionable** column (between Intent and Pending Action) shows the agent's extracted next-step note. |
+| `/leads` | [src/app/(app)/leads/page.tsx](../src/app/(app)/leads/page.tsx) | Authed + org required | One row per unique phone, rendered by `LeadsActivityTable`. Query: `?include=all` (include zero-call leads) and `?q=` (server-side search). Middle columns are **catalog-driven** from `lead_field_definitions` and drag-resizable (persisted in `localStorage`). 3 lifetime stat cards. Realtime via `useLeadsRealtime`. |
 | `/conversations` | [src/app/(app)/conversations/page.tsx](../src/app/(app)/conversations/page.tsx) | Authed + org required | Unified call log (inbound + outbound). Columns: Call ID, Lead / Number, Date & Time, Duration, Direction, Outcome, Audio. Filter bar: Range (24h / 7d / 30d / all), Agent, Outcome, Direction, search. Click a row → `CallTranscriptDialog`. **Audio → Play** opens `recording_url`. Realtime updates via `useCallsRealtime`. |
 | `/campaigns` | [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx) | Authed + org required | **Bulk outbound calling.** Header + 4 stat cards (Total / Running / Scheduled / Completed) + the campaigns table (ID, File, Contacts `valid/total`, Status, Progress bar `succeeded·in-flight·failed`, Workflow, Created, row actions). Click the ID or the list icon → call-log sheet. New-campaign button opens [`CampaignUploadDialog`](../src/components/app/campaign-upload-dialog.tsx) (drag-and-drop CSV, run-now or schedule, retries 0–5, retry interval, retry-on triggers). Realtime via `useCampaignsRealtime`. See [api.md § Campaigns](api.md#campaigns-bulk-outbound). |
 | `/reminders` | [src/app/(app)/reminders/page.tsx](../src/app/(app)/reminders/page.tsx) | Authed + org required | Tabbed reminder list. Query: `?status=pending\|done\|dismissed` (default `pending`). Not in sidebar — reached from dashboard widgets and the lead detail sheet. |
@@ -145,8 +148,8 @@ Edge cases:
 
 | Layout | File | Wraps | Adds |
 | --- | --- | --- | --- |
-| Root | [src/app/layout.tsx](../src/app/layout.tsx) | Everything | `<html>`/`<body>`, fonts, `ThemeProvider`, Sonner `<Toaster>` |
-| App shell | [src/app/(app)/layout.tsx](../src/app/(app)/layout.tsx) | Every `(app)` page | `requireSession()` gate; fetches total lead count for the sidebar badge; `<SidebarNav>` + `<Topbar>` (with notifications); `<main>` scroll container. |
+| Root | [src/app/layout.tsx](../src/app/layout.tsx) | Everything | `<html>`/`<body>`, Inter + Geist Mono, the pre-paint theme script in `<head>` (see [src/lib/theme.ts](../src/lib/theme.ts) — it must stay in a Server Component to run before first paint), our own `ThemeProvider` (not `next-themes`), Sonner `<Toaster>` |
+| App shell | [src/app/(app)/layout.tsx](../src/app/(app)/layout.tsx) | Every `(app)` page | `requireSession()` gate; fetches the unique-lead count for the sidebar badge; `<AppShellProvider>` + `<AppShellGrid>` (260px or a 4rem rail, persisted in `localStorage`), `<SidebarNav>` + `<Topbar>` (mobile nav, breadcrumbs, palette, notifications); `<main>` scroll container. |
 | Admin shell | [src/app/(admin)/layout.tsx](../src/app/(admin)/layout.tsx) | Every `(admin)/admin/**` page | `requireAdmin()` gate; own `<AdminSidebar>` (no customer-app chrome); admins without an organisation are still allowed through. |
 
 Auth pages (`/login`, `/signup`, `/onboarding`) intentionally do **not** sit under `(app)` — they need a clean full-bleed layout, no sidebar, no topbar.
@@ -160,16 +163,26 @@ These render across multiple routes inside `(app)`. Consult the file directly fo
 | Component | File | Used by |
 | --- | --- | --- |
 | `Logo` | [src/components/brand/logo.tsx](../src/components/brand/logo.tsx) | Landing header, auth pages, sidebar |
-| `SidebarNav` | [src/components/app/sidebar-nav.tsx](../src/components/app/sidebar-nav.tsx) | App layout — grouped sections + total-lead count badge |
-| `Topbar` | [src/components/app/topbar.tsx](../src/components/app/topbar.tsx) | App layout |
+| `SidebarNav` / `SidebarNavBody` | [src/components/app/sidebar-nav.tsx](../src/components/app/sidebar-nav.tsx) | App layout — sections + lead-count badge, driven by [src/lib/nav.ts](../src/lib/nav.ts). Collapses to a 4rem **icon rail** with tooltips, not to nothing. `SidebarNavBody` is shared with `MobileNav`. |
+| `MobileNav` | [src/components/app/mobile-nav.tsx](../src/components/app/mobile-nav.tsx) | Topbar, below `md` — a left `Sheet` drawer. The `<aside>` is `hidden md:flex`, so this is the *only* navigation on a phone. |
+| `Topbar` | [src/components/app/topbar.tsx](../src/components/app/topbar.tsx) | App layout — mobile nav trigger, sidebar toggle, `Breadcrumbs`, `CommandPalette`, bell, user menu |
+| `Breadcrumbs` | [src/components/app/breadcrumbs.tsx](../src/components/app/breadcrumbs.tsx) | Topbar — nav-derived trail; renders **only at 2+ crumbs**, since one crumb only repeats the page `<h1>` |
+| `CommandPalette` | [src/components/app/command-palette.tsx](../src/components/app/command-palette.tsx) | Topbar — Cmd/Ctrl+K. Nav jump + debounced lead search (`listLeads`) + theme. Replaced a search `<Input>` that had no handler and no results. |
 | `NotificationsBell` | [src/components/app/notifications-bell.tsx](../src/components/app/notifications-bell.tsx) | Topbar — popover of pending reminders, inline mark-done |
-| `UserMenu` | [src/components/app/user-menu.tsx](../src/components/app/user-menu.tsx) | Topbar — avatar dropdown, logout |
+| `UserMenu` | [src/components/app/user-menu.tsx](../src/components/app/user-menu.tsx) | Topbar — avatar dropdown, **theme radio (Light / Dark / System)**, logout |
+| `EntityAvatar` | [src/components/app/entity-avatar.tsx](../src/components/app/entity-avatar.tsx) | Leads table, lead sheet, `/pulse` — initials on a tone hashed from the name, so a person is the same colour on every surface |
+| `NavTabs` | [src/components/app/nav-tabs.tsx](../src/components/app/nav-tabs.tsx) | `/leads`, `/reminders`, campaign detail — `<Link>`-based underline tabs for URL-switching views, which keeps middle-click working |
+| `DataTableCard` / `DataTableToolbar` / `DataTableHead` | [src/components/app/data-table.tsx](../src/components/app/data-table.tsx) | Every `<table>` in the app — shared chrome only; columns, sorting and rows stay with each table |
+| `SectionLabel` | [src/components/app/section-label.tsx](../src/components/app/section-label.tsx) | ~34 sites — the one uppercase micro-label |
+| `ErrorCard` | [src/components/app/error-card.tsx](../src/components/app/error-card.tsx) | 23 sites — built on `Alert` for the `role="alert"`, because it renders *instead of* what the user asked for |
+| `DetailSheetShell` + primitives | [src/components/app/detail-sheet/](../src/components/app/detail-sheet/) | Lead sheet, cart sheet, COD sheet, recovery call sheet — pinned header, per-tab scrolling, `DescriptionList` (labels left, values right), `DetailPanel`, `DetailTimeline` |
+| `CallSplitView` / `CallDetailPane` | [src/components/app/call-detail/](../src/components/app/call-detail/) | Lead sheet, cart sheet, COD sheet, recovery call sheet — the call list rail + full call detail. Typed structurally (`CallPaneCall`) so `Call`, `RecoveryCallRow` and `CodCallRow` all fit with no adapter. A hosting panel must be `<DetailSheetPanel fill>`. |
+| `CodConfirmationDetail` | [src/components/app/cod-confirmation-detail.tsx](../src/components/app/cod-confirmation-detail.tsx) | `/campaigns/templates/cod-confirmation` — order summary, lifecycle timeline and confirmation-call rail. New: the section previously had no detail view, so its calls were invisible. |
 | `StatCard` | [src/components/app/stat-card.tsx](../src/components/app/stat-card.tsx) | Analytics dashboard, `/leads` — icon + label + value + "vs. previous period" trend |
-| `LeadsTable` | [src/components/app/leads-table.tsx](../src/components/app/leads-table.tsx) | `/leads` — true `<table>` with status/intent/pending-action badges. **Drag-resizable columns** via per-`<th>` handle, widths persisted in `localStorage` (`skelo.leads-table.col-widths.v1`). Includes the **Actionable** column. Realtime via `useLeadsRealtime`. |
-| `LeadsFilterBar` | [src/components/app/leads-filter-bar.tsx](../src/components/app/leads-filter-bar.tsx) | `/leads` — labelled filter controls for Status, Intent, Source, Contacted, Wants WA |
+| `LeadsActivityTable` | [src/components/app/leads-activity-table.tsx](../src/components/app/leads-activity-table.tsx) | `/leads` — true `<table>`, one row per unique phone, with per-lead call counts. Middle columns are **catalog-driven** from `lead_field_definitions`, and the filter and sort controls are built from the same catalog. **Drag-resizable columns** persisted in `localStorage`. Realtime via `useLeadsRealtime`. Replaced `leads-table.tsx` + `leads-filter-bar.tsx`, neither of which exists any more. |
 | `LeadCreateDialog` | [src/components/app/lead-create-dialog.tsx](../src/components/app/lead-create-dialog.tsx) | `/leads`, `/pulse` — captures name/phone/product/intent/status/city/pincode/notes; `source` stamped as `manual` implicitly |
 | `LeadExportDialog` | [src/components/app/lead-export-dialog.tsx](../src/components/app/lead-export-dialog.tsx) | `/leads` header — duration picker + CSV download |
-| `LeadDetailSheet` | [src/components/app/lead-detail-sheet.tsx](../src/components/app/lead-detail-sheet.tsx) | `/leads` — read + edit all lead fields including `actionable` (textarea) and `recording_url` (URL input + **Listen** link). Renders Reminders + Call History with transcript access. |
+| `LeadDetailSheet` | [src/components/app/lead-detail-sheet.tsx](../src/components/app/lead-detail-sheet.tsx) | `/leads` — tabbed **Summary / Calls / Activity** on `DetailSheetShell`, fixed `lg` width. Reads + edits lead fields including `actionable` and `recording_url`. Deep-links a call via `?call=<id>` written with raw `history.replaceState` — **never `router.replace`**, which would re-run the leads server component and unmount the sheet mid-click. **One** edit mode for the whole Summary panel — Edit in the pinned header, a single sticky Save/Cancel, one `updateLead` call carrying the row fields and both JSONB patches. Delete lives in the header overflow menu; there is no footer. Pure helpers live in [src/lib/leads/](../src/lib/leads/). |
 | `ConversationsTable` | [src/components/app/conversations-table.tsx](../src/components/app/conversations-table.tsx) | `/conversations` + campaign **Calls** tab — `<table>` of `CallWithLead` rows with direction badge, status badge, **Disposition** column (`call_outcome` + `requested_callback_at`), **Best disposition** column (`best_outcome` — contact's best across attempts; campaign Calls tab only), **Audio → Play** for `recording_url`, transcript fallback. Realtime via `useCallsRealtime`. |
 | `ConversationsFilterBar` | [src/components/app/conversations-filter-bar.tsx](../src/components/app/conversations-filter-bar.tsx) | `/conversations` — Range (24h / 7d / 30d / all) · Agent · Outcome · Direction · debounced phone/ID search. URL-driven via search params. |
 | `CampaignCallsFilterBar` | [src/components/app/campaign-calls-filter-bar.tsx](../src/components/app/campaign-calls-filter-bar.tsx) | Campaign detail **Calls** tab — Status · Call outcome (from `listCampaignOutcomeOptions`) · debounced number/ID search. URL-driven, always preserves `tab=calls`. |
@@ -178,9 +191,8 @@ These render across multiple routes inside `(app)`. Consult the file directly fo
 | `ReminderDialog` | [src/components/app/reminder-dialog.tsx](../src/components/app/reminder-dialog.tsx) | `/pulse`, `/leads` (per-row), `/reminders`, NotificationsBell |
 | `WhatsAppDialog` | [src/components/app/whatsapp-dialog.tsx](../src/components/app/whatsapp-dialog.tsx) | `/leads` (per-row) |
 | `LockedCard` | [src/components/app/locked-card.tsx](../src/components/app/locked-card.tsx) | `/developer`, `/billing` — shared "Access denied" / "Coming soon" placeholder |
-| `CampaignsTable` | [src/components/app/campaigns-table.tsx](../src/components/app/campaigns-table.tsx) | `/campaigns` — `<table>` of `CampaignListItem` rows with status badge, **Best disposition** column (`best_disposition` — campaign's best across all contacts), segmented progress bar (succeeded · in-flight · failed), and per-row actions (Run Now, Stop, Download, Call Log, Delete). Realtime via `useCampaignsRealtime`. |
+| `CampaignsTable` | [src/components/app/campaigns-table.tsx](../src/components/app/campaigns-table.tsx) | `/campaigns` — `<table>` of `CampaignListItem` rows with status badge, **Best disposition** column (`best_disposition` — campaign's best across all contacts), segmented progress bar (succeeded · in-flight · failed), and per-row actions (Run Now, Stop, Download results CSV, Delete). Realtime via `useCampaignsRealtime`. |
 | `CampaignUploadDialog` | [src/components/app/campaign-upload-dialog.tsx](../src/components/app/campaign-upload-dialog.tsx) | `/campaigns` header — name, **drag-and-drop CSV** (or click-to-browse) with inline phone-column detection and `valid / total` count, run-now vs schedule (datetime), retry slider 0–9, retry interval Select (5 min → 24 hr), retry-on checkboxes (no_answer / busy / failed / canceled), caller-ID number pool, and caller-ID switching (connect-rate floor % + window). Submits via `createCampaign`. |
-| `CampaignCallLogSheet` | [src/components/app/campaign-call-log-sheet.tsx](../src/components/app/campaign-call-log-sheet.tsx) | Triggered from `CampaignsTable` (ID column or list icon). Right-side `Sheet` listing every dial across all attempts for the campaign — phone, attempt #, status, duration, recording link, error message. |
 | `VoiceAgentStatusCard` | [src/components/app/voice-agent-status-card.tsx](../src/components/app/voice-agent-status-card.tsx) | `/settings` — **read-only** view of the org's voice agent provisioned by an admin |
 | `VoiceAgentBanner` | [src/components/app/voice-agent-banner.tsx](../src/components/app/voice-agent-banner.tsx) | `/dashboard`, `/pulse` — "awaiting provisioning" if no integration, celebration banner for 7 days after connection |
 
@@ -205,7 +217,13 @@ These render across multiple routes inside `(app)`. Consult the file directly fo
 | `HorizontalBarList` | [src/components/app/analytics/horizontal-bar-list.tsx](../src/components/app/analytics/horizontal-bar-list.tsx) | Dashboard — Product Interest ranking |
 | `CallOutcomes` | [src/components/app/analytics/call-outcomes.tsx](../src/components/app/analytics/call-outcomes.tsx) | Dashboard — segmented bar + legend for call statuses |
 
-Analytics data is computed in [src/lib/analytics/dashboard.ts](../src/lib/analytics/dashboard.ts) (server-only). All charts are plain CSS + Tailwind — no chart library is bundled.
+| `PieChart` | [src/components/app/analytics/pie-chart.tsx](../src/components/app/analytics/pie-chart.tsx) | Admin dashboard widgets — SVG donut, up to 8 slices then an "Other" wedge |
+| `LineChart` | [src/components/app/analytics/line-chart.tsx](../src/components/app/analytics/line-chart.tsx) | Admin dashboard widgets — SVG line + area, resize-observed |
+| `PivotTable` | [src/components/app/analytics/pivot-table.tsx](../src/components/app/analytics/pivot-table.tsx) | Admin dashboard widgets |
+
+Analytics data is computed in [src/lib/analytics/dashboard.ts](../src/lib/analytics/dashboard.ts) (server-only). All charts are plain CSS + SVG + Tailwind — no chart library is bundled.
+
+**Two palettes, and the split is deliberate.** Categorical series (a breakdown by agent, by product, by city) read from `--chart-1..8` via [src/lib/charts.ts](../src/lib/charts.ts). Status series do **not**: in `call-outcomes.tsx` a failed call is `destructive` and a completed one is `success`, because there the colour carries the meaning. See [ui-refresh.md](ui-refresh.md).
 
 The two action dialogs are designed to be triggered from any surface that has a `lead` (WhatsApp) or an `organisationId` (reminder), so the same UX appears whether you launch them from the table, the bell, or a stat card.
 
@@ -222,7 +240,7 @@ These subscribe to Supabase Postgres CHANGES so `(app)` pages auto-refresh when 
 
 | Hook | File | Subscribed to | Used by |
 | --- | --- | --- | --- |
-| `useLeadsRealtime(orgSlug)` | [src/hooks/use-leads-realtime.ts](../src/hooks/use-leads-realtime.ts) | `public.leads` filtered by `org_slug=eq.<slug>` | `LeadsTable` |
+| `useLeadsRealtime(orgSlug)` | [src/hooks/use-leads-realtime.ts](../src/hooks/use-leads-realtime.ts) | `public.leads` filtered by `org_slug=eq.<slug>` | `LeadsActivityTable` |
 | `useCallsRealtime(orgId)` | [src/hooks/use-calls-realtime.ts](../src/hooks/use-calls-realtime.ts) | `public.calls` filtered by `organisation_id=eq.<id>` | `ConversationsTable` |
 | `useCampaignsRealtime(orgId)` | [src/hooks/use-campaigns-realtime.ts](../src/hooks/use-campaigns-realtime.ts) | `public.campaigns` + `public.campaign_contacts` filtered by `organisation_id=eq.<id>` | `CampaignsTable` |
 | `useClientNow()` | [src/hooks/use-client-now.ts](../src/hooks/use-client-now.ts) | (no subscription) | Pages that render relative timestamps — gives a hydration-safe `Date.now()` ticker. |

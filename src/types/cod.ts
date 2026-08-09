@@ -1,6 +1,8 @@
 // Types for the COD (Cash-on-Delivery) order-confirmation section. A separate
 // feature from cart recovery — its own settings, queue, and dashboard.
 
+import type { CallTranscriptStatus } from "@/types/call";
+
 export type CodConfirmationStatus =
   | "pending"
   | "in_flight"
@@ -76,4 +78,45 @@ export interface CodConfirmationRow {
 export interface CodPage<T> {
   rows: T[];
   total: number;
+}
+
+// One confirmation call. Field-for-field a subset of the shared
+// `CallPaneCall` contract, so the COD sheet renders through the same call panel
+// the lead sheet and cart recovery use rather than growing a fourth copy.
+export interface CodCallRow {
+  id: string;
+  status: string;
+  direction: string;
+  to_phone: string | null;
+  from_phone: string | null;
+  error_message: string | null;
+  bolna_call_id: string | null;
+  created_at: string;
+  started_at: string | null;
+  answered_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  recording_url: string | null;
+  transcript: string | null;
+  transcript_url: string | null;
+  transcript_status: CallTranscriptStatus;
+  language: string | null;
+  summary: string | null;
+  actionable: string | null;
+  name_extracted: string | null;
+  interest: string | null;
+  lead_intent_extracted: string | null;
+  customer_status: string | null;
+  call_outcome: string | null;
+  requested_callback_at: string | null;
+  connect_on_whatsapp: boolean | null;
+  visit_scheduled_at: string | null;
+  lead_data: Record<string, unknown> | null;
+  custom_data: Record<string, unknown> | null;
+  // The linked lead's current view, attached on read. Lets a COD call render
+  // the shared pane's Lead panel — on this surface the call is all you can see,
+  // so "who is this?" is otherwise unanswerable.
+  lead_name?: string | null;
+  lead_status?: string | null;
+  lead_intent?: string | null;
 }

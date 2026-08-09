@@ -9,6 +9,7 @@ import {
   listShopifyOffers,
   saveRecoverySettings,
 } from "@/actions/shopify-recovery";
+import { SectionLabel } from "@/components/app/section-label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -22,7 +23,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { RECOVERY_TEMPLATE_LAYOUTS } from "@/lib/shopify/recovery-templates";
+import {
+  buildRecoveryTemplatePreview,
+  layoutRequiresOffer,
+  RECOVERY_TEMPLATE_LAYOUTS,
+  RECOVERY_TEMPLATE_LAYOUT_VALUES,
+} from "@/lib/shopify/recovery-templates";
 import type {
   RecoveryTemplateLayout,
   ShopifyDiscountKind,
@@ -160,6 +166,34 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
     setOfferCode(offer.code ?? "");
   }
 
+  // Live preview of the message the selected layout produces. The OFFER half is
+  // whatever the operator has configured right now — unsaved edits included, so
+  // the preview answers "what will this look like?" before Save, not after. The
+  // CART half is a fixed sample; we have no real cart at settings time.
+  const preview = React.useMemo(
+    () =>
+      buildRecoveryTemplatePreview(whatsappLayout, {
+        offerType,
+        offerLabel,
+        offerCode,
+        discountValue,
+        discountKind,
+      }),
+    [
+      whatsappLayout,
+      offerType,
+      offerLabel,
+      offerCode,
+      discountValue,
+      discountKind,
+    ],
+  );
+
+  // Only warn about a missing offer when the chosen layout actually carries
+  // offer variables — rakhi_offer deliberately has none (the tiers are static
+  // copy in the approved body), so the warning would be noise there.
+  const layoutNeedsOffer = layoutRequiresOffer(whatsappLayout);
+
   const discountHint =
     offerType !== "none" && discountValue != null && discountKind
       ? discountKind === "percentage"
@@ -217,9 +251,9 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
         aria-expanded={open}
         className="flex w-full items-center justify-between py-1 text-left"
       >
-        <span className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+        <SectionLabel as="span">
           Settings
-        </span>
+        </SectionLabel>
         <ChevronDownIcon
           className={cn(
             "size-8 text-muted-foreground transition-transform",
@@ -364,11 +398,7 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {(
-                      Object.keys(
-                        RECOVERY_TEMPLATE_LAYOUTS,
-                      ) as RecoveryTemplateLayout[]
-                    ).map((key) => (
+                    {RECOVERY_TEMPLATE_LAYOUT_VALUES.map((key) => (
                       <SelectItem key={key} value={key}>
                         {RECOVERY_TEMPLATE_LAYOUTS[key].label}
                       </SelectItem>
@@ -379,6 +409,43 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
                   {RECOVERY_TEMPLATE_LAYOUTS[whatsappLayout].description} Point
                   the template name below at a Meta template with the matching
                   variable count.
+                </p>
+              </div>
+            ) : null}
+
+            {/* What the shopper actually receives, rendered from the selected
+                layout. The offer values are live (they follow the fields below,
+                unsaved); the cart is a fixed sample. */}
+            {whatsappEnabled ? (
+              <div className="grid gap-2">
+                <div className="flex items-center justify-between gap-3">
+                  <Label>Message preview</Label>
+                  <Badge variant="secondary">
+                    {preview.params.length} variables
+                  </Badge>
+                </div>
+                <div className="rounded-lg rounded-tl-sm border border-border/60 bg-muted/40 px-3.5 py-3">
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                    {preview.body}
+                  </p>
+                </div>
+                <dl className="grid gap-x-3 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
+                  {preview.params.map((p) => (
+                    <div key={p.position} className="flex items-baseline gap-1.5">
+                      <dt className="shrink-0 font-mono text-foreground">
+                        {`{{${p.position}}}`}
+                      </dt>
+                      <dd className="min-w-0 truncate">
+                        {p.key} — {p.value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                <p className="text-xs text-muted-foreground">
+                  Sample cart and shopper; your offer is real. The wording comes
+                  from Skelo&apos;s reference copy for this style — the body that
+                  ships is the one Meta approved under the template name below,
+                  so submit this text when you create it.
                 </p>
               </div>
             ) : null}
@@ -402,8 +469,8 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
               </div>
             ) : null}
 
-            {whatsappEnabled && offerType === "none" ? (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            {whatsappEnabled && layoutNeedsOffer && offerType === "none" ? (
+              <p className="rounded-md border border-warning/30 bg-warning-muted px-3 py-2 text-xs text-warning">
                 No discount offer is set, so the offer fields (discount code,
                 discounted total) in the WhatsApp template will be blank. If your
                 approved template references them, pick an offer below — or use a
@@ -575,7 +642,7 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
                   </p>
                 </div>
                 {offerCodeSpoken.trim() ? (
-                  <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed text-muted-foreground">
+                  <div className="rounded-md border border-warning/30 bg-warning-muted p-3 text-xs leading-relaxed text-muted-foreground">
                     Your voice agent prompt must use{" "}
                     <code className="text-foreground">
                       {"{discount_code_spoken}"}

@@ -110,7 +110,7 @@ export function LeadFieldLock({ leadId, fieldPath, value }: Props) {
         onClick={() => onOpen(true)}
         className={
           locked === true
-            ? "ml-0.5 inline-flex items-center text-amber-600 transition-colors hover:text-amber-700 dark:text-amber-400"
+            ? "ml-0.5 inline-flex items-center text-warning transition-colors hover:text-warning"
             : "ml-0.5 inline-flex items-center text-muted-foreground/40 transition-colors hover:text-muted-foreground"
         }
         title={
@@ -137,7 +137,7 @@ export function LeadFieldLock({ leadId, fieldPath, value }: Props) {
               <div className="flex items-center gap-2 text-sm">
                 {locked === true ? (
                   <>
-                    <LockIcon className="size-3.5 text-amber-600 dark:text-amber-400" />
+                    <LockIcon className="size-3.5 text-warning" />
                     <span className="font-medium">Locked</span>
                   </>
                 ) : (

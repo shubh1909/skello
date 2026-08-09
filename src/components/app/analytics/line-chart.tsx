@@ -115,13 +115,17 @@ export function LineChart({
           </g>
         ))}
 
-        {/* Filled area */}
-        <path d={areaPath} className="fill-foreground/10" />
+        {/* Filled area. `chart-1`, not `foreground` — in light mode the two
+            teals are the same value, but in dark mode `--foreground` is
+            near-white ink meant for text and made this read as a highlight
+            rather than a series. `--chart-1` is tuned per theme for exactly
+            this. Same reasoning on the line and the markers below. */}
+        <path d={areaPath} className="fill-chart-1/12" />
 
         {/* Line */}
         <path
           d={linePath}
-          className="stroke-foreground"
+          className="stroke-chart-1"
           strokeWidth={1.5}
           fill="none"
           strokeLinecap="round"
@@ -137,7 +141,7 @@ export function LineChart({
                 cx={xFor(i)}
                 cy={yFor(d.value)}
                 r={isHover ? 4 : 2.5}
-                className="fill-background stroke-foreground"
+                className="fill-background stroke-chart-1"
                 strokeWidth={1.5}
               />
               <rect

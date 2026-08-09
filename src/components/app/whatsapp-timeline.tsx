@@ -1,11 +1,18 @@
 "use client";
 
-import { CheckIcon, MousePointerClickIcon, XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ClockIcon,
+  MousePointerClickIcon,
+  XIcon,
+} from "lucide-react";
 
+import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import {
   classifyWhatsAppError,
   whatsappReasonLabel,
 } from "@/lib/whatsapp/error-codes";
+import { cn } from "@/lib/utils";
 import type { RecoveryMessageRow } from "@/types/shopify";
 
 // The delivery journey of one WhatsApp message, both sides of it:
@@ -18,7 +25,8 @@ import type { RecoveryMessageRow } from "@/types/shopify";
 //
 // Worth separating because "sent" says nothing about whether it landed: an
 // accepted send that Meta later drops looks identical at our boundary. The
-// `via` label makes it obvious who is asserting what when a cart goes quiet.
+// `via` attribution makes it obvious who is asserting what when a cart goes
+// quiet.
 
 type StepState = "done" | "failed" | "pending";
 
@@ -113,48 +121,92 @@ function stepsFor(m: RecoveryMessageRow): Step[] {
   return steps;
 }
 
+/** The furthest state the message actually reached, for the card's header. */
+function headlineStatus(m: RecoveryMessageRow): {
+  label: string;
+  variant: BadgeVariant;
+} {
+  if (m.status === "failed") return { label: "Failed", variant: "destructive" };
+  if (m.read_at) return { label: "Read", variant: "success" };
+  if (m.delivered_at) return { label: "Delivered", variant: "success" };
+  if (m.sent_at) return { label: "Sent", variant: "info" };
+  return { label: "Queued", variant: "neutral" };
+}
+
 function StepIcon({ state }: { state: StepState }) {
   if (state === "done") {
-    return <CheckIcon className="size-3.5 shrink-0 text-emerald-600" />;
+    return (
+      <span className="grid size-5 place-items-center rounded-full bg-success-muted">
+        <CheckIcon className="size-3 text-success" />
+      </span>
+    );
   }
   if (state === "failed") {
-    return <XIcon className="size-3.5 shrink-0 text-destructive" />;
+    return (
+      <span className="grid size-5 place-items-center rounded-full bg-destructive-muted">
+        <XIcon className="size-3 text-destructive" />
+      </span>
+    );
   }
   return (
-    <span
-      aria-hidden
-      className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40"
-      style={{ margin: "0 0.4rem" }}
-    />
+    <span className="grid size-5 place-items-center rounded-full border border-dashed border-border">
+      <ClockIcon className="size-2.5 text-muted-foreground/60" />
+    </span>
   );
 }
 
-function StepRow({ step }: { step: Step }) {
+/**
+ * One step of the journey.
+ *
+ * The old version was five fixed-width spans on one line (`w-16`, `w-20`, …)
+ * with the failure reason **truncated** at the end — so the one field that says
+ * what to do about a dead channel was the one field you couldn't read. Label and
+ * time share the first line, the attribution sits opposite, and any detail gets
+ * a full-width line of its own.
+ */
+function StepRow({ step, last }: { step: Step; last: boolean }) {
   return (
-    <li className="flex items-baseline gap-2 text-xs">
-      <span className="flex w-4 justify-center self-center">
+    <li className="relative flex gap-3 pb-3 last:pb-0">
+      {/* The connector, drawn behind the icons and stopped on the last row. */}
+      {last ? null : (
+        <span
+          aria-hidden
+          className="absolute top-5 bottom-0 left-2.25 w-px bg-border"
+        />
+      )}
+      <span className="relative z-10 shrink-0 bg-card">
         <StepIcon state={step.state} />
       </span>
-      <span
-        className={
-          step.state === "pending"
-            ? "w-16 text-muted-foreground/60"
-            : step.state === "failed"
-              ? "w-16 font-medium text-destructive"
-              : "w-16 font-medium"
-        }
-      >
-        {step.label}
-      </span>
-      <span className="w-20 font-mono tabular-nums text-muted-foreground">
-        {step.at ? formatTime(step.at) : ""}
-      </span>
-      <span className="text-[11px] text-muted-foreground/70">{step.via}</span>
-      {step.detail ? (
-        <span className="min-w-0 flex-1 truncate text-[11px] text-destructive/80">
-          {step.detail}
-        </span>
-      ) : null}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span
+            className={cn(
+              "text-sm font-medium",
+              step.state === "pending" && "text-muted-foreground/70",
+              step.state === "failed" && "text-destructive",
+            )}
+          >
+            {step.label}
+          </span>
+          {step.at ? (
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {formatTime(step.at)}
+            </span>
+          ) : step.state === "pending" ? (
+            <span className="text-xs text-muted-foreground/60">
+              not yet reported
+            </span>
+          ) : null}
+          <span className="ml-auto text-[11px] text-muted-foreground/70">
+            {step.via}
+          </span>
+        </div>
+        {step.detail ? (
+          <p className="mt-1 rounded bg-destructive-muted px-2 py-1 text-xs leading-relaxed text-destructive wrap-break-word">
+            {step.detail}
+          </p>
+        ) : null}
+      </div>
     </li>
   );
 }
@@ -165,48 +217,65 @@ export function WhatsAppMessageTimeline({
   message: RecoveryMessageRow;
 }) {
   const steps = stepsFor(message);
+  const headline = headlineStatus(message);
+
   return (
-    <div className="rounded-md border border-border/60 bg-card px-3 py-2.5">
-      <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <span className="truncate text-xs font-medium">
+    <section className="overflow-hidden rounded-lg border bg-card">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-primary/3 px-3.5 py-2">
+        <span className="truncate font-mono text-xs">
           {message.template_name ?? "template"}
         </span>
-        <span className="shrink-0 text-[11px] text-muted-foreground">
+        <Badge variant={headline.variant}>{headline.label}</Badge>
+        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
           {formatStamp(message.sent_at ?? message.created_at)}
         </span>
-      </div>
-      <ul className="flex flex-col gap-1">
-        {steps.map((s) => (
-          <StepRow key={s.label} step={s} />
+      </header>
+      <ol className="px-3.5 py-3">
+        {steps.map((step, i) => (
+          <StepRow key={step.label} step={step} last={i === steps.length - 1} />
         ))}
-      </ul>
-    </div>
+      </ol>
+    </section>
   );
 }
 
-// Cart-level, so it sits below the message list rather than inside a message:
-// the short-link token belongs to the ATTEMPT, so when retries sent several
-// messages we genuinely cannot say which one was clicked.
+/**
+ * Cart-level, so it sits below the message list rather than inside a message:
+ * the short-link token belongs to the ATTEMPT, so when retries sent several
+ * messages we genuinely cannot say which one was clicked.
+ */
 export function WhatsAppClickStep({ clickedAt }: { clickedAt: string | null }) {
-  if (!clickedAt) {
-    return (
-      <p className="flex items-center gap-2 px-3 text-xs text-muted-foreground/60">
-        <MousePointerClickIcon className="size-3.5 shrink-0" />
-        Link not opened yet
-      </p>
-    );
-  }
+  const opened = Boolean(clickedAt);
   return (
-    <p className="flex items-center gap-2 px-3 text-xs">
-      <MousePointerClickIcon className="size-3.5 shrink-0 text-emerald-600" />
-      <span className="font-medium">Link opened</span>
-      <span className="font-mono tabular-nums text-muted-foreground">
-        {formatStamp(clickedAt)}
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3.5 py-2.5",
+        opened ? "border-success/25 bg-success-muted" : "border-dashed bg-card",
+      )}
+    >
+      <MousePointerClickIcon
+        className={cn(
+          "size-4 shrink-0",
+          opened ? "text-success" : "text-muted-foreground/50",
+        )}
+      />
+      <span
+        className={cn(
+          "text-sm font-medium",
+          opened ? "text-success" : "text-muted-foreground",
+        )}
+      >
+        {opened ? "Link opened" : "Link not opened yet"}
       </span>
-      <span className="text-[11px] text-muted-foreground/70">
+      {opened ? (
+        <span className="font-mono text-xs tabular-nums text-success/80">
+          {formatStamp(clickedAt)}
+        </span>
+      ) : null}
+      <span className="ml-auto text-[11px] text-muted-foreground/70">
         our redirect
       </span>
-    </p>
+    </div>
   );
 }
 

@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { DataTableHead } from "@/components/app/data-table";
 import { cn } from "@/lib/utils";
 
 export interface PivotCell {
@@ -52,31 +53,29 @@ export function PivotTable({
   return (
     <div className="w-full overflow-x-auto">
       <table className="w-full border-collapse text-sm">
-        <thead>
-          <tr className="border-b border-border/60 text-xs uppercase tracking-wider text-muted-foreground">
+        <DataTableHead filled={false}>
+          <th
+            scope="col"
+            className="sticky left-0 z-10 bg-background px-3 py-2 text-left font-medium"
+          >
+            {rowHeader} \ {columnHeader}
+          </th>
+          {columns.map((c) => (
             <th
+              key={c}
               scope="col"
-              className="sticky left-0 z-10 bg-background px-3 py-2 text-left font-medium"
+              className="px-3 py-2 text-right font-medium"
             >
-              {rowHeader} \ {columnHeader}
+              {c || "—"}
             </th>
-            {columns.map((c) => (
-              <th
-                key={c}
-                scope="col"
-                className="px-3 py-2 text-right font-medium"
-              >
-                {c || "—"}
-              </th>
-            ))}
-            <th
-              scope="col"
-              className="border-l border-border/60 px-3 py-2 text-right font-medium"
-            >
-              Total
-            </th>
-          </tr>
-        </thead>
+          ))}
+          <th
+            scope="col"
+            className="border-l border-border/60 px-3 py-2 text-right font-medium"
+          >
+            Total
+          </th>
+        </DataTableHead>
         <tbody className="divide-y divide-border/60">
           {rows.map((r) => {
             const rowTotal = rowTotals.get(r) ?? 0;

@@ -182,6 +182,17 @@ describe("template layout contract", () => {
     // changing how many params classic sends would 400 every live classic org.
     expect(RECOVERY_TEMPLATE_LAYOUTS.classic.variableOrder).toHaveLength(6);
     expect(RECOVERY_TEMPLATE_LAYOUTS.coupon_link.variableOrder).toHaveLength(4);
+    expect(RECOVERY_TEMPLATE_LAYOUTS.rakhi_offer.variableOrder).toHaveLength(4);
+  });
+
+  it("keeps rakhi_offer free of coupon variables", () => {
+    // The tiered ladder has no single code to quote and no knowable discounted
+    // total (the saving depends on how many items the shopper adds). Ordering
+    // one would send a blank — "-" after sanitisation — into the body.
+    const order = RECOVERY_TEMPLATE_LAYOUTS.rakhi_offer.variableOrder;
+    expect(order).not.toContain("discount_code");
+    expect(order).not.toContain("discounted_cart_total");
+    expect(order).toContain("cart_total");
   });
 
   it("speaks the customer's first name only", () => {

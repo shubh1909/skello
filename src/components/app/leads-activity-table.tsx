@@ -1,12 +1,12 @@
 "use client";
 
+import { humaniseFieldKey } from "@/lib/format/keys";
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
   BellPlusIcon,
-  CheckIcon,
   ChevronsUpDownIcon,
   PhoneIcon,
   PhoneIncomingIcon,
@@ -16,9 +16,19 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  DataTableCard,
+  DataTableHead,
+} from "@/components/app/data-table";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -27,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PendingActionBadge } from "@/components/app/pending-action-badge";
 import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { LeadDetailSheet } from "@/components/app/lead-detail-sheet";
 import { LeadExportDialog } from "@/components/app/lead-export-dialog";
@@ -40,7 +51,8 @@ import {
   listLeadsWithCallActivity,
   type LeadWithCallActivity,
 } from "@/actions/lead-activity";
-import { formatDateTime, formatRelative, initialsOf } from "@/lib/format";
+import { EntityAvatar } from "@/components/app/entity-avatar";
+import { formatDateTime, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useClientNow } from "@/hooks/use-client-now";
 import { useCallsRealtime } from "@/hooks/use-calls-realtime";
@@ -52,7 +64,7 @@ import type { LeadFieldDefinition } from "@/types/lead-field-definition";
 
 const INTENT_CLASSES: Record<LeadIntent, string> = {
   hot: "border-transparent bg-destructive/10 text-destructive dark:bg-destructive/20",
-  warm: "border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300",
+  warm: "border-warning/30 bg-warning-muted text-warning",
   cold: "border-transparent bg-primary text-primary-foreground",
 };
 
@@ -455,7 +467,7 @@ export function LeadsActivityTable({
         // then a humanised version of the raw key_path. The previous fallback
         // was the raw key (e.g. `interest_Objective`) which read worse than
         // "Interest Objective" once it landed on the chip.
-        label: def.label ?? humanise(def.key_path),
+        label: def.label ?? humaniseFieldKey(def.key_path),
       },
     ]);
   }
@@ -525,23 +537,25 @@ export function LeadsActivityTable({
       ) : null}
 
       {items.length === 0 ? (
-        <Card className="items-center gap-3 py-24 text-center">
-          <span className="grid size-14 place-items-center rounded-full bg-muted">
-            <PhoneIcon className="size-6 text-muted-foreground" />
-          </span>
-          <p className="text-base font-medium">
-            {appliedSearch || filters.length > 0
-              ? "No leads match these filters"
-              : "No leads yet"}
-          </p>
-          <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
-            {appliedSearch || filters.length > 0
-              ? "Try adjusting the filters or clearing the search."
-              : "Inbound calls captured by your voice agent will appear here, and outbound calls you place will land here too."}
-          </p>
-        </Card>
+        <Empty className="border py-16">
+          <EmptyHeader>
+            <EmptyMedia variant="icon" className="size-12 rounded-full">
+              <PhoneIcon className="size-5" />
+            </EmptyMedia>
+            <EmptyTitle>
+              {appliedSearch || filters.length > 0
+                ? "No leads match these filters"
+                : "No leads yet"}
+            </EmptyTitle>
+            <EmptyDescription>
+              {appliedSearch || filters.length > 0
+                ? "Try adjusting the filters or clearing the search."
+                : "Inbound calls captured by your voice agent will appear here, and outbound calls you place will land here too."}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : (
-        <Card className="overflow-hidden p-0">
+        <DataTableCard>
           <div className="overflow-x-auto">
             <table className="w-full table-fixed text-left text-sm">
               <colgroup>
@@ -554,40 +568,38 @@ export function LeadsActivityTable({
                 ))}
                 <col style={{ width: `${widthForActions}px` }} />
               </colgroup>
-              <thead className="border-b border-border/60 bg-muted/30">
-                <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  <th scope="col" className="relative px-4 py-4 font-medium">
-                    Lead
-                    <ColumnResizeHandle
-                      onStart={makeResizeStarter(COL_KEY_LEAD, widthForLead)}
-                    />
-                  </th>
-                  {visibleColumns.map((def) => (
-                    <ColumnHeader
-                      key={def.id}
-                      def={def}
-                      sort={sort}
-                      onToggleSort={toggleSort}
-                      onResizeStart={makeResizeStarter(
-                        columnKeyFor(def),
-                        widthForCol(def),
-                      )}
-                    />
-                  ))}
-                  <th
-                    scope="col"
-                    className="relative px-5 py-4 text-right font-medium"
-                  >
-                    Actions
-                    <ColumnResizeHandle
-                      onStart={makeResizeStarter(
-                        COL_KEY_ACTIONS,
-                        widthForActions,
-                      )}
-                    />
-                  </th>
-                </tr>
-              </thead>
+              <DataTableHead>
+                <th scope="col" className="relative px-4 py-4 font-medium">
+                  Lead
+                  <ColumnResizeHandle
+                    onStart={makeResizeStarter(COL_KEY_LEAD, widthForLead)}
+                  />
+                </th>
+                {visibleColumns.map((def) => (
+                  <ColumnHeader
+                    key={def.id}
+                    def={def}
+                    sort={sort}
+                    onToggleSort={toggleSort}
+                    onResizeStart={makeResizeStarter(
+                      columnKeyFor(def),
+                      widthForCol(def),
+                    )}
+                  />
+                ))}
+                <th
+                  scope="col"
+                  className="relative px-5 py-4 text-right font-medium"
+                >
+                  Actions
+                  <ColumnResizeHandle
+                    onStart={makeResizeStarter(
+                      COL_KEY_ACTIONS,
+                      widthForActions,
+                    )}
+                  />
+                </th>
+              </DataTableHead>
               <tbody className="divide-y divide-border/60">
                 {items.map((row) => {
                   const isPending = pending && pendingLeadId === row.id;
@@ -610,9 +622,7 @@ export function LeadsActivityTable({
                     >
                       <td className="px-4 py-4">
                         <div className="flex items-start gap-2.5">
-                          <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
-                            {initialsOf(row.name)}
-                          </span>
+                          <EntityAvatar name={row.name} />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-medium leading-tight">
                               {row.name ?? "Unnamed"}
@@ -691,7 +701,7 @@ export function LeadsActivityTable({
               </tbody>
             </table>
           </div>
-        </Card>
+        </DataTableCard>
       )}
 
       <InfiniteScrollFooter
@@ -758,7 +768,7 @@ function FilterMenu({
         <SelectContent>
           {defs.map((def) => (
             <SelectItem key={def.id} value={def.id}>
-              {def.label ?? humanise(def.key_path)}
+              {def.label ?? humaniseFieldKey(def.key_path)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -874,13 +884,6 @@ const OP_OPTIONS_BY_TYPE: Record<
   ],
 };
 
-function humanise(key: string): string {
-  return key
-    .split("_")
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(" ");
-}
-
 // ---------------------------------------------------------------------------
 // Catalog-driven column rendering. The leads table has three structural
 // columns (Lead identifier on the left, Actions on the right) and N
@@ -958,7 +961,7 @@ function columnLabel(def: LeadFieldDefinition): React.ReactNode {
       </span>
     );
   }
-  return def.label ?? humanise(def.key_path);
+  return def.label ?? humaniseFieldKey(def.key_path);
 }
 
 function ColumnHeader({
@@ -1007,7 +1010,7 @@ function ColumnHeader({
           layout.align === "right" && "flex-row-reverse",
           isCurrent && "text-foreground",
         )}
-        aria-label={`Sort by ${def.label ?? humanise(def.key_path)}`}
+        aria-label={`Sort by ${def.label ?? humaniseFieldKey(def.key_path)}`}
       >
         {label}
         {dir === "asc" ? (
@@ -1083,32 +1086,11 @@ function ColumnCell({
         const actionPending = Boolean(row.pending_action);
         return (
           <td className={layout.tdClass} onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onTogglePending();
-              }}
+            <PendingActionBadge
+              pending={actionPending}
               disabled={pendingBusy}
-              aria-pressed={!actionPending}
-              title={
-                actionPending
-                  ? "Click to mark as done"
-                  : "Click to reopen action"
-              }
-              className={cn(
-                "inline-flex h-5 items-center gap-1 rounded-4xl border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all",
-                "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                "disabled:cursor-not-allowed disabled:opacity-60",
-                "[&>svg]:size-3",
-                actionPending
-                  ? "border-red-200 bg-red-100 text-red-700 hover:bg-red-100/80 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300"
-                  : "border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300",
-              )}
-            >
-              <CheckIcon />
-              {actionPending ? "Pending" : "Done"}
-            </button>
+              onToggle={onTogglePending}
+            />
           </td>
         );
       }

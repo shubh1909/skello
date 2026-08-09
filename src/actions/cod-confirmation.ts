@@ -9,6 +9,7 @@ import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { type ActionResult, fail, ok } from "@/types/action";
 import type {
+  CodCallRow,
   CodConfirmationRow,
   CodMetrics,
   CodOverview,
@@ -405,4 +406,93 @@ export async function getCodConfirmations(
   }
 
   return ok({ rows: data ?? [], total: count ?? 0 });
+}
+
+// Named columns, mirroring CALL_COLUMNS in shopify-recovery.ts, so a COD call
+// renders through the SAME shared call panel a lead's call and a cart-recovery
+// call do. Without `actionable` / `transcript_status` the panel can't show the
+// next step and can't tell "still processing" from "none captured".
+const COD_CALL_COLUMNS =
+  "id, lead_id, status, direction, to_phone, from_phone, error_message, bolna_call_id, created_at, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript, transcript_url, transcript_status, language, summary, actionable, name_extracted, interest, lead_intent_extracted, customer_status, call_outcome, requested_callback_at, connect_on_whatsapp, visit_scheduled_at, lead_data, custom_data";
+
+// Confirmation-call history for one COD order. The `calls.cod_confirmation_id`
+// seam has existed since 20260725000000 but nothing read it — the COD section
+// had no detail view at all, so every dial it placed was invisible in the UI.
+//
+// Law #1: `createAdminClient()` bypasses RLS, so the org filter here is the
+// only tenant boundary. It is applied alongside the id, never instead of it.
+export async function getCodCallsForConfirmation(
+  confirmationId: unknown,
+): Promise<ActionResult<CodCallRow[]>> {
+  const session = await requireSession();
+  const parsed = z.string().uuid().safeParse(confirmationId);
+  if (!parsed.success) return fail("Invalid request");
+  const admin = createAdminClient();
+
+  const { data, error } = await admin
+    .from("calls")
+    .select(COD_CALL_COLUMNS)
+    .eq("organisation_id", session.organisation.id)
+    .eq("cod_confirmation_id", parsed.data)
+    // Newest first, matching every other call list in the app — the rail
+    // preselects row 0 and that should be the most recent attempt.
+    .order("created_at", { ascending: false })
+    .returns<Array<CodCallRow & { lead_id: string | null }>>();
+
+  if (error) {
+    return fail(
+      logSkeloError("SHOPIFY", "Failed to load COD confirmation calls", {
+        organisationId: session.organisation.id,
+        cause: error,
+      }),
+    );
+  }
+
+  return ok(await attachLeads(admin, session.organisation.id, data ?? []));
+}
+
+/**
+ * Attach each call's **current** lead view.
+ *
+ * `leads` isn't embedded (the same brittleness `enrichRecoveryCalls` documents
+ * in shopify-recovery.ts), so it's one batched read by id rather than a join —
+ * and one query for the page rather than N.
+ *
+ * Org-scoped as well as id-scoped: `createAdminClient()` bypasses RLS, so
+ * without the org filter a lead id from another tenant would resolve.
+ */
+async function attachLeads(
+  admin: ReturnType<typeof createAdminClient>,
+  organisationId: string,
+  calls: Array<CodCallRow & { lead_id: string | null }>,
+): Promise<CodCallRow[]> {
+  const leadIds = Array.from(
+    new Set(calls.map((c) => c.lead_id).filter((id): id is string => !!id)),
+  );
+  if (leadIds.length === 0) return calls;
+
+  const { data } = await admin
+    .from("leads")
+    .select("id, name, status, current_intent")
+    .eq("organisation_id", organisationId)
+    .in("id", leadIds)
+    .returns<
+      Array<{
+        id: string;
+        name: string | null;
+        status: string | null;
+        current_intent: string | null;
+      }>
+    >();
+
+  const byId = new Map((data ?? []).map((l) => [l.id, l]));
+  return calls.map((c) => {
+    const lead = c.lead_id ? byId.get(c.lead_id) : undefined;
+    return {
+      ...c,
+      lead_name: lead?.name ?? null,
+      lead_status: lead?.status ?? null,
+      lead_intent: lead?.current_intent ?? null,
+    };
+  });
 }

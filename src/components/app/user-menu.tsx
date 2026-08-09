@@ -4,8 +4,11 @@ import { useTransition } from "react";
 import Link from "next/link";
 import {
   LogOutIcon,
+  MonitorIcon,
+  MoonIcon,
   SettingsIcon,
   ShieldIcon,
+  SunIcon,
   UserIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -17,9 +20,19 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useTheme } from "@/components/theme-provider";
+import { isTheme } from "@/lib/theme";
+
+const THEME_OPTIONS = [
+  { value: "light", label: "Light", icon: SunIcon },
+  { value: "dark", label: "Dark", icon: MoonIcon },
+  { value: "system", label: "System", icon: MonitorIcon },
+] as const;
 
 function initials(email: string): string {
   return email.slice(0, 2).toUpperCase();
@@ -33,6 +46,7 @@ export function UserMenu({
   isAdmin?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
+  const { theme, setTheme } = useTheme();
 
   function onLogout() {
     startTransition(async () => {
@@ -71,6 +85,30 @@ export function UserMenu({
         <DropdownMenuItem>
           <SettingsIcon /> Workspace settings
         </DropdownMenuItem>
+
+        {/* Until now there was no `setTheme` call anywhere in the app, so the
+            entire dark palette was unreachable by deliberate user action —
+            only by changing the OS and only if the stored preference happened
+            to be "system", which is not the default. */}
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="text-xs text-muted-foreground">
+          Appearance
+        </DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={theme}
+          onValueChange={(next) => {
+            // The menu hands back a plain string; `isTheme` is the same guard
+            // the provider uses when reading localStorage.
+            if (isTheme(next)) setTheme(next);
+          }}
+        >
+          {THEME_OPTIONS.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              <option.icon /> {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+
         {isAdmin ? (
           <>
             <DropdownMenuSeparator />

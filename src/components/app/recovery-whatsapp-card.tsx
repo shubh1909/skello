@@ -1,5 +1,6 @@
 import { MessageCircleIcon } from "lucide-react";
 
+import { SectionLabel } from "@/components/app/section-label";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import type { RecoveryWhatsAppStatus } from "@/types/shopify";
@@ -18,13 +19,13 @@ export function RecoveryWhatsAppCard({
   return (
     <Card className="flex flex-col gap-4 p-5">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+        <SectionLabel as="span">
           WhatsApp
-        </span>
+        </SectionLabel>
         <Badge
           className={
             live
-              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"
+              ? "bg-success-muted text-success"
               : "bg-muted text-muted-foreground"
           }
         >
@@ -39,18 +40,18 @@ export function RecoveryWhatsAppCard({
               <MessageCircleIcon className="size-4" />
             </span>
             <div className="flex min-w-0 flex-col">
-              <span className="text-xs uppercase tracking-wider text-muted-foreground">
+              <SectionLabel as="span">
                 Sender
-              </span>
+              </SectionLabel>
               <span className="truncate text-sm font-medium">
                 {whatsApp?.sender ?? "Default"}
               </span>
             </div>
           </div>
           <div className="flex flex-col justify-center">
-            <span className="text-xs uppercase tracking-wider text-muted-foreground">
+            <SectionLabel as="span">
               Template
-            </span>
+            </SectionLabel>
             <span className="truncate font-mono text-sm">
               {whatsApp?.templateName ?? "—"}
             </span>

@@ -431,9 +431,14 @@ export async function listConversations(
   // contact's best disposition across attempts; it's harmless on other lists.
   let query = supabase
     .from("calls")
-    .select(`${CALL_COLUMNS}, campaign_contact_id, lead:leads(name, phone)`, {
-      count: "exact",
-    })
+    .select(
+      // The lead embed carries status + intent so a call's detail can show who
+      // this person is NOW, not only what the conversation extracted.
+      `${CALL_COLUMNS}, campaign_contact_id, lead:leads(name, phone, status, current_intent)`,
+      {
+        count: "exact",
+      },
+    )
     .eq("organisation_id", parsed.data.organisation_id)
     .order(parsed.data.sort, { ascending, nullsFirst: false })
     .order("started_at", { ascending: false })

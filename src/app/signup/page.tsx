@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { SectionLabel } from "@/components/app/section-label";
 import { Logo } from "@/components/brand/logo";
 import { SignupForm } from "@/components/forms/signup-form";
 import { getCurrentUser } from "@/actions/auth";
@@ -51,9 +52,9 @@ export default async function SignupPage() {
           className="absolute inset-0 bg-[radial-gradient(circle_at_70%_80%,rgba(0,0,0,0.06),transparent_60%)] dark:bg-[radial-gradient(circle_at_70%_80%,rgba(255,255,255,0.06),transparent_60%)]"
         />
         <div className="relative flex h-full flex-col justify-between p-12">
-          <span className="text-xs uppercase tracking-widest text-muted-foreground">
+          <SectionLabel as="span">
             Built for B2B
-          </span>
+          </SectionLabel>
           <div className="space-y-3">
             <h2 className="max-w-md font-heading text-3xl font-semibold leading-tight tracking-tight">
               Set up in one minute. <br />

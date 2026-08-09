@@ -1,8 +1,12 @@
 import Link from "next/link";
 import { Building2Icon, SearchIcon } from "lucide-react";
 
+import {
+  DataTableCard,
+  DataTableHead,
+} from "@/components/app/data-table";
+import { ErrorCard } from "@/components/app/error-card";
 import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Pagination } from "@/components/app/pagination";
 import { listAllOrganisations } from "@/actions/admin/organisations";
@@ -29,9 +33,9 @@ export default async function AdminOrganisationsPage({
   const result = await listAllOrganisations({ q, limit: PAGE_SIZE, offset });
   if (!result.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {result.error}
-      </Card>
+      </ErrorCard>
     );
   }
 
@@ -65,7 +69,7 @@ export default async function AdminOrganisationsPage({
         </div>
       </form>
 
-      <Card className="overflow-hidden p-0">
+      <DataTableCard>
         {items.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-16 text-center">
             <Building2Icon className="size-5 text-muted-foreground" />
@@ -77,25 +81,23 @@ export default async function AdminOrganisationsPage({
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="border-b border-border/60 bg-muted/30">
-                <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  <th scope="col" className="px-3 py-3 font-medium">
-                    Organisation
-                  </th>
-                  <th scope="col" className="px-3 py-3 font-medium">
-                    Owner
-                  </th>
-                  <th scope="col" className="px-3 py-3 font-medium">
-                    Voice agent
-                  </th>
-                  <th scope="col" className="px-3 py-3 font-medium">
-                    Leads
-                  </th>
-                  <th scope="col" className="px-3 py-3 font-medium">
-                    Created
-                  </th>
-                </tr>
-              </thead>
+              <DataTableHead>
+                <th scope="col" className="px-3 py-3 font-medium">
+                  Organisation
+                </th>
+                <th scope="col" className="px-3 py-3 font-medium">
+                  Owner
+                </th>
+                <th scope="col" className="px-3 py-3 font-medium">
+                  Voice agent
+                </th>
+                <th scope="col" className="px-3 py-3 font-medium">
+                  Leads
+                </th>
+                <th scope="col" className="px-3 py-3 font-medium">
+                  Created
+                </th>
+              </DataTableHead>
               <tbody className="divide-y divide-border/60">
                 {items.map((org) => (
                   <tr
@@ -138,7 +140,7 @@ export default async function AdminOrganisationsPage({
             </table>
           </div>
         )}
-      </Card>
+      </DataTableCard>
 
       <Pagination
         total={total}

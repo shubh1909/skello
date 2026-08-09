@@ -128,7 +128,7 @@ export function WhatsAppDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <MessageCircleIcon className="size-4 text-emerald-600" />
+            <MessageCircleIcon className="size-4 text-success" />
             Message {lead?.name ?? "lead"} on WhatsApp
           </DialogTitle>
           <DialogDescription>

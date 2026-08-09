@@ -7,9 +7,9 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-inter);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-inter);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -17,16 +17,48 @@
   --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted-foreground: var(--sidebar-muted-foreground);
+  --color-sidebar-hover: var(--sidebar-hover);
   --color-sidebar: var(--sidebar);
+  /* Eight, not the stock five: the donut draws up to 8 slices, and the
+   * alternative was what it did before — one ink at eight opacity steps, where
+   * the last wedges sat at 0.18 and were effectively invisible. */
+  --color-chart-8: var(--chart-8);
+  --color-chart-7: var(--chart-7);
+  --color-chart-6: var(--chart-6);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
+  --color-avatar-1: var(--avatar-1);
+  --color-avatar-2: var(--avatar-2);
+  --color-avatar-3: var(--avatar-3);
+  --color-avatar-4: var(--avatar-4);
+  --color-avatar-5: var(--avatar-5);
+  --color-avatar-6: var(--avatar-6);
+  --color-avatar-7: var(--avatar-7);
+  --color-avatar-8: var(--avatar-8);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  --color-destructive-muted: var(--destructive-muted);
   --color-destructive: var(--destructive);
+  /* Semantic status colours. These did NOT exist before, which is why ~109 raw
+   * Tailwind palette classes (bg-emerald-100, text-amber-800, …) were scattered
+   * across 30 files: there was nothing correct to reach for. */
+  --color-success-muted: var(--success-muted);
+  --color-success-foreground: var(--success-foreground);
+  --color-success: var(--success);
+  --color-warning-muted: var(--warning-muted);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning: var(--warning);
+  --color-info-muted: var(--info-muted);
+  --color-info-foreground: var(--info-foreground);
+  --color-info: var(--info);
+  --color-highlight-border: var(--highlight-border);
+  --color-highlight-foreground: var(--highlight-foreground);
+  --color-highlight: var(--highlight);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -46,82 +78,178 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  /* Shadows are tinted with the deep-teal nav colour rather than black. Neutral
+   * black shadows read as "default framework"; a shadow carrying a trace of the
+   * brand hue is most of what makes a surface feel considered. */
+  --shadow-2xs: 0 1px 1px rgb(0 39 44 / 0.04);
+  --shadow-xs: 0 1px 2px rgb(0 39 44 / 0.05);
+  --shadow-sm: 0 1px 3px rgb(0 39 44 / 0.07), 0 1px 2px rgb(0 39 44 / 0.04);
+  --shadow-md: 0 4px 12px -2px rgb(0 39 44 / 0.1), 0 2px 4px rgb(0 39 44 / 0.05);
+  --shadow-lg: 0 16px 44px -18px rgb(0 39 44 / 0.28);
+  --shadow-xl: 0 24px 60px -20px rgb(0 39 44 / 0.32);
 }
 
 /*
- * Brand palette — https://colorhunt.co/palette/3558727aaace9cd5fff7f8f0
- *   #355872 (ink)    — primary / deep navy
- *   #7AAACE (steel)  — focus ring / mid blue
- *   #9CD5FF (sky)    — accent / light blue
- *   #F7F8F0 (bone)   — background / warm off-white
+ * Brand palette — deep teal ink on ivory, ported from the Skelo UI prototype.
+ *   #00272C (nav)    — sidebar, always dark in BOTH themes
+ *   #1A525A (accent) — primary / active nav / focus ring
+ *   #0F2D32 (ink)    — foreground
+ *   #FCFDFB (ivory)  — page background
+ *   #FBFFE6 (lime)   — the one non-teal note: selection + emphasis surfaces
+ *
+ * The defining move is restraint: only success (#1E6F52) and danger (#A8443B)
+ * carry real chroma. What the prototype calls "amber" and "blue" are actually
+ * desaturated teal-greys (#5E7E84, #4E6E74) — warning and info are tinted, not
+ * coloured. Reproducing that is most of the premium effect, and it is exactly
+ * what a raw `bg-amber-100` cannot express.
  */
 :root {
-  --background: oklch(0.977 0.009 108);
-  --foreground: oklch(0.22 0.025 237);
+  --background: oklch(0.993 0.003 128.5);
+  --foreground: oklch(0.277 0.036 210);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0.025 237);
+  --card-foreground: oklch(0.277 0.036 210);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.22 0.025 237);
-  --primary: oklch(0.428 0.053 237);
-  --primary-foreground: oklch(0.977 0.009 108);
-  --secondary: oklch(0.94 0.018 232);
-  --secondary-foreground: oklch(0.428 0.053 237);
-  --muted: oklch(0.955 0.01 232);
-  --muted-foreground: oklch(0.52 0.028 237);
-  --accent: oklch(0.93 0.03 232);
-  --accent-foreground: oklch(0.428 0.053 237);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.9 0.012 232);
-  --input: oklch(0.9 0.012 232);
-  --ring: oklch(0.708 0.069 234);
-  --chart-1: oklch(0.428 0.053 237);
-  --chart-2: oklch(0.708 0.069 234);
-  --chart-3: oklch(0.858 0.083 231);
-  --chart-4: oklch(0.55 0.06 235);
-  --chart-5: oklch(0.3 0.04 237);
+  --popover-foreground: oklch(0.277 0.036 210);
+  --primary: oklch(0.406 0.058 208.4);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.97 0.004 157.2);
+  --secondary-foreground: oklch(0.277 0.036 210);
+  --muted: oklch(0.97 0.004 157.2);
+  --muted-foreground: oklch(0.516 0.038 210.4);
+  /* Deliberately a touch deeper than --muted so a menu/row hover is legible
+   * against the muted surfaces it sits on. */
+  --accent: oklch(0.958 0.006 175);
+  --accent-foreground: oklch(0.277 0.036 210);
+  --destructive: oklch(0.519 0.134 27.8);
+  --destructive-muted: oklch(0.945 0.012 29.9);
+  --success: oklch(0.486 0.09 164.8);
+  --success-foreground: oklch(1 0 0);
+  --success-muted: oklch(0.947 0.012 162);
+  /* Deviation from the reference, deliberately. Its --amber (#5E7E84) and
+   * --blue (#4E6E74) are both teal-greys, and --blue is byte-identical to
+   * --ink-soft — so warning, info and neutral all collapse into the same grey.
+   * That works for the reference because its pills lean on a leading dot and
+   * the label to differentiate. Our status chips need FIVE distinguishable
+   * tones (good / active / waiting / soft / attention), so warning takes a
+   * muted ochre and info a clearer teal. Both stay well under success (0.090)
+   * and danger (0.134) chroma, which keeps the restraint that matters. */
+  --warning: oklch(0.545 0.068 85);
+  --warning-foreground: oklch(1 0 0);
+  --warning-muted: oklch(0.955 0.022 90);
+  --info: oklch(0.515 0.052 215);
+  --info-foreground: oklch(1 0 0);
+  --info-muted: oklch(0.945 0.016 205);
+  /* The lime accent. --highlight is a FILL (selected cards, live counts); text
+   * on it uses --highlight-foreground. It is deliberately NOT --ring: at
+   * oklch(0.92) against white it falls far below the contrast WCAG 2.4.11 wants
+   * from a focus indicator. --ring is the teal primary instead. */
+  --highlight: oklch(0.99 0.033 114.4);
+  --highlight-foreground: oklch(0.406 0.058 208.4);
+  --highlight-border: oklch(0.92 0.069 119.2);
+  --border: oklch(0.932 0.008 207.1);
+  --input: oklch(0.932 0.008 207.1);
+  --ring: oklch(0.406 0.058 208.4);
+  /* Categorical series — for data with no inherent meaning (a breakdown by
+   * agent, by city, by product). Status charts must NOT use these: a failed
+   * call is `destructive` because that means something. Chroma stays ≤0.09 so
+   * a chart still reads as part of this palette rather than a legend of its
+   * own. chart-1 is the brand teal, so a single-series chart needs no choice. */
+  --chart-1: oklch(0.406 0.058 208.4);
+  --chart-2: oklch(0.486 0.09 164.8);
+  --chart-3: oklch(0.582 0.042 331.8);
+  --chart-4: oklch(0.591 0.035 67.1);
+  --chart-5: oklch(0.588 0.027 242.6);
+  --chart-6: oklch(0.57 0.037 18.3);
+  --chart-7: oklch(0.615 0.041 130.7);
+  --chart-8: oklch(0.585 0.04 290);
+  /* Eight muted tones for initials avatars, hashed from a name by avatarTone().
+   * Chroma stays ≤0.042 so a table full of them reads as one family rather
+   * than a fruit salad. Shared across both themes — a person keeps their
+   * colour when you flip the theme.
+   *
+   * L is 0.53 for all eight, NOT the 0.57–0.615 spread these started at. The
+   * initials sit on top in white, and at the original values seven of the eight
+   * measured between 3.66:1 and 4.38:1 — under AA for 11px text, and unevenly
+   * so, which is the worse part: tone 3 was a full step fainter than tone 6 for
+   * no reason a reader could see. A single L lands the whole set at 5.2–5.4:1
+   * and keeps them a mid-tone rather than a set of saturated chips. */
+  --avatar-1: oklch(0.53 0.042 331.8);
+  --avatar-2: oklch(0.53 0.027 242.6);
+  --avatar-3: oklch(0.53 0.041 130.7);
+  --avatar-4: oklch(0.53 0.035 67.1);
+  --avatar-5: oklch(0.53 0.038 210.4);
+  --avatar-6: oklch(0.53 0.037 18.3);
+  --avatar-7: oklch(0.53 0.028 180.7);
+  --avatar-8: oklch(0.53 0.03 95.5);
   --radius: 0.625rem;
-  --sidebar: oklch(0.965 0.012 232);
-  --sidebar-foreground: oklch(0.22 0.025 237);
-  --sidebar-primary: oklch(0.428 0.053 237);
-  --sidebar-primary-foreground: oklch(0.977 0.009 108);
-  --sidebar-accent: oklch(0.9 0.04 232);
-  --sidebar-accent-foreground: oklch(0.428 0.053 237);
-  --sidebar-border: oklch(0.9 0.012 232);
-  --sidebar-ring: oklch(0.708 0.069 234);
+  /* ---------------------------------------------------------------------
+   * SIDEBAR — deep teal in BOTH themes. Intentionally absent from `.dark`
+   * below so these values are inherited, not restated: the sidebar does not
+   * follow the theme, and duplicating them invites the two copies to drift.
+   *
+   * ⚠️ Anything rendered inside <aside> must use `sidebar-*` classes. A stray
+   * `text-muted-foreground` here is oklch(0.516) teal on oklch(0.249) teal —
+   * i.e. invisible in light mode, where nobody would think to look.
+   * ------------------------------------------------------------------- */
+  --sidebar: oklch(0.249 0.043 207.6);
+  --sidebar-foreground: oklch(0.968 0.006 185.3);
+  /* Lifted from the reference's #8AA6AB (L 0.706). That value is tuned for a
+   * 13px dim label, but our nav items are 14px body text carrying the primary
+   * wayfinding — at L 0.706 on an L 0.249 ground they read as disabled. */
+  --sidebar-muted-foreground: oklch(0.79 0.028 207);
+  --sidebar-primary: oklch(1 0 0);
+  --sidebar-primary-foreground: oklch(0.249 0.043 207.6);
+  --sidebar-accent: oklch(0.406 0.058 208.4);
+  --sidebar-accent-foreground: oklch(1 0 0);
+  --sidebar-hover: oklch(1 0 0 / 7.5%);
+  --sidebar-border: oklch(1 0 0 / 9%);
+  --sidebar-ring: oklch(0.706 0.032 209.6);
 }
 
 .dark {
-  --background: oklch(0.21 0.025 237);
-  --foreground: oklch(0.977 0.009 108);
-  --card: oklch(0.275 0.03 237);
-  --card-foreground: oklch(0.977 0.009 108);
-  --popover: oklch(0.275 0.03 237);
-  --popover-foreground: oklch(0.977 0.009 108);
-  --primary: oklch(0.858 0.083 231);
-  --primary-foreground: oklch(0.22 0.025 237);
-  --secondary: oklch(0.32 0.035 237);
-  --secondary-foreground: oklch(0.977 0.009 108);
-  --muted: oklch(0.32 0.025 237);
-  --muted-foreground: oklch(0.75 0.03 232);
-  --accent: oklch(0.35 0.04 237);
-  --accent-foreground: oklch(0.977 0.009 108);
-  --destructive: oklch(0.704 0.191 22.216);
+  --background: oklch(0.203 0.035 208);
+  --foreground: oklch(0.968 0.006 185.3);
+  --card: oklch(0.249 0.043 207.6);
+  --card-foreground: oklch(0.968 0.006 185.3);
+  --popover: oklch(0.249 0.043 207.6);
+  --popover-foreground: oklch(0.968 0.006 185.3);
+  /* Lifted well above the light-mode primary: #1A525A on a near-black teal
+   * background is unreadable, so dark mode takes the same hue much lighter. */
+  --primary: oklch(0.72 0.06 198);
+  --primary-foreground: oklch(0.203 0.035 208);
+  --secondary: oklch(0.3 0.035 208);
+  --secondary-foreground: oklch(0.968 0.006 185.3);
+  --muted: oklch(0.3 0.035 208);
+  --muted-foreground: oklch(0.706 0.032 209.6);
+  --accent: oklch(0.34 0.04 208);
+  --accent-foreground: oklch(0.968 0.006 185.3);
+  --destructive: oklch(0.68 0.14 27.8);
+  --destructive-muted: oklch(0.34 0.06 27.8);
+  --success: oklch(0.7 0.1 164.8);
+  --success-foreground: oklch(0.203 0.035 208);
+  --success-muted: oklch(0.32 0.05 164.8);
+  --warning: oklch(0.76 0.075 85);
+  --warning-foreground: oklch(0.203 0.035 208);
+  --warning-muted: oklch(0.34 0.045 85);
+  --info: oklch(0.74 0.055 215);
+  --info-foreground: oklch(0.203 0.035 208);
+  --info-muted: oklch(0.33 0.04 215);
+  --highlight: oklch(0.34 0.05 115);
+  --highlight-foreground: oklch(0.92 0.069 119.2);
+  --highlight-border: oklch(0.45 0.07 119.2);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.708 0.069 234);
-  --chart-1: oklch(0.858 0.083 231);
-  --chart-2: oklch(0.708 0.069 234);
-  --chart-3: oklch(0.428 0.053 237);
-  --chart-4: oklch(0.55 0.06 235);
-  --chart-5: oklch(0.3 0.04 237);
-  --sidebar: oklch(0.24 0.028 237);
-  --sidebar-foreground: oklch(0.977 0.009 108);
-  --sidebar-primary: oklch(0.708 0.069 234);
-  --sidebar-primary-foreground: oklch(0.22 0.025 237);
-  --sidebar-accent: oklch(0.32 0.035 237);
-  --sidebar-accent-foreground: oklch(0.977 0.009 108);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.708 0.069 234);
+  --ring: oklch(0.72 0.06 198);
+  /* Same hues, lifted to L≈0.70. The light-mode values are mid-tones chosen to
+   * hold their own against white; on the dark canvas they go muddy. */
+  --chart-1: oklch(0.72 0.06 198);
+  --chart-2: oklch(0.7 0.1 164.8);
+  --chart-3: oklch(0.7 0.05 331.8);
+  --chart-4: oklch(0.71 0.045 67.1);
+  --chart-5: oklch(0.7 0.035 242.6);
+  --chart-6: oklch(0.7 0.055 18.3);
+  --chart-7: oklch(0.72 0.055 130.7);
+  --chart-8: oklch(0.7 0.05 290);
 }
 
 @layer base {
@@ -146,5 +274,40 @@
   :where(p) {
     line-height: 1.6;
     text-wrap: pretty;
+  }
+
+  /* Thin, brand-tinted scrollbars.
+   *
+   * The sidebar's is hidden outright (`no-scrollbar` on its <nav>) because a
+   * default OS scrollbar on the dark teal ground is genuinely ugly. Content
+   * scrollbars are kept but made quiet: on a leads table running to hundreds of
+   * infinite-scrolled rows, the thumb is the only thing telling you how far in
+   * you are, and hiding it costs more than it saves. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent)
+      transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--muted-foreground) 35%, transparent);
+    border: 3px solid transparent;
+    border-radius: 20px;
+    /* Without padding-box the transparent border fills with the thumb colour
+     * and the "thin" effect disappears. */
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }

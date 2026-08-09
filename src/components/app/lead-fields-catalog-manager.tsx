@@ -1,5 +1,6 @@
 "use client";
 
+import { humaniseFieldKey } from "@/lib/format/keys";
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -11,9 +12,18 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  DataTableCard,
+  DataTableHead,
+} from "@/components/app/data-table";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -66,34 +76,34 @@ export function LeadFieldsCatalogManager({
 }: Props) {
   if (definitions.length === 0) {
     return (
-      <Card className="items-center gap-2 py-16 text-center">
-        <p className="text-sm font-medium">No fields discovered yet</p>
-        <p className="max-w-md text-xs text-muted-foreground">
-          Receive a call from a linked voice agent. Every field the agent
-          extracts will appear here automatically, ready for you to expose
-          or hide on the leads table.
-        </p>
-      </Card>
+      <Empty className="border py-16">
+        <EmptyHeader>
+          <EmptyTitle>No fields discovered yet</EmptyTitle>
+          <EmptyDescription>
+            Receive a call from a linked voice agent. Every field the agent
+            extracts will appear here automatically, ready for you to expose or
+            hide on the leads table.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
 
   return (
-    <Card className="overflow-hidden p-0">
+    <DataTableCard>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-sm">
-          <thead className="border-b border-border/60 bg-muted/30">
-            <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              <th className="px-5 py-3 font-medium">Field</th>
-              <th className="px-3 py-3 font-medium">Type</th>
-              <th className="px-3 py-3 font-medium">Sample value</th>
-              <th className="px-3 py-3 text-center font-medium">Visible</th>
-              <th className="px-3 py-3 text-center font-medium">Filterable</th>
-              <th className="px-3 py-3 text-center font-medium">Sortable</th>
-              <th className="px-3 py-3 text-center font-medium">Searchable</th>
-              <th className="px-3 py-3 font-medium">Last seen</th>
-              <th className="px-5 py-3 text-right font-medium">Actions</th>
-            </tr>
-          </thead>
+          <DataTableHead>
+            <th className="px-5 py-3 font-medium">Field</th>
+            <th className="px-3 py-3 font-medium">Type</th>
+            <th className="px-3 py-3 font-medium">Sample value</th>
+            <th className="px-3 py-3 text-center font-medium">Visible</th>
+            <th className="px-3 py-3 text-center font-medium">Filterable</th>
+            <th className="px-3 py-3 text-center font-medium">Sortable</th>
+            <th className="px-3 py-3 text-center font-medium">Searchable</th>
+            <th className="px-3 py-3 font-medium">Last seen</th>
+            <th className="px-5 py-3 text-right font-medium">Actions</th>
+          </DataTableHead>
           <tbody className="divide-y divide-border/60">
             {definitions.map((def) => (
               <FieldRow
@@ -105,7 +115,7 @@ export function LeadFieldsCatalogManager({
           </tbody>
         </table>
       </div>
-    </Card>
+    </DataTableCard>
   );
 }
 
@@ -237,7 +247,7 @@ function FieldRow({
           <Input
             value={state.label}
             onChange={(e) => set("label", e.target.value)}
-            placeholder={humaniseKey(def.key_path)}
+            placeholder={humaniseFieldKey(def.key_path)}
             maxLength={200}
             className="h-8 max-w-[260px]"
           />
@@ -325,7 +335,7 @@ function FieldRow({
           {isStale ? (
             <Badge
               variant="outline"
-              className="w-fit border-amber-500/40 bg-amber-500/10 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+              className="w-fit border-warning/30 bg-warning-muted text-[10px] font-medium text-warning"
               title="No webhook has emitted this field in over 90 days. It may be an orphan from a renamed extraction key."
             >
               Stale
@@ -451,9 +461,3 @@ function formatSample(v: unknown): string {
   }
 }
 
-function humaniseKey(key: string): string {
-  return key
-    .split("_")
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(" ");
-}

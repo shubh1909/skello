@@ -14,6 +14,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -45,9 +46,9 @@ export default async function AdminOrganisationDetailPage({
   if (!orgResult.success) {
     if (orgResult.error === "Organisation not found") notFound();
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {orgResult.error}
-      </Card>
+      </ErrorCard>
     );
   }
   const org = orgResult.data;

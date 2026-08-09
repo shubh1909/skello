@@ -200,7 +200,7 @@ function TestCallDialogBody({
 
   if (!config || !config.enabled) {
     return (
-      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+      <div className="rounded-md border border-warning/30 bg-warning-muted p-3 text-sm text-warning">
         Voice agent is disabled for this workspace. Enable it in Settings
         before placing a test call.
       </div>
@@ -209,7 +209,7 @@ function TestCallDialogBody({
 
   if (config.agents.length === 0) {
     return (
-      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+      <div className="rounded-md border border-warning/30 bg-warning-muted p-3 text-sm text-warning">
         No voice agents configured yet. An administrator needs to add one.
       </div>
     );

@@ -2,6 +2,7 @@
 
 import { after } from "next/server";
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 
 import {
   RESOLVED_CALL_STATUSES,
@@ -23,6 +24,7 @@ import type {
   Campaign,
   CampaignContact,
   CampaignListItem,
+  CampaignStatus,
 } from "@/types/campaign";
 import { FALLBACK_OUTCOME_KEY } from "@/types/outcome-policy";
 
@@ -428,6 +430,17 @@ export async function listCampaigns(
 
   if (parsed.data.status) query = query.eq("status", parsed.data.status);
 
+  const term = parsed.data.q;
+  if (term) {
+    // `%` and `,` are stripped before interpolation: `,` separates the branches
+    // of PostgREST's `or()` filter, so an unescaped one would let a search box
+    // inject an extra condition into the query.
+    const safe = term.replace(/[%,]/g, " ").trim();
+    if (safe.length > 0) {
+      query = query.or(`name.ilike.%${safe}%,file_name.ilike.%${safe}%`);
+    }
+  }
+
   const { data, error, count } = await query.returns<Campaign[]>();
   if (error) return fail(error.message);
 
@@ -443,6 +456,57 @@ export async function listCampaigns(
   }));
 
   return ok({ items, total: count ?? 0 });
+}
+
+/**
+ * How many campaigns sit in each status, across the **whole** org.
+ *
+ * The stat cards used to derive these by filtering the first page of 50 rows
+ * client-side, so on an org with more campaigns than that "Running: 2" was
+ * simply wrong — and only one of the three cards admitted it, with a
+ * "On this page" hint. The status filter tabs need the same numbers, so this is
+ * one query feeding both.
+ *
+ * Statuses are selected and counted rather than aggregated in SQL: there are
+ * seven of them and a handful of campaigns per org, so a `head`-style count per
+ * status would be seven round trips to save nothing.
+ */
+export async function getCampaignStatusCounts(
+  organisationId: unknown,
+): Promise<ActionResult<Record<CampaignStatus, number>>> {
+  const parsed = z.string().uuid().safeParse(organisationId);
+  if (!parsed.success) return fail("Invalid request");
+
+  const { supabase, user } = await requireUser();
+  if (!user) return fail("Not authenticated");
+  if (!(await userOwnsOrg(supabase, user.id, parsed.data))) {
+    return fail("Forbidden");
+  }
+
+  const { data, error } = await supabase
+    .from("campaigns")
+    .select("status")
+    .eq("organisation_id", parsed.data)
+    .returns<Array<{ status: CampaignStatus }>>();
+
+  if (error) return fail(error.message);
+
+  const counts: Record<CampaignStatus, number> = {
+    draft: 0,
+    scheduled: 0,
+    in_progress: 0,
+    paused: 0,
+    stopped: 0,
+    completed: 0,
+    failed: 0,
+  };
+
+  for (const row of data ?? []) {
+    // A status the enum doesn't know about would be a DB/type drift, not a
+    // reason to throw in a stat card.
+    if (row.status in counts) counts[row.status] += 1;
+  }
+  return ok(counts);
 }
 
 // Resolve the single highest-priority disposition reached by any contact in

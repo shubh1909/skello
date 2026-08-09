@@ -356,6 +356,111 @@ Roughly in order of how much they'll hurt:
 
 ---
 
+## 10. Delivery plan — three phases
+
+We ship this in three phases, each a usable step on its own. The order is deliberate: build the
+plumbing first, then a valuable rules-only product, then the AI differentiator on top once the
+monitoring and safety rails already exist.
+
+```
+Phase 1 — Connector        Phase 2 — Rules automation      Phase 3 — RAG AI replier
+(get connected,            (comments + DMs fire            (catalog-grounded AI,
+ receive events)      ─▶    configured replies)       ─▶    rate limits, handoff, cost)
+ foundation                 shippable product               the differentiator
+```
+
+Each phase also unlocks the matching Meta permission for App Review (see §7): Phase 1/2 DMs need
+`instagram_business_basic` + `instagram_business_manage_messages`; Phase 2 comments add
+`instagram_business_manage_comments`; public comment replies add `instagram_business_content_publish`.
+
+### Phase 1 — Instagram account connector
+
+**Goal:** an org can securely connect their Instagram, and we reliably receive their events.
+Nothing customer-facing beyond the connect screen yet.
+
+**What we build:**
+
+- **The connector** (`src/lib/instagram/`) — OAuth for **both** connect paths:
+  **Instagram Login** (no Facebook Page needed, the smoothest door) *and* the **Facebook-Page
+  path** for accounts that need it. We detect what an org can use, prefer Instagram Login, and fall
+  back to the Page path. Mirrors how our voice and WhatsApp connectors are built.
+- **Per-org settings** — encrypted long-lived token, account id, handle, and which path was used.
+  Service-role only (same posture as `bolna_integrations` / WhatsApp settings).
+- **Token lifecycle** — short→long exchange, the 60-day refresh job, and revocation handling that
+  surfaces "reconnect needed" in Settings instead of silently going dark.
+- **Webhook receiver** — verifies the signature, resolves the org from the trusted account id, and
+  dedups. In this phase it just acknowledges and logs events — no automation yet.
+- **Connect UI** in Settings — detect Professional account (guide the free conversion if needed),
+  Connect button for both paths, connected state, and a "send test DM" check.
+
+**Done when:** a tester org connects via *either* path, we hold a valid long-lived token, and
+inbound events arrive at our webhook — verified and attributed to the right org.
+
+### Phase 2 — Comment auto-reply & DM automation
+
+**Goal:** rules-based automation live end to end — **no AI yet**. Deterministic, predictable, and
+low-risk; it's also what most ManyChat users actually run day to day.
+
+**What we build:**
+
+- **Rules engine** — triggers (comment keyword, comment→DM, DM keyword, first-DM welcome, story
+  reply) → actions (public reply, send DM, create/tag lead). Every send passes the **24-hour
+  window guard**.
+- **The comment→DM funnel** — reply publicly once, then move the real answer to a DM. Meta's
+  blessed pattern (see §9).
+- **Lead creation** — an inbound comment or DM finds-or-creates the lead and attaches the
+  conversation, alongside that lead's calls and WhatsApp history.
+- **Configuration section** (UI) — create/edit rules, keywords, and canned responses; toggle rules
+  on/off; the 24-hour guard. (This is the "Automation" screen in the org-side preview.)
+- **Monitoring section** (UI) — the unified inbox (DMs + comments on the lead) plus a rules
+  dashboard: what fired, delivery successes/failures, volume, and comment→DM conversion.
+- Timed follow-ups (welcome, gentle nudges) reuse the **every-minute scheduler**.
+
+**Done when:** an org configures a comment→DM rule and a DM keyword rule, they fire correctly
+inside the 24-hour window, create leads, and the org can watch it all in monitoring.
+
+### Phase 3 — RAG AI automated DM replier
+
+**Goal:** the differentiator — AI answers DMs grounded in the org's own catalog, safely and
+affordably.
+
+> **First task, before building the throttle:** *confirm the real, current Graph API messaging
+> rate limits* (per-app and per-user) against Meta's live docs and our own testing. The widely
+> repeated "200 DMs/hour" figure was **refuted** in our research — we set caps from validated
+> numbers, not folklore.
+
+**What we build:**
+
+- **Per-org RAG pipeline** — ingest the org's catalog + FAQs + policies, embed and index **per
+  org**, retrieve at reply time. Grounded answers only, with a guardrail so the bot never promises
+  beyond its knowledge base.
+- **The AI replier — "suggest first, then auto."** Ships as **human-approved AI drafts** (the
+  AI-draft card in the preview). An org graduates specific rules to **auto-send** once it trusts
+  them. Earns confidence before going hands-off.
+- **Rate limiting** — per-org **configurable** throttle, respect Meta's `429`s and rate-limit
+  headers, and a priority queue (the pooled app-level quota is the real constraint). Caps seeded
+  from the confirmed limits above.
+- **Human-handoff config** — route a conversation to a person when **any** of these fire, each
+  configurable per org:
+  - **Low AI confidence** or an answer not grounded in the catalog — don't guess.
+  - **The customer asks for a human** ("talk to someone", "agent", "call me").
+  - **Order / payment intent** — high-value moments get a human touch.
+  - **Negative sentiment / complaint** — frustration or refund anger escalates.
+  - **Token/cost budget exceeded** — a per-conversation (and per-org) spend cap; once crossed, the
+    AI stops and hands off rather than running up cost.
+- **Monitoring section** (UI) — AI-vs-human split, a **breakdown of handoff reasons**, token/cost
+  per org, deflection rate, reply latency, groundedness/failure flags, and rate-limit headroom.
+
+**Done when:** an org's DMs get catalog-grounded AI answers under the confirmed rate limits,
+drafts can graduate to auto-send, and every handoff trigger — including the cost cap — works and
+is visible in monitoring.
+
+> The interactive org-side preview and the competitive teardown live in
+> [manychat-findings.html](manychat-findings.html): the "Automation" screen ≈ Phase 2 config, and
+> the AI-draft conversation ≈ Phase 3's suggest-first behaviour.
+
+---
+
 ## Bottom line
 
 The option that *looks* cheapest — renting a tool — is actually the most expensive in lost

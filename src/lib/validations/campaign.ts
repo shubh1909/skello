@@ -115,6 +115,9 @@ export const listCampaignsSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20),
   offset: z.number().int().min(0).default(0),
   status: campaignStatusSchema.optional(),
+  // Name / source-file search. Bounded so an accidental paste can't build a
+  // pathological ILIKE pattern.
+  q: z.string().trim().max(100).optional(),
 });
 
 export type ListCampaignsInput = z.infer<typeof listCampaignsSchema>;

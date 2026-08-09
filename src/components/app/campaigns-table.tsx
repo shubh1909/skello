@@ -6,16 +6,50 @@ import {
   AlertTriangleIcon,
   DownloadIcon,
   Loader2Icon,
+  MoreHorizontalIcon,
   PlayIcon,
   RadioIcon,
+  SearchXIcon,
   SquareIcon,
   Trash2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
+import {
+  DataTableCard,
+  DataTableHead,
+  DataTableToolbar,
+} from "@/components/app/data-table";
+import {
+  CampaignProgressBar,
+  CampaignProgressLegend,
+  campaignProgress,
+} from "@/components/app/campaign-progress";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Badge, type BadgeVariant } from "@/components/ui/badge";
+import {
+  CAMPAIGN_STATUS_LABEL,
+  CAMPAIGN_STATUS_VARIANT,
+} from "@/lib/campaigns/status";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -43,16 +77,6 @@ import type {
   CampaignStatus,
 } from "@/types/campaign";
 
-const STATUS_LABEL: Record<CampaignStatus, string> = {
-  draft: "Draft",
-  scheduled: "Scheduled",
-  in_progress: "Running",
-  paused: "Paused",
-  stopped: "Stopped",
-  completed: "Completed",
-  failed: "Failed",
-};
-
 // A campaign's stored status can lag behind reality: the DB only flips
 // in_progress → completed via a trigger, and a lost result webhook can leave
 // it "Running" after every contact has actually resolved. The dispatch tick
@@ -60,35 +84,29 @@ const STATUS_LABEL: Record<CampaignStatus, string> = {
 // in the meantime. If a campaign reads in_progress yet has nothing left to
 // process (no in-flight calls and the finished count covers every contact),
 // display it as "Wrapping up" so the operator knows it's effectively done.
-function displayStatus(c: Campaign): { label: string; className: string } {
+function displayStatus(c: Campaign): { label: string; variant: BadgeVariant } {
   const finished = c.succeeded_count + c.failed_count;
   const allResolved =
     c.in_flight_count === 0 &&
     c.total_contacts > 0 &&
     finished >= c.total_contacts;
   if (c.status === "in_progress" && allResolved) {
-    return { label: "Wrapping up", className: STATUS_CLASS.completed };
+    return { label: "Wrapping up", variant: CAMPAIGN_STATUS_VARIANT.completed };
   }
-  return { label: STATUS_LABEL[c.status], className: STATUS_CLASS[c.status] };
+  return {
+    label: CAMPAIGN_STATUS_LABEL[c.status],
+    variant: CAMPAIGN_STATUS_VARIANT[c.status],
+  };
 }
-
-const STATUS_CLASS: Record<CampaignStatus, string> = {
-  draft: "bg-muted text-muted-foreground",
-  scheduled: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
-  in_progress:
-    "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  paused:
-    "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
-  stopped: "bg-muted text-foreground",
-  completed: "bg-muted text-foreground",
-  failed: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
-};
 
 interface CampaignsTableProps {
   rows: CampaignListItem[];
   total: number;
   pageSize: number;
   organisationId: string;
+  /** The active filters, so page 2 is filtered the same way page 1 was. */
+  status?: CampaignStatus;
+  search?: string;
 }
 
 export function CampaignsTable({
@@ -96,6 +114,8 @@ export function CampaignsTable({
   total,
   pageSize,
   organisationId,
+  status,
+  search,
 }: CampaignsTableProps) {
   const router = useRouter();
   const now = useClientNow();
@@ -106,6 +126,10 @@ export function CampaignsTable({
         organisation_id: organisationId,
         limit,
         offset,
+        // Without these, scrolling a filtered list appends UNFILTERED rows —
+        // page 1 says "Running" and page 2 quietly includes everything.
+        status,
+        q: search,
       });
       if (!res.success) {
         toast.error(res.error);
@@ -113,7 +137,7 @@ export function CampaignsTable({
       }
       return res.data;
     },
-    [organisationId],
+    [organisationId, status, search],
   );
 
   const {
@@ -134,12 +158,15 @@ export function CampaignsTable({
 
   const [pendingId, setPendingId] = React.useState<string | null>(null);
   const [pending, startTransition] = React.useTransition();
-  // The campaign awaiting delete confirmation (drives the warning dialog).
-  const [confirmTarget, setConfirmTarget] = React.useState<Campaign | null>(
-    null,
-  );
-  const deleting =
-    pending && confirmTarget !== null && pendingId === confirmTarget.id;
+  // Whatever is awaiting confirmation. Stop used to call `window.confirm()` —
+  // a native OS dialog in an app that has its own, unstyleable and impossible
+  // to explain the consequence in.
+  const [confirmAction, setConfirmAction] = React.useState<{
+    kind: "delete" | "stop";
+    campaign: Campaign;
+  } | null>(null);
+  const confirming =
+    pending && confirmAction !== null && pendingId === confirmAction.campaign.id;
 
   function onRunNow(c: Campaign) {
     setPendingId(c.id);
@@ -156,40 +183,31 @@ export function CampaignsTable({
   }
 
   function onStop(c: Campaign) {
-    if (!confirm(`Stop campaign "${c.name}"? Pending dials will be skipped.`)) {
-      return;
-    }
-    setPendingId(c.id);
-    startTransition(async () => {
-      const res = await stopCampaign({ id: c.id });
-      setPendingId(null);
-      if (!res.success) {
-        toast.error(res.error);
-        return;
-      }
-      toast.success("Campaign stopped");
-      router.refresh();
-    });
+    setConfirmAction({ kind: "stop", campaign: c });
   }
 
-  // Opens the warning dialog; the destructive action runs from confirmDelete.
   function onDelete(c: Campaign) {
-    setConfirmTarget(c);
+    setConfirmAction({ kind: "delete", campaign: c });
   }
 
-  function confirmDelete() {
-    const c = confirmTarget;
-    if (!c) return;
-    setPendingId(c.id);
+  function runConfirmed() {
+    if (!confirmAction) return;
+    const { kind, campaign } = confirmAction;
+    setPendingId(campaign.id);
     startTransition(async () => {
-      const res = await deleteCampaign({ id: c.id });
+      const res =
+        kind === "delete"
+          ? await deleteCampaign({ id: campaign.id })
+          : await stopCampaign({ id: campaign.id });
       setPendingId(null);
       if (!res.success) {
         toast.error(res.error);
         return;
       }
-      toast.success("Campaign data deleted");
-      setConfirmTarget(null);
+      toast.success(
+        kind === "delete" ? "Campaign data deleted" : "Campaign stopped",
+      );
+      setConfirmAction(null);
       router.refresh();
     });
   }
@@ -201,53 +219,64 @@ export function CampaignsTable({
   }
 
   if (items.length === 0) {
+    // A filter that matches nothing is not an empty workspace, and telling
+    // someone with 200 campaigns to "upload a CSV" reads as though their data
+    // is gone.
+    const filtered = Boolean(status || search);
     return (
-      <Card className="items-center gap-3 py-24 text-center">
-        <span className="grid size-14 place-items-center rounded-full bg-muted">
-          <RadioIcon className="size-6 text-muted-foreground" />
-        </span>
-        <p className="text-base font-medium">No campaigns yet</p>
-        <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
-          Upload a CSV of phone numbers to start a bulk outbound run. Skelo will
-          dial each one and retry failures based on your rules.
-        </p>
-      </Card>
+      <Empty className="border py-16">
+        <EmptyHeader>
+          <EmptyMedia variant="icon" className="size-12 rounded-full">
+            {filtered ? (
+              <SearchXIcon className="size-5" />
+            ) : (
+              <RadioIcon className="size-5" />
+            )}
+          </EmptyMedia>
+          <EmptyTitle>
+            {filtered ? "No campaigns match" : "No campaigns yet"}
+          </EmptyTitle>
+          <EmptyDescription>
+            {filtered
+              ? "Nothing here with that status or search term. Clear the filters to see every campaign."
+              : "Upload a CSV of phone numbers to start a bulk outbound run. Skelo will dial each one and retry failures based on your rules."}
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
 
   return (
     <>
-      <Card className="overflow-hidden p-0">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-260 text-left text-sm">
-            <thead className="border-b border-border/60 bg-muted/30">
-              <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                <th scope="col" className="px-5 py-4 font-medium">
-                  ID
-                </th>
-                <th scope="col" className="px-3 py-4 font-medium">
-                  File
-                </th>
-                <th scope="col" className="px-3 py-4 font-medium">
-                  Contacts
-                </th>
-                <th scope="col" className="px-3 py-4 font-medium">
-                  Status
-                </th>
-                <th scope="col" className="px-3 py-4 font-medium">
-                  Best disposition
-                </th>
-                <th scope="col" className="px-4 py-4 font-medium">
-                  Progress
-                </th>
-                <th scope="col" className="px-3 py-4 font-medium">
-                  Created
-                </th>
-                <th scope="col" className="px-5 py-4 text-right font-medium">
-                  Actions
-                </th>
-              </tr>
-            </thead>
+      <DataTableCard>
+        {/* One legend for the whole table. It used to be repeated inside every
+            progress cell — the same four words fifty times. */}
+        <DataTableToolbar className="justify-between">
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {liveTotal.toLocaleString()}{" "}
+            {liveTotal === 1 ? "campaign" : "campaigns"}
+          </span>
+          <CampaignProgressLegend />
+        </DataTableToolbar>
+        <div className="no-scrollbar overflow-x-auto">
+          <table className="w-full min-w-180 text-left text-sm">
+            <DataTableHead>
+              <th scope="col" className="px-5 py-3 font-medium">
+                Campaign
+              </th>
+              <th scope="col" className="px-3 py-3 font-medium">
+                Status
+              </th>
+              <th scope="col" className="px-4 py-3 font-medium">
+                Progress
+              </th>
+              <th scope="col" className="px-3 py-3 font-medium">
+                Created
+              </th>
+              <th scope="col" className="px-5 py-3 text-right font-medium">
+                <span className="sr-only">Actions</span>
+              </th>
+            </DataTableHead>
             <tbody className="divide-y divide-border/60">
               {items.map((c) => {
                 const isBusy = pending && pendingId === c.id;
@@ -257,26 +286,8 @@ export function CampaignsTable({
                   c.status === "paused" ||
                   c.status === "completed";
                 const canStop = c.status === "in_progress";
-                const total = Math.max(1, c.total_contacts);
-                const succeededPct = Math.round(
-                  (c.succeeded_count / total) * 100,
-                );
-                const failedPct = Math.round((c.failed_count / total) * 100);
-                const inFlightPct = Math.round(
-                  (c.in_flight_count / total) * 100,
-                );
-                // Whatever's left is "not yet attempted" (pending/queued). The
-                // bar shows it as the empty remainder; we surface the number so
-                // the operator can see how much of the list is still to dial.
-                const finishedCount = c.succeeded_count + c.failed_count;
-                const remainingCount = Math.max(
-                  0,
-                  c.total_contacts - finishedCount - c.in_flight_count,
-                );
-                const donePct = Math.min(
-                  100,
-                  Math.round((finishedCount / total) * 100),
-                );
+                const p = campaignProgress(c);
+                const s = displayStatus(c);
 
                 return (
                   <tr
@@ -291,150 +302,138 @@ export function CampaignsTable({
                         router.push(`/campaigns/${c.id}`);
                       }
                     }}
-                    className="group cursor-pointer align-top transition-colors hover:bg-muted/30 focus-visible:bg-muted/30 focus-visible:outline-none"
+                    className="group cursor-pointer transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
                   >
-                    <td className="px-5 py-4">
-                      <span className="font-mono text-xs text-muted-foreground group-hover:text-foreground">
-                        {c.id.slice(0, 8)}
-                      </span>
-                      <p className="mt-0.5 line-clamp-1 text-sm font-medium">
-                        {c.name}
-                      </p>
-                    </td>
-                    <td className="px-3 py-4">
-                      <p className="line-clamp-1 max-w-[180px] text-xs text-muted-foreground">
-                        {c.file_name ?? "—"}
-                      </p>
-                    </td>
-                    <td className="px-3 py-4 text-xs tabular-nums">
-                      <span className="font-medium text-foreground">
-                        {c.valid_contacts}
-                      </span>
-                      <span className="text-muted-foreground">
-                        {" "}
-                        / {c.total_contacts}
-                      </span>
-                    </td>
-                    <td className="px-3 py-4">
-                      {(() => {
-                        const s = displayStatus(c);
-                        return <Badge className={s.className}>{s.label}</Badge>;
-                      })()}
-                    </td>
-                    <td className="px-3 py-4">
-                      {c.best_disposition ? (
-                        <Badge variant="secondary" className="w-fit">
-                          {formatOutcomeKey(c.best_disposition)}
-                        </Badge>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-4 min-w-55">
-                      <div className="flex items-center justify-between text-[11px] tabular-nums">
-                        <span className="font-medium text-foreground">
-                          {donePct}% done
+                    {/* Name leads. The old layout put an 8-character UUID slice
+                        on the first line and the name underneath, so the one
+                        thing an operator recognises was the secondary text. The
+                        id is still here for support requests, just quieter. */}
+                    <td className="px-5 py-3.5">
+                      <p className="line-clamp-1 font-medium">{c.name}</p>
+                      <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        {c.file_name ? (
+                          <span className="line-clamp-1 max-w-45">
+                            {c.file_name}
+                          </span>
+                        ) : null}
+                        <span className="tabular-nums">
+                          {c.valid_contacts.toLocaleString()} /{" "}
+                          {c.total_contacts.toLocaleString()} contacts
                         </span>
+                      </p>
+                    </td>
+
+                    <td className="px-3 py-3.5">
+                      <div className="flex flex-col items-start gap-1">
+                        <Badge variant={s.variant}>{s.label}</Badge>
+                        {c.best_disposition ? (
+                          <span className="text-[11px] text-muted-foreground">
+                            {formatOutcomeKey(c.best_disposition)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+
+                    <td className="min-w-52 px-4 py-3.5">
+                      <div className="flex items-baseline justify-between gap-2 text-xs tabular-nums">
+                        <span className="font-medium">{p.donePct}%</span>
                         <span className="text-muted-foreground">
-                          {finishedCount} / {c.total_contacts}
+                          {p.finished.toLocaleString()} /{" "}
+                          {p.total.toLocaleString()}
                         </span>
                       </div>
-                      <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted">
-                        <div className="flex h-full">
-                          <span
-                            className="bg-emerald-500/80"
-                            style={{ width: `${succeededPct}%` }}
-                            title={`${c.succeeded_count} connected`}
-                          />
-                          <span
-                            className="bg-red-500/70"
-                            style={{ width: `${failedPct}%` }}
-                            title={`${c.failed_count} failed`}
-                          />
-                          <span
-                            className="animate-pulse bg-blue-500/70"
-                            style={{ width: `${inFlightPct}%` }}
-                            title={`${c.in_flight_count} dialing`}
-                          />
-                        </div>
-                      </div>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] tabular-nums text-muted-foreground">
-                        <span className="inline-flex items-center gap-1">
-                          <span className="size-1.5 rounded-full bg-emerald-500/80" />
-                          {c.succeeded_count} connected
-                        </span>
-                        <span className="inline-flex items-center gap-1">
-                          <span className="size-1.5 rounded-full bg-red-500/70" />
-                          {c.failed_count} failed
-                        </span>
-                        {c.in_flight_count > 0 ? (
-                          <span className="inline-flex items-center gap-1">
-                            <span className="size-1.5 rounded-full bg-blue-500/70" />
-                            {c.in_flight_count} dialing
-                          </span>
-                        ) : null}
-                        {remainingCount > 0 ? (
-                          <span className="inline-flex items-center gap-1">
-                            <span className="size-1.5 rounded-full bg-muted-foreground/40" />
-                            {remainingCount} to go
-                          </span>
-                        ) : null}
-                      </div>
+                      <CampaignProgressBar progress={p} className="mt-1.5" />
                     </td>
+
                     <td
-                      className="px-3 py-4 text-xs text-muted-foreground"
+                      className="px-3 py-3.5 text-xs text-muted-foreground"
                       suppressHydrationWarning
                     >
                       {now === null ? "—" : formatRelative(c.created_at, now)}
                     </td>
-                    <td className="px-5 py-4">
-                      {/* Stop row-navigation when an action button is used. */}
+
+                    <td className="px-5 py-3.5">
+                      {/* Stop row-navigation when an action is used. */}
                       <div
-                        className="flex items-center justify-end gap-1"
+                        className="flex items-center justify-end gap-0.5"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => onRunNow(c)}
-                          disabled={isBusy || !canRun}
-                          aria-label="Run now"
-                          title={canRun ? "Run now" : "Already running"}
-                        >
-                          <PlayIcon />
-                        </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => onStop(c)}
-                          disabled={isBusy || !canStop}
-                          aria-label="Stop"
-                          title={canStop ? "Stop" : "Not running"}
-                        >
-                          <SquareIcon />
-                        </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => onDownload(c)}
-                          aria-label="Download results"
-                          title="Download results CSV"
-                        >
-                          <DownloadIcon />
-                        </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => onDelete(c)}
-                          disabled={isBusy}
-                          aria-label="Delete all data"
-                          title="Delete all campaign data"
-                          className={cn(
-                            "text-muted-foreground hover:text-destructive",
-                          )}
-                        >
-                          <Trash2Icon />
-                        </Button>
+                        {/* Run and Stop stay on the row: they are the two
+                            things an operator does from this screen, and
+                            burying them costs a click on every use. */}
+                        <Tooltip>
+                          <TooltipTrigger
+                            delay={150}
+                            render={
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => onRunNow(c)}
+                                disabled={isBusy || !canRun}
+                                aria-label={`Run ${c.name} now`}
+                              />
+                            }
+                          >
+                            {isBusy ? (
+                              <Loader2Icon className="animate-spin" />
+                            ) : (
+                              <PlayIcon />
+                            )}
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {canRun ? "Run now" : "Already running"}
+                          </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                          <TooltipTrigger
+                            delay={150}
+                            render={
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => onStop(c)}
+                                disabled={isBusy || !canStop}
+                                aria-label={`Stop ${c.name}`}
+                              />
+                            }
+                          >
+                            <SquareIcon />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {canStop ? "Stop" : "Not running"}
+                          </TooltipContent>
+                        </Tooltip>
+
+                        {/* Delete used to sit inline, one pixel from Download.
+                            Destructive actions live behind the overflow menu
+                            everywhere else in the app. */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger
+                            render={
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                aria-label={`More actions for ${c.name}`}
+                              />
+                            }
+                          >
+                            <MoreHorizontalIcon />
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => onDownload(c)}>
+                              <DownloadIcon /> Download results CSV
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onClick={() => onDelete(c)}
+                              disabled={isBusy}
+                            >
+                              <Trash2Icon /> Delete all data
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </td>
                   </tr>
@@ -443,7 +442,7 @@ export function CampaignsTable({
             </tbody>
           </table>
         </div>
-      </Card>
+      </DataTableCard>
 
       <InfiniteScrollFooter
         loading={loading}
@@ -454,69 +453,105 @@ export function CampaignsTable({
       />
 
       <Dialog
-        open={confirmTarget !== null}
+        open={confirmAction !== null}
         onOpenChange={(open) => {
-          // Don't let an outside-click / Escape dismiss mid-delete.
-          if (!open && !deleting) setConfirmTarget(null);
+          // Don't let an outside-click / Escape dismiss mid-action.
+          if (!open && !confirming) setConfirmAction(null);
         }}
       >
-        <DialogContent showCloseButton={!deleting}>
+        <DialogContent showCloseButton={!confirming}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <span className="grid size-8 place-items-center rounded-full bg-destructive/10 text-destructive">
-                <AlertTriangleIcon className="size-4" />
+              <span
+                className={cn(
+                  "grid size-8 place-items-center rounded-full",
+                  confirmAction?.kind === "delete"
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-warning-muted text-warning",
+                )}
+              >
+                {confirmAction?.kind === "delete" ? (
+                  <AlertTriangleIcon className="size-4" />
+                ) : (
+                  <SquareIcon className="size-4" />
+                )}
               </span>
-              Delete all campaign data?
+              {confirmAction?.kind === "delete"
+                ? "Delete all campaign data?"
+                : "Stop this campaign?"}
             </DialogTitle>
             <DialogDescription>
-              This removes{" "}
-              <span className="font-medium text-foreground">
-                {confirmTarget?.name}
-              </span>{" "}
-              — its contacts, every call and transcript, and the leads it
-              created — from your workspace. Leads shared with other calls are
-              kept.
+              {confirmAction?.kind === "delete" ? (
+                <>
+                  This removes{" "}
+                  <span className="font-medium text-foreground">
+                    {confirmAction.campaign.name}
+                  </span>{" "}
+                  — its contacts, every call and transcript, and the leads it
+                  created — from your workspace. Leads shared with other calls
+                  are kept.
+                </>
+              ) : (
+                <>
+                  Dials already in flight will finish;{" "}
+                  <span className="font-medium text-foreground">
+                    every contact still queued is skipped.
+                  </span>{" "}
+                  You can start the campaign again later, and it will pick up
+                  the contacts it never reached.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
 
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-            This{" "}
-            <span className="font-medium text-foreground">cannot be undone</span>{" "}
-            from your side. Download a copy first if you need the data.
-            {confirmTarget ? (
+          {confirmAction?.kind === "delete" ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+              This{" "}
+              <span className="font-medium text-foreground">
+                cannot be undone
+              </span>{" "}
+              from your side. Download a copy first if you need the data.
               <Button
                 type="button"
                 size="xs"
                 variant="outline"
-                onClick={() => onDownload(confirmTarget)}
-                disabled={deleting}
+                onClick={() => onDownload(confirmAction.campaign)}
+                disabled={confirming}
                 className="mt-2 flex"
               >
                 <DownloadIcon /> Download results CSV
               </Button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
 
           <DialogFooter>
             <DialogClose
               render={
-                <Button variant="outline" type="button" disabled={deleting} />
+                <Button variant="outline" type="button" disabled={confirming} />
               }
             >
               Cancel
             </DialogClose>
             <Button
               type="button"
-              variant="destructive"
-              onClick={confirmDelete}
-              disabled={deleting}
+              variant={
+                confirmAction?.kind === "delete" ? "destructive" : "default"
+              }
+              onClick={runConfirmed}
+              disabled={confirming}
             >
-              {deleting ? (
+              {confirming ? (
                 <Loader2Icon className="animate-spin" />
-              ) : (
+              ) : confirmAction?.kind === "delete" ? (
                 <Trash2Icon />
+              ) : (
+                <SquareIcon />
               )}
-              {deleting ? "Deleting…" : "Delete data"}
+              {confirming
+                ? "Working…"
+                : confirmAction?.kind === "delete"
+                  ? "Delete data"
+                  : "Stop campaign"}
             </Button>
           </DialogFooter>
         </DialogContent>

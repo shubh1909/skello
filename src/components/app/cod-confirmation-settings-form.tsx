@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
 
+import { SectionLabel } from "@/components/app/section-label";
 import { saveCodSettings } from "@/actions/cod-confirmation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -84,9 +85,9 @@ export function CodConfirmationSettingsForm({ settings, connected }: Props) {
         aria-expanded={open}
         className="flex w-full items-center justify-between py-1 text-left"
       >
-        <span className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+        <SectionLabel as="span">
           Settings
-        </span>
+        </SectionLabel>
         <ChevronDownIcon
           className={cn(
             "size-8 text-muted-foreground transition-transform",

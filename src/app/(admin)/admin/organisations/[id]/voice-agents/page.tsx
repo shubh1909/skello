@@ -2,8 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeftIcon } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
+import { SectionLabel } from "@/components/app/section-label";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { VoiceAgentsManager } from "@/components/app/voice-agents-manager";
 import { getOrganisationAdmin } from "@/actions/admin/organisations";
 import { getVoiceAgentAdmin } from "@/actions/admin/voice-agent";
@@ -31,16 +32,16 @@ export default async function AdminOrganisationVoiceAgentsPage({
   if (!orgRes.success) {
     if (orgRes.error === "Organisation not found") notFound();
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {orgRes.error}
-      </Card>
+      </ErrorCard>
     );
   }
   if (!agentsRes.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {agentsRes.error}
-      </Card>
+      </ErrorCard>
     );
   }
 
@@ -63,9 +64,9 @@ export default async function AdminOrganisationVoiceAgentsPage({
       </div>
 
       <header className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+        <SectionLabel as="p">
           {org.name}
-        </p>
+        </SectionLabel>
         <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
           Voice agents
         </h1>

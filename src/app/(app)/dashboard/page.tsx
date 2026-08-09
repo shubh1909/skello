@@ -1,3 +1,4 @@
+import { formatDurationClock } from "@/lib/format/duration";
 import {
   ActivityIcon,
   CalendarIcon,
@@ -10,6 +11,7 @@ import {
   ZapIcon,
 } from "lucide-react";
 
+import { SectionLabel } from "@/components/app/section-label";
 import { CallOutcomes } from "@/components/app/analytics/call-outcomes";
 import { ChartFrame } from "@/components/app/analytics/chart-frame";
 import { DailyBarChart } from "@/components/app/analytics/daily-bar-chart";
@@ -67,9 +69,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1.5">
-          <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+          <SectionLabel as="p">
             Analytics
-          </p>
+          </SectionLabel>
           <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
             {greeting()}, {session.email.split("@")[0]}.
           </h1>
@@ -194,7 +196,11 @@ function LegacyDashboard({ analytics, range, orgName }: LegacyDashboardProps) {
         />
         <StatCard
           label="Avg. duration"
-          value={formatDuration(analytics.avgDurationSec.current)}
+          value={formatDurationClock(analytics.avgDurationSec.current, {
+            // A stat card reading "Avg call duration —" is worse than 0:00;
+            // here zero IS the answer.
+            empty: "0:00",
+          })}
           icon={<ClockIcon />}
           trend={{
             delta: durationDelta,
@@ -288,13 +294,6 @@ function pctDelta(current: number, previous: number): number {
     return 100;
   }
   return Math.round(((current - previous) / previous) * 1000) / 10;
-}
-
-function formatDuration(seconds: number): string {
-  if (!seconds || seconds < 0) return "0:00";
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function rangeLabelFor(range: string): string {

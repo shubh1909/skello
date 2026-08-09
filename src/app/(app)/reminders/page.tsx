@@ -1,7 +1,8 @@
 import { ClockIcon } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
+import { NavTabs } from "@/components/app/nav-tabs";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { ReminderDialog } from "@/components/app/reminder-dialog";
 import { RemindersList } from "@/components/app/reminders-list";
 import { listReminders } from "@/actions/reminders";
@@ -52,16 +53,31 @@ export default async function RemindersPage({ searchParams }: PageProps) {
         />
       </header>
 
-      <nav className="flex items-center gap-1 text-sm">
-        <FilterTab href="/reminders?status=pending" active={status === "pending"} label="Pending" />
-        <FilterTab href="/reminders?status=done" active={status === "done"} label="Done" />
-        <FilterTab href="/reminders?status=dismissed" active={status === "dismissed"} label="Dismissed" />
-      </nav>
+      <NavTabs
+        aria-label="Reminder status"
+        items={[
+          {
+            href: "/reminders?status=pending",
+            label: "Pending",
+            active: status === "pending",
+          },
+          {
+            href: "/reminders?status=done",
+            label: "Done",
+            active: status === "done",
+          },
+          {
+            href: "/reminders?status=dismissed",
+            label: "Dismissed",
+            active: status === "dismissed",
+          },
+        ]}
+      />
 
       {!result.success ? (
-        <Card className="border-destructive/40 p-6 text-sm text-destructive">
+        <ErrorCard>
           {result.error}
-        </Card>
+        </ErrorCard>
       ) : (
         <RemindersList
           // Remount when the status tab changes so useInfiniteList resets
@@ -78,25 +94,3 @@ export default async function RemindersPage({ searchParams }: PageProps) {
   );
 }
 
-function FilterTab({
-  href,
-  active,
-  label,
-}: {
-  href: string;
-  active: boolean;
-  label: string;
-}) {
-  return (
-    <a
-      href={href}
-      className={
-        active
-          ? "rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background"
-          : "rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-      }
-    >
-      {label}
-    </a>
-  );
-}

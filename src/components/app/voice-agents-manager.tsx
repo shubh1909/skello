@@ -13,9 +13,23 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
+import {
+  DataTableCard,
+  DataTableHead,
+} from "@/components/app/data-table";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -52,19 +66,15 @@ export function VoiceAgentsManager({
   return (
     <div className="space-y-4">
       {!integrationReady ? (
-        <Card className="flex items-start gap-3 border-amber-500/40 bg-amber-500/5 p-4 text-sm">
-          <ShieldAlertIcon className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-          <div className="space-y-1">
-            <p className="font-medium">
-              Connect the voice provider first
-            </p>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              The workspace needs an API key on file before agents can be
-              claimed. Connect the voice agent on the organisation overview
-              page, then come back here.
-            </p>
-          </div>
-        </Card>
+        <Alert variant="warning">
+          <ShieldAlertIcon />
+          <AlertTitle>Connect the voice provider first</AlertTitle>
+          <AlertDescription className="leading-relaxed">
+            The workspace needs an API key on file before agents can be claimed.
+            Connect the voice agent on the organisation overview page, then come
+            back here.
+          </AlertDescription>
+        </Alert>
       ) : null}
 
       <div className="flex items-center justify-end">
@@ -75,26 +85,26 @@ export function VoiceAgentsManager({
       </div>
 
       {agents.length === 0 ? (
-        <Card className="items-center gap-2 py-16 text-center">
-          <p className="text-sm font-medium">No agents linked yet</p>
-          <p className="max-w-md text-xs text-muted-foreground">
-            Add an agent above. We'll verify the id against your voice
-            provider account before claiming it.
-          </p>
-        </Card>
+        <Empty className="border py-16">
+          <EmptyHeader>
+            <EmptyTitle>No agents linked yet</EmptyTitle>
+            <EmptyDescription>
+              Add an agent above. We&apos;ll verify the id against your voice
+              provider account before claiming it.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : (
-        <Card className="overflow-hidden p-0">
+        <DataTableCard>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="border-b border-border/60 bg-muted/30">
-                <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  <th className="px-5 py-3 font-medium">Label</th>
-                  <th className="px-3 py-3 font-medium">Agent id</th>
-                  <th className="px-3 py-3 font-medium">Status</th>
-                  <th className="px-3 py-3 font-medium">Linked</th>
-                  <th className="px-5 py-3 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
+              <DataTableHead>
+                <th className="px-5 py-3 font-medium">Label</th>
+                <th className="px-3 py-3 font-medium">Agent id</th>
+                <th className="px-3 py-3 font-medium">Status</th>
+                <th className="px-3 py-3 font-medium">Linked</th>
+                <th className="px-5 py-3 text-right font-medium">Actions</th>
+              </DataTableHead>
               <tbody className="divide-y divide-border/60">
                 {agents.map((agent) => (
                   <Row
@@ -107,7 +117,7 @@ export function VoiceAgentsManager({
               </tbody>
             </table>
           </div>
-        </Card>
+        </DataTableCard>
       )}
     </div>
   );

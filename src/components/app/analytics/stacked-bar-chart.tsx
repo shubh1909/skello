@@ -6,10 +6,12 @@ interface StackedBarChartProps {
   emptyLabel?: string;
 }
 
+// Lead temperature is an ordered scale, so it reads off the semantic tokens
+// rather than --chart-*: hot genuinely means "act now" and cold means "don't".
 const SERIES = [
-  { key: "hot", label: "Hot", className: "bg-red-500/90" },
-  { key: "warm", label: "Warm", className: "bg-amber-500/90" },
-  { key: "cold", label: "Cold", className: "bg-sky-400/80" },
+  { key: "hot", label: "Hot", className: "bg-destructive" },
+  { key: "warm", label: "Warm", className: "bg-warning" },
+  { key: "cold", label: "Cold", className: "bg-info" },
 ] as const;
 
 type SeriesKey = (typeof SERIES)[number]["key"];

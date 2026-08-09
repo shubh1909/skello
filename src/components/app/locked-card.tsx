@@ -1,6 +1,12 @@
 import { ClockIcon, LockIcon } from "lucide-react";
 
-import { Card } from "@/components/ui/card";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { cn } from "@/lib/utils";
 
 interface LockedCardProps {
@@ -25,22 +31,23 @@ export function LockedCard({
         </h1>
       </header>
 
-      <Card className="items-center gap-3 py-16 text-center">
-        <span
-          className={cn(
-            "grid size-12 place-items-center rounded-full",
-            variant === "denied"
-              ? "bg-destructive/10 text-destructive"
-              : "bg-muted text-muted-foreground",
-          )}
-        >
-          <Icon className="size-5" />
-        </span>
-        <p className="font-medium">{heading}</p>
-        <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-          {description}
-        </p>
-      </Card>
+      <Empty className="border py-16">
+        <EmptyHeader>
+          <EmptyMedia
+            variant="icon"
+            className={cn(
+              "size-12 rounded-full",
+              // Denied is the one empty state that is a refusal rather than an
+              // absence, so it keeps the destructive tint.
+              variant === "denied" && "bg-destructive-muted text-destructive",
+            )}
+          >
+            <Icon className="size-5" />
+          </EmptyMedia>
+          <EmptyTitle>{heading}</EmptyTitle>
+          <EmptyDescription>{description}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     </div>
   );
 }

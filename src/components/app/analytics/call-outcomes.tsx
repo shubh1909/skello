@@ -11,14 +11,18 @@ const LABELS: Record<CallStatus, string> = {
   canceled: "Canceled",
 };
 
+// Was a half-tokenised mix (bg-destructive next to bg-info-muted) — the one map in
+// the app that proved the palette had no vocabulary for "in motion". Now:
+// success = connected, info = live/ringing, warning = didn't connect,
+// destructive = broke, muted = never really started.
 const SWATCH: Record<CallStatus, string> = {
   initiated: "bg-muted-foreground/60",
-  ringing: "bg-sky-300",
-  in_progress: "bg-sky-500",
-  completed: "bg-emerald-500",
+  ringing: "bg-info/60",
+  in_progress: "bg-info",
+  completed: "bg-success",
   failed: "bg-destructive",
-  no_answer: "bg-amber-500",
-  busy: "bg-amber-400",
+  no_answer: "bg-warning",
+  busy: "bg-warning/70",
   canceled: "bg-muted-foreground/50",
 };
 

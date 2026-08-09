@@ -14,9 +14,16 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { DataTableCard } from "@/components/app/data-table";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -115,22 +122,24 @@ export function RemindersList({
 
   if (items.length === 0) {
     return (
-      <Card className="items-center gap-2 py-16 text-center">
-        <span className="grid size-10 place-items-center rounded-full bg-muted">
-          <CalendarIcon className="size-4 text-muted-foreground" />
-        </span>
-        <p className="font-medium">No reminders</p>
-        <p className="max-w-sm text-sm text-muted-foreground">
-          Schedule a follow-up from a lead row, or use the button above to add
-          one.
-        </p>
-      </Card>
+      <Empty className="border py-16">
+        <EmptyHeader>
+          <EmptyMedia variant="icon" className="size-12 rounded-full">
+            <CalendarIcon className="size-5" />
+          </EmptyMedia>
+          <EmptyTitle>No reminders</EmptyTitle>
+          <EmptyDescription>
+            Schedule a follow-up from a lead row, or use the button above to add
+            one.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
 
   return (
     <>
-      <Card className="overflow-hidden p-0">
+      <DataTableCard>
         <ul className="divide-y divide-border/60">
           {items.map((r) => {
           const Icon = TYPE_ICON[r.type] ?? CalendarIcon;
@@ -254,7 +263,7 @@ export function RemindersList({
           );
         })}
         </ul>
-      </Card>
+      </DataTableCard>
 
       <InfiniteScrollFooter
         loading={loading}

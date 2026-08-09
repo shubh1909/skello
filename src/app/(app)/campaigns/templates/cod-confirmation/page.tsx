@@ -1,8 +1,14 @@
+import { PlugZapIcon } from "lucide-react";
 import Link from "next/link";
 import { ArrowLeftIcon } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { CodAgentCard } from "@/components/app/cod-agent-card";
 import { CodConfirmationControls } from "@/components/app/cod-confirmation-controls";
 import { CodTestAgentDialog } from "@/components/app/cod-test-agent-dialog";
@@ -27,9 +33,9 @@ export default async function CodConfirmationTemplatePage() {
 
   if (!overview.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {overview.error}
-      </Card>
+      </ErrorCard>
     );
   }
 
@@ -73,10 +79,14 @@ export default async function CodConfirmationTemplatePage() {
       </header>
 
       {!connected ? (
-        <Card className="border-amber-500/30 bg-amber-500/5 p-4 text-sm text-muted-foreground">
-          Your Shopify store isn&apos;t connected yet. Ask your Skelo contact to
-          connect it, then turn COD confirmation on below.
-        </Card>
+        <Alert variant="warning">
+          <PlugZapIcon />
+          <AlertTitle>Shopify isn&apos;t connected yet</AlertTitle>
+          <AlertDescription>
+            Ask your Skelo contact to connect your store, then turn COD confirmation on
+            below.
+          </AlertDescription>
+        </Alert>
       ) : null}
 
       <CodConfirmationDashboard metrics={metrics} />

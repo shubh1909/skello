@@ -155,7 +155,7 @@ function VoiceConfigDialogBody({
 
   if (!config.enabled) {
     return (
-      <p className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300">
+      <p className="rounded-md border border-warning/30 bg-warning-muted p-3 text-xs text-warning">
         Voice agent is disabled for this workspace. Enable it in Settings
         before adding agents or numbers.
       </p>
@@ -205,7 +205,7 @@ function AgentSection({ agents }: { agents: VoiceAgentEntry[] }) {
               <p className="flex items-center gap-1.5 text-sm font-medium">
                 {a.label}
                 {a.is_default ? (
-                  <Badge className="bg-amber-100 text-[10px] text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
+                  <Badge className="bg-warning-muted text-[10px] text-warning">
                     <StarIcon className="size-2.5" /> Default
                   </Badge>
                 ) : null}
@@ -410,7 +410,7 @@ function NumberRow({
           <p className="flex items-center gap-1.5 text-sm font-medium">
             {number.label}
             {number.is_default ? (
-              <Badge className="bg-amber-100 text-[10px] text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
+              <Badge className="bg-warning-muted text-[10px] text-warning">
                 <StarIcon className="size-2.5" /> Default
               </Badge>
             ) : null}

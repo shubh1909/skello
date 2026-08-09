@@ -59,7 +59,7 @@ function TrendRow({ trend }: { trend: NonNullable<StatCardProps["trend"]> }) {
           zero
             ? "text-muted-foreground"
             : positive
-              ? "text-emerald-600 dark:text-emerald-400"
+              ? "text-success"
               : "text-destructive",
         )}
       >

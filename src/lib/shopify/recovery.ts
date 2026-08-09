@@ -17,6 +17,12 @@ import {
   nextCallWindowOpen,
 } from "@/lib/shopify/call-window";
 import { findOrCreateShopifyLead } from "@/lib/shopify/lead";
+// Offer arithmetic lives in the pure template module so the settings preview
+// runs the SAME maths this dispatcher does — see recovery-templates.ts.
+import {
+  applyRecoveryOffer,
+  wholeAmount,
+} from "@/lib/shopify/recovery-templates";
 import { normalizeAbandonedCheckout } from "@/lib/shopify/webhooks";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { APP_TIMEZONE } from "@/lib/time";
@@ -953,19 +959,6 @@ interface DueRecovery {
 // unknown) so the prompt never renders a literal "{variable}".
 // ---------------------------------------------------------------------------
 
-// Money → speakable string: 2dp, trailing ".00" trimmed (5000, not 5000.00).
-// Used for the percentage label; currency amounts use wholeAmount (below).
-function money(n: number): string {
-  const rounded = Math.round(n * 100) / 100;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
-}
-
-// Currency amount → whole units, no paise. The voice agent quotes "5000 rupees",
-// never "4999.50", and the WhatsApp copy matches. Rounds to the nearest rupee.
-function wholeAmount(n: number): string {
-  return String(Math.round(n));
-}
-
 // First name only — the agent greets "Hi Rahul", not "Hi Rahul Gupta". Splits on
 // whitespace and takes the first token; empty/null → "".
 function firstName(full: string | null): string {
@@ -1002,39 +995,6 @@ function summariseCart(items: RecoveryCartItem[]): {
     cartSummary: items.length > 1 ? `${top} along with others` : top,
     itemCount: items.length,
   };
-}
-
-// cart_total is the original (pre-offer) value; the discount is derived from the
-// snapshotted offer. Returns nulls when there's no usable offer/total.
-function applyOffer(
-  cartTotal: number | null,
-  value: number | null,
-  kind: string | null,
-): {
-  discountAmount: number | null;
-  discountedTotal: number | null;
-  percentLabel: string;
-} {
-  if (cartTotal == null || value == null || value <= 0) {
-    return { discountAmount: null, discountedTotal: null, percentLabel: "" };
-  }
-  if (kind === "percentage") {
-    const amount = Math.min((cartTotal * value) / 100, cartTotal);
-    return {
-      discountAmount: amount,
-      discountedTotal: cartTotal - amount,
-      percentLabel: `${money(value)}%`,
-    };
-  }
-  if (kind === "fixed_amount") {
-    const amount = Math.min(value, cartTotal);
-    return {
-      discountAmount: amount,
-      discountedTotal: cartTotal - amount,
-      percentLabel: "",
-    };
-  }
-  return { discountAmount: null, discountedTotal: null, percentLabel: "" };
 }
 
 // The cart/offer fields buildRecoveryVariables reads. DueRecovery (voice) and
@@ -1133,7 +1093,7 @@ export function buildRecoveryVariables(
 ): Record<string, unknown> {
   const items = parseCartItems(r.cart_items);
   const { topProduct, cartSummary, itemCount } = summariseCart(items);
-  const { discountAmount, discountedTotal, percentLabel } = applyOffer(
+  const { discountAmount, discountedTotal, percentLabel } = applyRecoveryOffer(
     r.cart_total,
     r.offer_discount_value,
     r.offer_discount_kind,

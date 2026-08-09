@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { dispatchDueCallbacks } from "@/lib/callbacks/dispatch";
 import { dispatchDueCampaignContacts } from "@/lib/campaigns/dispatch";
+import { drainPendingCheckoutEvents } from "@/lib/shopify/checkout-events";
 import { dispatchDueCodConfirmations } from "@/lib/shopify/cod-confirmation";
 import { dispatchDueRecoveries } from "@/lib/shopify/recovery";
 import { dispatchDueWhatsAppRecoveries } from "@/lib/shopify/whatsapp-recovery";
@@ -33,21 +34,29 @@ export async function POST(request: NextRequest) {
   try {
     // All drains share the tick. Each runs independently so one subsystem
     // throwing can't starve the others.
-    const [campaigns, callbacks, recoveries, whatsapp, codConfirmations] =
-      await Promise.allSettled([
-        dispatchDueCampaignContacts(),
-        dispatchDueCallbacks(),
-        dispatchDueRecoveries(),
-        dispatchDueWhatsAppRecoveries(),
-        dispatchDueCodConfirmations(),
-      ]);
+    const [
+      campaigns,
+      callbacks,
+      recoveries,
+      whatsapp,
+      codConfirmations,
+      checkoutEvents,
+    ] = await Promise.allSettled([
+      dispatchDueCampaignContacts(),
+      dispatchDueCallbacks(),
+      dispatchDueRecoveries(),
+      dispatchDueWhatsAppRecoveries(),
+      dispatchDueCodConfirmations(),
+      drainPendingCheckoutEvents(),
+    ]);
 
     if (
       campaigns.status === "rejected" &&
       callbacks.status === "rejected" &&
       recoveries.status === "rejected" &&
       whatsapp.status === "rejected" &&
-      codConfirmations.status === "rejected"
+      codConfirmations.status === "rejected" &&
+      checkoutEvents.status === "rejected"
     ) {
       const message =
         campaigns.reason instanceof Error
@@ -78,6 +87,10 @@ export async function POST(request: NextRequest) {
           codConfirmations.status === "fulfilled"
             ? codConfirmations.value
             : { error: String(codConfirmations.reason) },
+        checkoutEvents:
+          checkoutEvents.status === "fulfilled"
+            ? checkoutEvents.value
+            : { error: String(checkoutEvents.reason) },
       },
       { status: 200 },
     );

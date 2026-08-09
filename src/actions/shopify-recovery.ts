@@ -8,8 +8,10 @@ import { logSkeloError } from "@/lib/errors";
 import { ShopifyApiError, listDiscountOffers } from "@/lib/shopify/client";
 import { getShopifyIntegration } from "@/lib/shopify/integration";
 import { ABANDONMENT_THRESHOLD_MINUTES } from "@/lib/shopify/recovery";
+import { RECOVERY_TEMPLATE_LAYOUT_VALUES } from "@/lib/shopify/recovery-templates";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { type ActionResult, fail, ok } from "@/types/action";
+import type { CallTranscriptStatus } from "@/types/call";
 import type {
   RecoveryAttemptRow,
   RecoveryCallRow,
@@ -42,8 +44,14 @@ const ATTEMPT_COLUMNS =
 const MESSAGE_COLUMNS =
   "id, to_phone, template_name, provider, provider_message_id, status, error_message, error_code, sent_at, delivered_at, read_at, created_at";
 
+// `actionable`, `transcript_status` and `language` are here so a recovery call
+// renders through the SAME panel as a lead's call. Without them the recovery
+// sheet could not show "Actionable next step" at all, and fell back to generic
+// empty copy for transcripts because it couldn't tell "still processing" from
+// "none captured". Named columns on an already org-scoped query — no Law #1
+// concern.
 const CALL_COLUMNS =
-  "id, status, direction, to_phone, from_phone, error_message, bolna_call_id, created_at, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript, transcript_url, summary, name_extracted, interest, lead_intent_extracted, customer_status, call_outcome, requested_callback_at, connect_on_whatsapp, visit_scheduled_at, lead_data, custom_data, shopify_recovery_attempt_id, lead_id";
+  "id, status, direction, to_phone, from_phone, error_message, bolna_call_id, created_at, started_at, answered_at, ended_at, duration_seconds, recording_url, transcript, transcript_url, transcript_status, language, summary, actionable, name_extracted, interest, lead_intent_extracted, customer_status, call_outcome, requested_callback_at, connect_on_whatsapp, visit_scheduled_at, lead_data, custom_data, shopify_recovery_attempt_id, lead_id";
 
 const PAGE_SIZE = 20;
 
@@ -355,7 +363,9 @@ const settingsSchema = z.object({
   voice_enabled: z.boolean().optional(),
   whatsapp_enabled: z.boolean().optional(),
   whatsapp_template_name: z.string().trim().max(200).nullable().optional(),
-  whatsapp_template_layout: z.enum(["classic", "coupon_link"]).optional(),
+  // Derived from the layout registry, not restated — a layout added there but
+  // rejected here fails to save with a shapeless validation error.
+  whatsapp_template_layout: z.enum(RECOVERY_TEMPLATE_LAYOUT_VALUES).optional(),
 });
 
 // The org tunes its own offer + timing. Org resolved from the session; the
@@ -907,7 +917,10 @@ interface RawCallRow {
   recording_url: string | null;
   transcript: string | null;
   transcript_url: string | null;
+  transcript_status: CallTranscriptStatus;
+  language: string | null;
   summary: string | null;
+  actionable: string | null;
   name_extracted: string | null;
   interest: string | null;
   lead_intent_extracted: string | null;
@@ -1058,7 +1071,10 @@ async function enrichRecoveryCalls(
       recording_url: c.recording_url,
       transcript: c.transcript,
       transcript_url: c.transcript_url,
+      transcript_status: c.transcript_status,
+      language: c.language,
       summary: c.summary,
+      actionable: c.actionable,
       name_extracted: c.name_extracted,
       interest: c.interest,
       lead_intent_extracted: c.lead_intent_extracted,

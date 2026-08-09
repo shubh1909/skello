@@ -41,12 +41,10 @@ export function formatDateTime(iso: string | null): string {
   });
 }
 
-export function formatDuration(seconds: number | null): string {
-  if (seconds === null || seconds < 0) return "—";
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
-}
+// Was a seventh hand-rolled copy. It rendered an exact minute as "3m 0s" and
+// an hour-long call as "92m 14s"; the shared one drops the zero remainder and
+// rolls over into hours.
+export { formatDurationCompact as formatDuration } from "@/lib/format/duration";
 
 // Highest-value product first; ">1 product" collapses to "Top +N".
 export function productsSummary(items: RecoveryCartItem[]): {

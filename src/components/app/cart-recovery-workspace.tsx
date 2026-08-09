@@ -10,11 +10,20 @@ import {
   getConvertedCarts,
   getRecoveryCalls,
 } from "@/actions/shopify-recovery";
+import {
+  DataTableCard,
+  DataTableHead,
+} from "@/components/app/data-table";
 import { createClient } from "@/lib/supabase/client";
 import { InfoIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -33,7 +42,6 @@ import {
   formatMoney,
   productsSummary,
 } from "@/lib/format/recovery";
-import { cn } from "@/lib/utils";
 import type {
   RecoveryAttemptRow,
   RecoveryCallRow,
@@ -248,32 +256,28 @@ export function CartRecoveryWorkspace({
   ];
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex gap-1 rounded-lg border border-border/60 bg-muted/30 p-1">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setTab(t.key)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-md px-4 py-1.5 text-sm transition-colors",
-                tab === t.key
-                  ? "bg-background font-medium shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {t.label}
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {t.count}
-              </span>
-            </button>
-          ))}
-        </div>
+    // A real Tabs, not the previous hand-rolled segmented control: this switch is
+    // client state (no URL change), which is exactly what the primitive is for —
+    // and it brings roving arrow-key focus and the aria wiring the buttons lacked.
+    // Panels are NOT keepMounted: each tab owns paged rows and a subscription, so
+    // mounting all three would triple the work on first paint.
+    <Tabs
+      value={tab}
+      onValueChange={(next) => setTab(next as TabKey)}
+      className="gap-4"
+    >
+      <TabsList variant="line">
+        {tabs.map((t) => (
+          <TabsTrigger key={t.key} value={t.key}>
+            {t.label}
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {t.count}
+            </span>
+          </TabsTrigger>
+        ))}
+      </TabsList>
 
-      </div>
-
-      {tab === "abandoned" ? (
+      <TabsContent value="abandoned">
         <CartTable
           rows={abandoned}
           variant="abandoned"
@@ -284,7 +288,9 @@ export function CartRecoveryWorkspace({
           sort={abandonedSort}
           onToggleSort={toggleAbandonedSort}
         />
-      ) : tab === "converted" ? (
+      </TabsContent>
+
+      <TabsContent value="converted">
         <CartTable
           rows={converted}
           variant="converted"
@@ -293,7 +299,9 @@ export function CartRecoveryWorkspace({
           onLoadMore={loadMoreConverted}
           onOpen={openCart}
         />
-      ) : (
+      </TabsContent>
+
+      <TabsContent value="calls">
         <CallTable
           rows={calls}
           total={callsTotal}
@@ -301,13 +309,14 @@ export function CartRecoveryWorkspace({
           onLoadMore={loadMoreCalls}
           onOpen={openCall}
         />
-      )}
+      </TabsContent>
 
+      {/* No `onOpenCall`: the cart sheet browses its own calls in an in-sheet
+          rail now, rather than stacking this sheet's sibling on top of itself. */}
       <RecoveryCartDetail
         cart={activeCart}
         open={cartDetailOpen}
         onOpenChange={setCartDetailOpen}
-        onOpenCall={openCall}
       />
 
       <RecoveryCallDetail
@@ -315,7 +324,7 @@ export function CartRecoveryWorkspace({
         open={detailOpen}
         onOpenChange={setDetailOpen}
       />
-    </div>
+    </Tabs>
   );
 }
 
@@ -426,57 +435,55 @@ function CartTable({
   // Abandoned, Recovered/Next. Cart only on the abandoned variant.
   const colSpan = isConverted ? 8 : 9;
   return (
-    <Card className="overflow-hidden p-0">
+    <DataTableCard>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-border/60 bg-muted/30 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            <tr>
-              <th className="px-4 py-3 font-medium">Shopper</th>
-              <th className="px-4 py-3 font-medium">Phone</th>
-              <th className="px-4 py-3 font-medium">Cart value</th>
-              <th className="px-4 py-3 font-medium">Products</th>
-              <th className="px-4 py-3 font-medium">Offer</th>
-              {!isConverted ? (
-                <th className="px-4 py-3 font-medium">Cart</th>
-              ) : null}
-              <th className="whitespace-nowrap px-4 py-3 font-medium">
-                Outreach
-              </th>
-              <th className="px-4 py-3 font-medium">
-                <span className="inline-flex items-center gap-1">
-                  {!isConverted && onToggleSort ? (
-                    <button
-                      type="button"
-                      onClick={onToggleSort}
-                      className="inline-flex items-center gap-1 font-medium uppercase tracking-wider transition-colors hover:text-foreground"
-                    >
-                      Abandoned
-                      {sort === "asc" ? (
-                        <ArrowUpIcon className="size-3.5" />
-                      ) : (
-                        <ArrowDownIcon className="size-3.5" />
-                      )}
-                    </button>
-                  ) : (
-                    "Abandoned"
-                  )}
-                  <HeaderHint hint="When the shopper reached checkout in Shopify — Shopify's checkout time, shown in the store's timezone." />
-                </span>
-              </th>
-              <th className="px-4 py-3 font-medium">
-                <span className="inline-flex items-center gap-1">
-                  {isConverted ? "Recovered" : "Next call"}
-                  <HeaderHint
-                    hint={
-                      isConverted
-                        ? "When we recorded the matching order (≈ the order time in Shopify)."
-                        : "When the next recovery call is scheduled."
-                    }
-                  />
-                </span>
-              </th>
-            </tr>
-          </thead>
+          <DataTableHead>
+            <th className="px-4 py-3 font-medium">Shopper</th>
+            <th className="px-4 py-3 font-medium">Phone</th>
+            <th className="px-4 py-3 font-medium">Cart value</th>
+            <th className="px-4 py-3 font-medium">Products</th>
+            <th className="px-4 py-3 font-medium">Offer</th>
+            {!isConverted ? (
+              <th className="px-4 py-3 font-medium">Cart</th>
+            ) : null}
+            <th className="whitespace-nowrap px-4 py-3 font-medium">
+              Outreach
+            </th>
+            <th className="px-4 py-3 font-medium">
+              <span className="inline-flex items-center gap-1">
+                {!isConverted && onToggleSort ? (
+                  <button
+                    type="button"
+                    onClick={onToggleSort}
+                    className="inline-flex items-center gap-1 font-medium uppercase tracking-wider transition-colors hover:text-foreground"
+                  >
+                    Abandoned
+                    {sort === "asc" ? (
+                      <ArrowUpIcon className="size-3.5" />
+                    ) : (
+                      <ArrowDownIcon className="size-3.5" />
+                    )}
+                  </button>
+                ) : (
+                  "Abandoned"
+                )}
+                <HeaderHint hint="When the shopper reached checkout in Shopify — Shopify's checkout time, shown in the store's timezone." />
+              </span>
+            </th>
+            <th className="px-4 py-3 font-medium">
+              <span className="inline-flex items-center gap-1">
+                {isConverted ? "Recovered" : "Next call"}
+                <HeaderHint
+                  hint={
+                    isConverted
+                      ? "When we recorded the matching order (≈ the order time in Shopify)."
+                      : "When the next recovery call is scheduled."
+                  }
+                />
+              </span>
+            </th>
+          </DataTableHead>
           <tbody className="divide-y divide-border/60">
             {rows.length === 0 ? (
               <EmptyRow colSpan={colSpan}>
@@ -547,7 +554,7 @@ function CartTable({
         </table>
       </div>
       <LoadMore shown={rows.length} total={total} pending={pending} onLoadMore={onLoadMore} />
-    </Card>
+    </DataTableCard>
   );
 }
 
@@ -566,21 +573,19 @@ function CallTable({
 }) {
   const colSpan = 8;
   return (
-    <Card className="overflow-hidden p-0">
+    <DataTableCard>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-border/60 bg-muted/30 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            <tr>
-              <th className="px-4 py-3 font-medium">Shopper</th>
-              <th className="px-4 py-3 font-medium">Phone</th>
-              <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium">Duration</th>
-              <th className="px-4 py-3 font-medium">Outcome</th>
-              <th className="px-4 py-3 font-medium">Cart value</th>
-              <th className="px-4 py-3 font-medium">Called</th>
-              <th className="px-4 py-3 font-medium" />
-            </tr>
-          </thead>
+          <DataTableHead>
+            <th className="px-4 py-3 font-medium">Shopper</th>
+            <th className="px-4 py-3 font-medium">Phone</th>
+            <th className="px-4 py-3 font-medium">Status</th>
+            <th className="px-4 py-3 font-medium">Duration</th>
+            <th className="px-4 py-3 font-medium">Outcome</th>
+            <th className="px-4 py-3 font-medium">Cart value</th>
+            <th className="px-4 py-3 font-medium">Called</th>
+            <th className="px-4 py-3 font-medium" />
+          </DataTableHead>
           <tbody className="divide-y divide-border/60">
             {rows.length === 0 ? (
               <EmptyRow colSpan={colSpan}>No recovery calls yet.</EmptyRow>
@@ -632,6 +637,6 @@ function CallTable({
         </table>
       </div>
       <LoadMore shown={rows.length} total={total} pending={pending} onLoadMore={onLoadMore} />
-    </Card>
+    </DataTableCard>
   );
 }
