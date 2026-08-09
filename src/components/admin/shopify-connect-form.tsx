@@ -13,6 +13,7 @@ import {
   saveShopifyIntegration,
   type AppProxyProbeResult,
 } from "@/actions/admin/shopify";
+import { SectionLabel } from "@/components/app/section-label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,8 +62,8 @@ const PROXY_PROBE_COPY: Record<
 };
 
 const PROXY_TONE_CLASS: Record<"ok" | "warn" | "error", string> = {
-  ok: "border-emerald-500/30 bg-emerald-500/5",
-  warn: "border-amber-500/30 bg-amber-500/5",
+  ok: "border-success/30 bg-success-muted",
+  warn: "border-warning/30 bg-warning-muted",
   error: "border-destructive/30 bg-destructive/5",
 };
 
@@ -194,9 +195,9 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {status?.authorized ? (
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-success/30 bg-success-muted px-4 py-3">
           <div className="flex items-center gap-2 text-sm">
-            <CheckCircle2Icon className="size-4 text-emerald-600" />
+            <CheckCircle2Icon className="size-4 text-success" />
             <span>
               Connected &amp; authorized:{" "}
               <span className="font-mono font-medium">{status.shop_domain}</span>{" "}
@@ -249,7 +250,7 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
           </div>
         </div>
       ) : status ? (
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-muted px-4 py-3">
           <div className="text-sm">
             Credentials saved for{" "}
             <span className="font-mono font-medium">{status.shop_domain}</span> —
@@ -279,7 +280,7 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
           </div>
         </div>
       ) : (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+        <div className="rounded-lg border border-warning/30 bg-warning-muted px-4 py-3 text-xs leading-relaxed text-muted-foreground">
           Not connected yet. In the client&apos;s Shopify app, add this
           workspace&apos;s callback URL{" "}
           <code>/api/shopify/oauth/callback</code> to the app&apos;s allowed
@@ -339,9 +340,9 @@ export function ShopifyConnectForm({ organisationId, status }: Props) {
         onSubmit={onSubmit}
         className="grid gap-4 rounded-lg border border-border/60 bg-muted/20 p-4"
       >
-        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+        <SectionLabel as="p">
           {status ? "Update credentials" : "Store credentials"}
-        </p>
+        </SectionLabel>
         <div className="grid gap-1.5">
           <Label htmlFor="shop-domain">Store domain</Label>
           <Input

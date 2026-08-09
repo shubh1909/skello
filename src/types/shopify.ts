@@ -1,3 +1,5 @@
+import type { CallTranscriptStatus } from "@/types/call";
+
 // A per-org Shopify connection row (mirrors public.shopify_integrations).
 // Holds secrets (api_secret, access_token) — NEVER send this to the client.
 // access_token is null until the store is authorized via OAuth.
@@ -37,7 +39,12 @@ export type ShopifyDiscountKind = "percentage" | "fixed_amount";
 // The org-tunable cart-recovery levers (offer + timing).
 // Which WhatsApp recovery template body an org sends. See
 // lib/shopify/recovery-templates.ts for the variable layout each one maps to.
-export type RecoveryTemplateLayout = "classic" | "coupon_link";
+export type RecoveryTemplateLayout =
+  | "classic"
+  | "coupon_link"
+  // Festive tiered ladder (Buy 1/2/3). Same 4-parameter count as coupon_link
+  // but a different variable MEANING — see recovery-templates.ts.
+  | "rakhi_offer";
 
 export interface ShopifyRecoverySettings {
   organisation_id: string;
@@ -249,7 +256,14 @@ export interface RecoveryCallRow {
   recording_url: string | null;
   transcript: string | null;
   transcript_url: string | null;
+  // Distinguishes "still being fetched" from "none captured" — without it the
+  // sheet can only say the generic thing. Widened from `string` to the shared
+  // enum so this row can feed the same call panel a lead's call does.
+  transcript_status: CallTranscriptStatus;
+  language: string | null;
   summary: string | null;
+  // The single next step the agent extracted. Rendered as a callout, not a field.
+  actionable: string | null;
   // Extracted / dynamic call data.
   name_extracted: string | null;
   interest: string | null;

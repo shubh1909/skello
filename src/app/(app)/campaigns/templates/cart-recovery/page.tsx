@@ -1,8 +1,14 @@
+import { PlugZapIcon } from "lucide-react";
 import Link from "next/link";
 import { ArrowLeftIcon } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { CartRecoveryControls } from "@/components/app/cart-recovery-controls";
 import { CartRecoveryDashboard } from "@/components/app/cart-recovery-dashboard";
 import { CartRecoverySettingsForm } from "@/components/app/cart-recovery-settings-form";
@@ -38,9 +44,9 @@ export default async function CartRecoveryTemplatePage() {
 
   if (!overview.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {overview.error}
-      </Card>
+      </ErrorCard>
     );
   }
 
@@ -88,10 +94,14 @@ export default async function CartRecoveryTemplatePage() {
       </header>
 
       {!connected ? (
-        <Card className="border-amber-500/30 bg-amber-500/5 p-4 text-sm text-muted-foreground">
-          Your Shopify store isn&apos;t connected yet. Ask your Skelo contact to
-          connect it, then turn cart recovery on below.
-        </Card>
+        <Alert variant="warning">
+          <PlugZapIcon />
+          <AlertTitle>Shopify isn&apos;t connected yet</AlertTitle>
+          <AlertDescription>
+            Ask your Skelo contact to connect your store, then turn cart recovery on
+            below.
+          </AlertDescription>
+        </Alert>
       ) : null}
 
       <CartRecoveryDashboard metrics={metrics} />

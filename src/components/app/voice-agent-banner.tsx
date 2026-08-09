@@ -1,9 +1,13 @@
 import Link from "next/link";
 import { ClockIcon, SparklesIcon } from "lucide-react";
 
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
 import type { BolnaIntegration } from "@/types/bolna-integration";
 
 interface Props {
@@ -21,20 +25,14 @@ const FRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export function VoiceAgentBanner({ integration }: Props) {
   if (!integration) {
     return (
-      <Card className="flex-row items-center gap-3 border-amber-500/30 bg-amber-500/5 p-4">
-        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
-          <ClockIcon className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
-            Your voice agent is being provisioned
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Our team is setting this up for your workspace. You&apos;ll see it
-            here once it&apos;s ready.
-          </p>
-        </div>
-      </Card>
+      <Alert variant="warning">
+        <ClockIcon />
+        <AlertTitle>Your voice agent is being provisioned</AlertTitle>
+        <AlertDescription>
+          Our team is setting this up for your workspace. You&apos;ll see it here
+          once it&apos;s ready.
+        </AlertDescription>
+      </Alert>
     );
   }
 
@@ -42,31 +40,23 @@ export function VoiceAgentBanner({ integration }: Props) {
   if (ageMs > FRESH_WINDOW_MS) return null;
 
   return (
-    <Card
-      className={cn(
-        "flex-row items-center gap-3 border-primary/30 bg-primary/5 p-4",
-      )}
-    >
-      <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary/15 text-primary">
-        <SparklesIcon className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">
-          Voice agent connected
-          {integration.enabled ? "" : " — currently paused"}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Outbound calls and inbound capture are live for your workspace. View
-          details on the Settings page.
-        </p>
-      </div>
-      <Button
-        size="sm"
-        variant="ghost"
-        render={<Link href="/settings" />}
-      >
-        View details
-      </Button>
-    </Card>
+    // The celebration state keeps `primary` rather than a status tone: nothing is
+    // wrong, so success/warning would both misreport it.
+    <Alert className="border-primary/30 bg-primary/5 text-primary">
+      <SparklesIcon />
+      <AlertTitle>
+        Voice agent connected
+        {integration.enabled ? "" : " — currently paused"}
+      </AlertTitle>
+      <AlertDescription>
+        Outbound calls and inbound capture are live for your workspace. View
+        details on the Settings page.
+      </AlertDescription>
+      <AlertAction>
+        <Button size="sm" variant="ghost" render={<Link href="/settings" />}>
+          View details
+        </Button>
+      </AlertAction>
+    </Alert>
   );
 }

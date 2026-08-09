@@ -487,7 +487,7 @@ export function CampaignUploadDialog({
                 dragOver
                   ? "border-foreground/50 bg-muted/40"
                   : file
-                    ? "border-emerald-300 bg-emerald-50/40 dark:border-emerald-500/30 dark:bg-emerald-500/5"
+                    ? "border-success/30 bg-success-muted"
                     : "border-border/70 bg-muted/20 hover:border-foreground/30 hover:bg-muted/30",
                 (submitting || parsing) && "cursor-not-allowed opacity-70",
               )}
@@ -502,7 +502,7 @@ export function CampaignUploadDialog({
                 </>
               ) : file && parsed ? (
                 <>
-                  <span className="grid size-10 place-items-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
+                  <span className="grid size-10 place-items-center rounded-full bg-success/15 text-success">
                     {parsed.valid_rows > 0 ? (
                       <CheckCircle2Icon className="size-5" />
                     ) : (

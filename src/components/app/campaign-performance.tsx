@@ -13,108 +13,81 @@ import {
 import { CallOutcomes } from "@/components/app/analytics/call-outcomes";
 import { ChartFrame } from "@/components/app/analytics/chart-frame";
 import { LineChart } from "@/components/app/analytics/line-chart";
+import {
+  DataTableCard,
+  DataTableHead,
+  DataTableToolbar,
+} from "@/components/app/data-table";
+import { SectionLabel } from "@/components/app/section-label";
 import { StatCard } from "@/components/app/stat-card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  CONTACT_STATE_META,
+  contactStateMeta,
+} from "@/lib/campaigns/contact-state";
+import { formatDurationClock } from "@/lib/format/duration";
 import { cn } from "@/lib/utils";
-import type { CampaignStats, ContactState } from "@/actions/campaigns";
+import type { CampaignStats } from "@/actions/campaigns";
 
-// Visual language for each contact lifecycle state. Order here also drives the
-// summary strip (actionable states first).
-const CONTACT_STATE_META: Array<{
-  key: ContactState;
-  label: string;
-  badge: string;
-}> = [
-  {
-    key: "deferred",
-    label: "Deferred",
-    badge:
-      "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
-  },
-  {
-    key: "callback",
-    label: "Callback",
-    badge:
-      "bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-300",
-  },
-  {
-    key: "retry",
-    label: "Retrying",
-    badge:
-      "bg-orange-100 text-orange-800 dark:bg-orange-500/15 dark:text-orange-300",
-  },
-  {
-    key: "dialing",
-    label: "Dialing",
-    badge: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
-  },
-  {
-    key: "queued",
-    label: "Queued",
-    badge: "bg-muted text-muted-foreground",
-  },
-  {
-    key: "failed",
-    label: "Failed",
-    badge: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
-  },
-  {
-    key: "succeeded",
-    label: "Succeeded",
-    badge:
-      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  },
-];
-
-const CONTACT_STATE_LABEL = Object.fromEntries(
-  CONTACT_STATE_META.map((m) => [m.key, m]),
-) as Record<ContactState, (typeof CONTACT_STATE_META)[number]>;
-
-// Performance dashboard for a single campaign. Pure presentation — the page
-// fetches CampaignStats server-side and hands it down. Mirrors the visual
-// language of the main analytics dashboard (StatCards + ChartFrame).
-
-function formatDuration(totalSeconds: number): string {
-  if (!totalSeconds || totalSeconds < 0) return "0:00";
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = Math.floor(totalSeconds % 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
+/**
+ * Performance dashboard for a single campaign. Pure presentation — the page
+ * fetches `CampaignStats` server-side and hands it down.
+ */
 export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
-  // States present in this campaign, in actionable order, for the summary strip.
   const presentStates = CONTACT_STATE_META.filter(
     (m) => stats.contactStateCounts[m.key] > 0,
   );
-  const funnel: Array<{ label: string; value: number; hint: string }> = [
+
+  /**
+   * The funnel, with **two** percentages per step and that being the point.
+   *
+   * The bar's width is share of total, so the steps are visually comparable.
+   * The conversion under it is share of the *previous* step, which is what a
+   * funnel actually measures — and it makes "Connected" agree with the Connect
+   * rate card above, which is connected ÷ attempted. Before, every step was a
+   * share of total while the card used a different denominator, so the same
+   * word carried two numbers on one screen.
+   */
+  const funnel = [
     {
       label: "Contacts",
       value: stats.totalContacts,
       hint: "In the uploaded list",
+      from: null as string | null,
+      fromValue: 0,
     },
     {
       label: "Attempted",
       value: stats.attemptedContacts,
       hint: "Dialed at least once",
+      from: "contacts",
+      fromValue: stats.totalContacts,
     },
     {
       label: "Connected",
       value: stats.connectedContacts,
       hint: "Conversation happened",
+      from: "attempted",
+      fromValue: stats.attemptedContacts,
     },
     {
       label: "Succeeded",
       value: stats.succeededContacts,
       hint: "Marked successful",
+      from: "connected",
+      fromValue: stats.connectedContacts,
     },
   ];
   const funnelMax = Math.max(stats.totalContacts, 1);
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Headline rates */}
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Connect rate"
@@ -142,34 +115,61 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
         />
       </section>
 
-      {/* Funnel + outcomes */}
+      {/* Degraded warning first when it fires: every judged number is resting,
+          so the dispatcher is dialing from the least-bad one. It explains a bad
+          connect rate, so it belongs above the charts, not under them. */}
+      {stats.degraded ? (
+        <Alert variant="warning">
+          <TriangleAlertIcon />
+          <AlertDescription className="leading-relaxed">
+            <span className="font-medium">Running on degraded numbers.</span>{" "}
+            Every caller ID is below the {stats.switchFloorPct}% connect-rate
+            floor over the last {stats.switchWindowMinutes} min, so calls are
+            going out on the least-bad number. Add fresh numbers to recover
+            answer rates.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <ChartFrame icon={UsersIcon} title="Funnel" subtitle="Contacts down the pipeline">
-          <ul className="flex flex-col gap-2.5">
+        <ChartFrame
+          icon={UsersIcon}
+          title="Funnel"
+          subtitle="Contacts down the pipeline"
+        >
+          <ol className="flex flex-col gap-3">
             {funnel.map((step) => {
-              const pct = Math.round((step.value / funnelMax) * 100);
+              const widthPct = Math.round((step.value / funnelMax) * 100);
+              const conversionPct =
+                step.from && step.fromValue > 0
+                  ? Math.round((step.value / step.fromValue) * 100)
+                  : null;
               return (
-                <li key={step.label} className="grid gap-1">
-                  <div className="flex items-center justify-between text-xs">
+                <li key={step.label} className="flex flex-col gap-1">
+                  <div className="flex items-baseline justify-between gap-2 text-sm">
                     <span className="font-medium">{step.label}</span>
-                    <span className="tabular-nums text-muted-foreground">
+                    <span className="tabular-nums">
                       {step.value.toLocaleString()}
-                      <span className="ml-1">({pct}%)</span>
                     </span>
                   </div>
                   <div className="h-2.5 overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full rounded-full bg-linear-to-r from-primary/70 to-primary"
-                      style={{ width: `${pct}%` }}
+                      className="h-full rounded-full bg-linear-to-r from-chart-1/70 to-chart-1"
+                      style={{ width: `${widthPct}%` }}
                     />
                   </div>
-                  <span className="text-[10px] text-muted-foreground">
-                    {step.hint}
-                  </span>
+                  <div className="flex items-baseline justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span>{step.hint}</span>
+                    {conversionPct !== null ? (
+                      <span className="tabular-nums">
+                        {conversionPct}% of {step.from}
+                      </span>
+                    ) : null}
+                  </div>
                 </li>
               );
             })}
-          </ul>
+          </ol>
         </ChartFrame>
 
         <ChartFrame
@@ -181,104 +181,95 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
         </ChartFrame>
       </section>
 
-      {/* Talk time */}
       <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <StatCard
           label="Total talk time"
-          value={formatDuration(stats.totalTalkSeconds)}
+          value={formatDurationClock(stats.totalTalkSeconds, { empty: "0:00" })}
           icon={<ClockIcon />}
           hint="Connected calls only"
         />
         <StatCard
           label="Avg call length"
-          value={formatDuration(stats.avgTalkSeconds)}
+          value={formatDurationClock(stats.avgTalkSeconds, { empty: "0:00" })}
           icon={<ClockIcon />}
           hint="Per connected call"
         />
         <StatCard
           label="Longest call"
-          value={formatDuration(stats.longestTalkSeconds)}
+          value={formatDurationClock(stats.longestTalkSeconds, {
+            empty: "0:00",
+          })}
           icon={<ClockIcon />}
           hint="Single connected call"
         />
       </section>
 
-      {/* Degraded warning — every judged number is resting, so the dispatcher
-          is dialing from the least-bad number (operator's completion-first
-          choice). Non-blocking, but worth surfacing. */}
-      {stats.degraded ? (
-        <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3.5 text-sm">
-          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-          <p className="leading-relaxed">
-            <span className="font-medium">Running on degraded numbers.</span>{" "}
-            Every caller ID is below the {stats.switchFloorPct}% connect-rate
-            floor over the last {stats.switchWindowMinutes} min, so calls are
-            going out on the least-bad number. Add fresh numbers to recover
-            answer rates.
-          </p>
-        </div>
-      ) : null}
-
       {/* Per-contact state — answers "why hasn't this contact been called?".
-          Each pending contact is broken out into deferred / callback / retry /
-          queued so a slow-looking run is self-explanatory. */}
+          A DataTableCard, not a ChartFrame: it's a table, and hosting it in a
+          chart shell gave it a chart's padding and no table chrome. */}
       {stats.contacts.length > 0 ? (
-        <ChartFrame
-          icon={UsersIcon}
-          title="Contacts"
-          subtitle="Where each contact sits — and why it's waiting"
-          className="p-5"
-        >
-          {/* Summary strip: count per state. */}
-          <div className="mb-4 flex flex-wrap gap-2">
-            {presentStates.map((m) => (
-              <Badge key={m.key} className={cn("gap-1.5", m.badge)}>
-                {m.label}
-                <span className="tabular-nums">
-                  {stats.contactStateCounts[m.key].toLocaleString()}
-                </span>
-              </Badge>
-            ))}
-          </div>
+        <DataTableCard>
+          <DataTableToolbar className="flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-0.5">
+              <SectionLabel as="span">Contacts</SectionLabel>
+              <span className="text-xs text-muted-foreground">
+                Where each contact sits — and why it&apos;s waiting
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {presentStates.map((m) => (
+                <Tooltip key={m.key}>
+                  <TooltipTrigger
+                    delay={150}
+                    render={<Badge variant={m.variant} className="gap-1.5" />}
+                  >
+                    {m.label}
+                    <span className="tabular-nums">
+                      {stats.contactStateCounts[m.key].toLocaleString()}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{m.hint}</TooltipContent>
+                </Tooltip>
+              ))}
+            </div>
+          </DataTableToolbar>
 
-          <div className="overflow-x-auto">
+          <div className="no-scrollbar overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-border/60 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                  <th className="py-2 pr-3 font-medium">Contact</th>
-                  <th className="py-2 px-3 font-medium">State</th>
-                  <th className="py-2 px-3 font-medium">Reason</th>
-                  <th className="py-2 px-3 text-right font-medium">Attempts</th>
-                  <th className="py-2 pl-3 text-right font-medium">
-                    Next attempt
-                  </th>
-                </tr>
-              </thead>
+              <DataTableHead>
+                <th className="px-5 py-3 font-medium">Contact</th>
+                <th className="px-3 py-3 font-medium">State</th>
+                <th className="px-3 py-3 font-medium">Reason</th>
+                <th className="px-3 py-3 text-right font-medium">Attempts</th>
+                <th className="px-5 py-3 text-right font-medium">
+                  Next attempt
+                </th>
+              </DataTableHead>
               <tbody className="divide-y divide-border/60">
                 {stats.contacts.map((c) => {
-                  const meta = CONTACT_STATE_LABEL[c.state];
+                  const meta = contactStateMeta(c.state);
                   return (
-                    <tr key={c.id} className="align-middle">
-                      <td className="py-2.5 pr-3">
+                    <tr key={c.id} className="hover:bg-muted/30">
+                      <td className="px-5 py-2.5">
                         <div className="flex flex-col">
                           <span className="font-medium">
                             {c.name?.trim() || "—"}
                           </span>
-                          <span className="font-mono text-[11px] text-muted-foreground">
+                          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
                             {c.phone}
                           </span>
                         </div>
                       </td>
-                      <td className="py-2.5 px-3">
-                        <Badge className={meta.badge}>{meta.label}</Badge>
+                      <td className="px-3 py-2.5">
+                        <Badge variant={meta.variant}>{meta.label}</Badge>
                       </td>
-                      <td className="py-2.5 px-3 text-muted-foreground">
+                      <td className="px-3 py-2.5 text-muted-foreground">
                         {c.detail}
                       </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums">
+                      <td className="px-3 py-2.5 text-right tabular-nums">
                         {c.attempt}/{c.maxAttempts}
                       </td>
-                      <td className="py-2.5 pl-3 text-right tabular-nums text-muted-foreground">
+                      <td className="px-5 py-2.5 text-right tabular-nums text-muted-foreground">
                         {c.nextAttemptLabel ?? "—"}
                       </td>
                     </tr>
@@ -289,74 +280,86 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
           </div>
 
           {stats.contactsOverflow > 0 ? (
-            <p className="mt-3 text-[11px] text-muted-foreground">
+            <p className="border-t border-border/60 px-5 py-3 text-[11px] text-muted-foreground">
               Showing the {stats.contacts.length} most actionable contacts.{" "}
-              {stats.contactsOverflow.toLocaleString()} more not shown — counts
-              above cover all contacts.
+              {stats.contactsOverflow.toLocaleString()} more not shown — the
+              counts above cover all contacts.
             </p>
           ) : null}
-        </ChartFrame>
+        </DataTableCard>
       ) : null}
 
-      {/* Per caller-ID breakdown — how switching spread the load + each
-          number's recent connect-rate health. Only shown once dials exist. */}
+      {/* Per caller-ID breakdown — how switching spread the load, plus each
+          number's recent health. Only shown once dials exist. */}
       {stats.byNumber.length > 0 ? (
-        <ChartFrame
-          icon={PhoneIcon}
-          title="Caller IDs"
-          subtitle={`Connect-rate switching · floor ${stats.switchFloorPct}% over ${stats.switchWindowMinutes}m`}
-          className="p-5"
-        >
-          <div className="overflow-x-auto">
+        <DataTableCard>
+          <DataTableToolbar>
+            <div className="flex flex-col gap-0.5">
+              <SectionLabel as="span">
+                <PhoneIcon className="mr-1 inline size-3" />
+                Caller IDs
+              </SectionLabel>
+              <span className="text-xs text-muted-foreground">
+                Connect-rate switching · floor {stats.switchFloorPct}% over{" "}
+                {stats.switchWindowMinutes}m
+              </span>
+            </div>
+          </DataTableToolbar>
+
+          <div className="no-scrollbar overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-border/60 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                  <th className="py-2 pr-3 font-medium">Number</th>
-                  <th className="py-2 px-3 text-right font-medium">Dials</th>
-                  <th className="py-2 px-3 text-right font-medium">Connected</th>
-                  <th className="py-2 px-3 text-right font-medium">
-                    Connect rate
-                  </th>
-                  <th className="py-2 pl-3 text-right font-medium">
-                    Recent ({stats.switchWindowMinutes}m)
-                  </th>
-                </tr>
-              </thead>
+              <DataTableHead>
+                <th className="px-5 py-3 font-medium">Number</th>
+                <th className="px-3 py-3 text-right font-medium">Dials</th>
+                <th className="px-3 py-3 text-right font-medium">Connected</th>
+                <th className="px-3 py-3 text-right font-medium">
+                  Connect rate
+                </th>
+                <th className="px-5 py-3 text-right font-medium">
+                  Recent ({stats.switchWindowMinutes}m)
+                </th>
+              </DataTableHead>
               <tbody className="divide-y divide-border/60">
                 {stats.byNumber.map((n) => (
-                  <tr key={n.phone} className="align-middle">
-                    <td className="py-2.5 pr-3">
+                  <tr key={n.phone} className="hover:bg-muted/30">
+                    <td className="px-5 py-2.5">
                       <div className="flex items-center gap-2">
                         <div className="flex flex-col">
                           <span className="font-medium">{n.label}</span>
-                          <span className="font-mono text-[11px] text-muted-foreground">
+                          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
                             {n.phone}
                           </span>
                         </div>
                         {n.isResting ? (
-                          <Badge
-                            variant="secondary"
-                            className="text-[10px] text-amber-700 dark:text-amber-400"
-                          >
-                            resting
-                          </Badge>
+                          <Tooltip>
+                            <TooltipTrigger
+                              delay={150}
+                              render={<Badge variant="warning" />}
+                            >
+                              resting
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              Below the connect-rate floor — the dispatcher is
+                              steering new dials away from this number.
+                            </TooltipContent>
+                          </Tooltip>
                         ) : null}
                       </div>
                     </td>
-                    <td className="py-2.5 px-3 text-right tabular-nums">
+                    <td className="px-3 py-2.5 text-right tabular-nums">
                       {n.totalCalls.toLocaleString()}
                     </td>
-                    <td className="py-2.5 px-3 text-right tabular-nums">
+                    <td className="px-3 py-2.5 text-right tabular-nums">
                       {n.connected.toLocaleString()}
                     </td>
-                    <td className="py-2.5 px-3 text-right tabular-nums">
+                    <td className="px-3 py-2.5 text-right tabular-nums">
                       {n.connectRatePct}%
                     </td>
                     <td
                       className={cn(
-                        "py-2.5 pl-3 text-right tabular-nums",
+                        "px-5 py-2.5 text-right tabular-nums",
                         n.isResting
-                          ? "font-medium text-amber-600 dark:text-amber-400"
+                          ? "font-medium text-warning"
                           : "text-muted-foreground",
                       )}
                     >
@@ -369,7 +372,7 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
               </tbody>
             </table>
           </div>
-        </ChartFrame>
+        </DataTableCard>
       ) : null}
 
       {/* Pacing — a line reads better than bars for a continuous run. */}
@@ -377,7 +380,6 @@ export function CampaignPerformance({ stats }: { stats: CampaignStats }) {
         icon={TrendingUpIcon}
         title="Dials over time"
         subtitle="Calls placed per day"
-        className="p-5"
       >
         <LineChart
           data={stats.callsPerDay.map((d) => ({

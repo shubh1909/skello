@@ -1,5 +1,7 @@
 "use client";
 
+import { formatDateTimeShort } from "@/lib/format";
+import { formatDurationClock } from "@/lib/format/duration";
 import * as React from "react";
 import {
   ArrowDownIcon,
@@ -11,15 +13,25 @@ import {
 
 import { toast } from "sonner";
 
+import {
+  DataTableCard,
+  DataTableHead,
+} from "@/components/app/data-table";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { CallTranscriptDialog } from "@/components/app/call-transcript-dialog";
+import { CallDetailSheet } from "@/components/app/call-detail";
 import { InfiniteScrollFooter } from "@/components/app/infinite-scroll-footer";
 import { listConversations } from "@/actions/calls";
 import { formatOutcomeKey } from "@/lib/format";
@@ -31,7 +43,6 @@ import {
 } from "@/hooks/use-column-widths";
 import { useInfiniteList } from "@/hooks/use-infinite-list";
 import type {
-  Call,
   CallDirection,
   CallStatus,
   CallWithLead,
@@ -66,23 +77,6 @@ function shortCallId(id: string): string {
   // Stable 6-char suffix from the UUID, uppercased.
   const compact = id.replace(/-/g, "");
   return `CL-${compact.slice(-6).toUpperCase()}`;
-}
-
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return "—";
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function formatDateTime(iso: string): string {
-  const d = new Date(iso);
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(d);
 }
 
 type SortField =
@@ -240,32 +234,37 @@ export function ConversationsTable({
 
   useCallsRealtime(organisationId, pagedBeyondInitial);
 
-  const [transcriptCall, setTranscriptCall] = React.useState<Call | null>(null);
+  // `CallWithLead`, not `Call`: the rows come from listConversations with the
+  // lead embedded, and the detail sheet renders that lead's current record.
+  const [transcriptCall, setTranscriptCall] =
+    React.useState<CallWithLead | null>(null);
   const [transcriptOpen, setTranscriptOpen] = React.useState(false);
 
-  function openTranscript(call: Call) {
+  function openTranscript(call: CallWithLead) {
     setTranscriptCall(call);
     setTranscriptOpen(true);
   }
 
   if (items.length === 0) {
     return (
-      <Card className="items-center gap-3 py-16 text-center">
-        <span className="grid size-12 place-items-center rounded-full bg-muted">
-          <PhoneIcon className="size-5 text-muted-foreground" />
-        </span>
-        <p className="font-medium">No conversations yet</p>
-        <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-          Inbound and outbound calls placed by your voice agent will show up
-          here. Adjust the filters above if you expected to see results.
-        </p>
-      </Card>
+      <Empty className="border py-16">
+        <EmptyHeader>
+          <EmptyMedia variant="icon" className="size-12 rounded-full">
+            <PhoneIcon className="size-5" />
+          </EmptyMedia>
+          <EmptyTitle>No conversations yet</EmptyTitle>
+          <EmptyDescription>
+            Inbound and outbound calls placed by your voice agent will show up
+            here. Adjust the filters above if you expected to see results.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
 
   return (
     <>
-      <Card className="overflow-hidden p-0">
+      <DataTableCard>
         <div className="overflow-x-auto">
           <table className="w-full table-fixed text-left text-sm">
             <colgroup>
@@ -285,76 +284,74 @@ export function ConversationsTable({
               ) : null}
               <col style={{ width: `${widthAudio}px` }} />
             </colgroup>
-            <thead className="border-b border-border/60 bg-muted/30">
-              <tr className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <DataTableHead>
+              <th
+                scope="col"
+                className="relative px-4 py-3 font-medium"
+              >
+                Call ID
+                <ColumnResizeHandle
+                  onStart={makeResizeStarter(COL_CALL_ID, widthCallId)}
+                />
+              </th>
+              <th
+                scope="col"
+                className="relative px-4 py-3 font-medium"
+              >
+                Lead / Number
+                <ColumnResizeHandle
+                  onStart={makeResizeStarter(COL_LEAD, widthLead)}
+                />
+              </th>
+              {SORTABLE_HEADERS.map((h) => (
+                <SortableHeader
+                  key={h.field}
+                  field={h.field}
+                  label={h.label}
+                  sort={sort}
+                  onToggle={toggleSort}
+                  onResizeStart={makeResizeStarter(
+                    h.field,
+                    widthForSort(h.field, h.defaultWidth),
+                  )}
+                />
+              ))}
+              <th
+                scope="col"
+                className="relative px-4 py-3 font-medium"
+              >
+                Disposition
+                <ColumnResizeHandle
+                  onStart={makeResizeStarter(
+                    COL_DISPOSITION,
+                    widthDisposition,
+                  )}
+                />
+              </th>
+              {showBestDisposition ? (
                 <th
                   scope="col"
                   className="relative px-4 py-3 font-medium"
                 >
-                  Call ID
-                  <ColumnResizeHandle
-                    onStart={makeResizeStarter(COL_CALL_ID, widthCallId)}
-                  />
-                </th>
-                <th
-                  scope="col"
-                  className="relative px-4 py-3 font-medium"
-                >
-                  Lead / Number
-                  <ColumnResizeHandle
-                    onStart={makeResizeStarter(COL_LEAD, widthLead)}
-                  />
-                </th>
-                {SORTABLE_HEADERS.map((h) => (
-                  <SortableHeader
-                    key={h.field}
-                    field={h.field}
-                    label={h.label}
-                    sort={sort}
-                    onToggle={toggleSort}
-                    onResizeStart={makeResizeStarter(
-                      h.field,
-                      widthForSort(h.field, h.defaultWidth),
-                    )}
-                  />
-                ))}
-                <th
-                  scope="col"
-                  className="relative px-4 py-3 font-medium"
-                >
-                  Disposition
+                  Best disposition
                   <ColumnResizeHandle
                     onStart={makeResizeStarter(
-                      COL_DISPOSITION,
-                      widthDisposition,
+                      COL_BEST_DISPOSITION,
+                      widthBestDisposition,
                     )}
                   />
                 </th>
-                {showBestDisposition ? (
-                  <th
-                    scope="col"
-                    className="relative px-4 py-3 font-medium"
-                  >
-                    Best disposition
-                    <ColumnResizeHandle
-                      onStart={makeResizeStarter(
-                        COL_BEST_DISPOSITION,
-                        widthBestDisposition,
-                      )}
-                    />
-                  </th>
-                ) : null}
-                <th
-                  scope="col"
-                  className="relative px-4 py-3 font-medium"
-                >
-                  Audio
-                  <ColumnResizeHandle
-                    onStart={makeResizeStarter(COL_AUDIO, widthAudio)}
-                  />
-                </th>
-              </tr>
-            </thead>
+              ) : null}
+              <th
+                scope="col"
+                className="relative px-4 py-3 font-medium"
+              >
+                Audio
+                <ColumnResizeHandle
+                  onStart={makeResizeStarter(COL_AUDIO, widthAudio)}
+                />
+              </th>
+            </DataTableHead>
             <tbody className="divide-y divide-border/60">
               {items.map((call) => {
                 const inbound = call.direction === "inbound";
@@ -400,10 +397,10 @@ export function ConversationsTable({
                       </div>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {formatDateTime(call.started_at)}
+                      {formatDateTimeShort(call.started_at)}
                     </td>
                     <td className="px-4 py-3 font-mono tabular-nums text-muted-foreground">
-                      {formatDuration(call.duration_seconds)}
+                      {formatDurationClock(call.duration_seconds)}
                     </td>
                     <td className="px-4 py-3">
                       <Badge variant="outline">
@@ -428,7 +425,7 @@ export function ConversationsTable({
                           </Badge>
                           {call.requested_callback_at ? (
                             <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                              ↩ {formatDateTime(call.requested_callback_at)}
+                              ↩ {formatDateTimeShort(call.requested_callback_at)}
                             </span>
                           ) : null}
                         </div>
@@ -505,7 +502,7 @@ export function ConversationsTable({
             </tbody>
           </table>
         </div>
-      </Card>
+      </DataTableCard>
 
       <InfiniteScrollFooter
         loading={loading}
@@ -515,8 +512,22 @@ export function ConversationsTable({
         sentinelRef={sentinelRef}
       />
 
-      <CallTranscriptDialog
-        call={transcriptCall}
+      {/* A side sheet on the shared call pane, not the old centred dialog:
+          the campaign call log, the lead sheet, cart recovery and COD now all
+          render a call the same way. Spreading the embedded lead onto the
+          pane's optional lead fields is what surfaces the Lead panel. */}
+      <CallDetailSheet
+        call={
+          transcriptCall
+            ? {
+                ...transcriptCall,
+                lead_name: transcriptCall.lead?.name ?? null,
+                lead_status: transcriptCall.lead?.status ?? null,
+                lead_intent: transcriptCall.lead?.current_intent ?? null,
+              }
+            : null
+        }
+        counterpartyName={transcriptCall?.lead?.name ?? null}
         open={transcriptOpen}
         onOpenChange={setTranscriptOpen}
       />

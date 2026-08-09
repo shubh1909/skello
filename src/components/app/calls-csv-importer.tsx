@@ -14,6 +14,8 @@ import {
 import Papa from "papaparse";
 import { toast } from "sonner";
 
+import { DataTableHead } from "@/components/app/data-table";
+import { SectionLabel } from "@/components/app/section-label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -529,7 +531,7 @@ function PreviewCard({
           />
         </div>
         {rowsWithoutPhone > 0 ? (
-          <p className="flex items-start gap-2 rounded-md border border-amber-200/60 bg-amber-50/40 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/5 dark:text-amber-200">
+          <p className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning-muted px-3 py-2 text-xs text-warning">
             <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
             {rowsWithoutPhone} row{rowsWithoutPhone === 1 ? "" : "s"} have no
             phone number — the call will be created but won&apos;t be linked
@@ -543,16 +545,14 @@ function PreviewCard({
           </div>
           <div className="max-h-72 overflow-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-muted/40 text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Call id</th>
-                  <th className="px-3 py-2 text-left font-medium">Phone</th>
-                  <th className="px-3 py-2 text-left font-medium">Status</th>
-                  <th className="px-3 py-2 text-left font-medium">Duration</th>
-                  <th className="px-3 py-2 text-left font-medium">Extracted</th>
-                  <th className="px-3 py-2 text-left font-medium">Issues</th>
-                </tr>
-              </thead>
+              <DataTableHead sticky>
+                <th className="px-3 py-2 text-left font-medium">Call id</th>
+                <th className="px-3 py-2 text-left font-medium">Phone</th>
+                <th className="px-3 py-2 text-left font-medium">Status</th>
+                <th className="px-3 py-2 text-left font-medium">Duration</th>
+                <th className="px-3 py-2 text-left font-medium">Extracted</th>
+                <th className="px-3 py-2 text-left font-medium">Issues</th>
+              </DataTableHead>
               <tbody>
                 {sample.map((r) => {
                   // Count fields across every category, not just lead_data.
@@ -584,7 +584,7 @@ function PreviewCard({
                         <span className="text-muted-foreground">none</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-amber-700 dark:text-amber-300">
+                    <td className="px-3 py-2 text-warning">
                       {r.issues.length === 0
                         ? ""
                         : r.issues
@@ -640,7 +640,7 @@ function ProgressCard({
           {stage === "importing" ? (
             <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
           ) : (
-            <CheckCircle2Icon className="size-4 text-emerald-600 dark:text-emerald-400" />
+            <CheckCircle2Icon className="size-4 text-success" />
           )}
           {stage === "importing" ? "Importing…" : "Import complete"}
         </CardTitle>
@@ -696,15 +696,15 @@ function Stat({
 }) {
   const toneClass =
     tone === "ok"
-      ? "text-emerald-700 dark:text-emerald-300"
+      ? "text-success"
       : tone === "warn"
-        ? "text-amber-700 dark:text-amber-300"
+        ? "text-warning"
         : "text-foreground";
   return (
     <div className="rounded-md border border-border/60 bg-card px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+      <SectionLabel>
         {label}
-      </div>
+      </SectionLabel>
       <div className={`text-2xl font-semibold tabular-nums ${toneClass}`}>
         {value}
       </div>

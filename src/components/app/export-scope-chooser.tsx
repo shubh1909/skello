@@ -137,7 +137,7 @@ function ScopeOption({
           {subtitle}
         </p>
         {overCap ? (
-          <p className="mt-1.5 inline-flex items-start gap-1.5 rounded-sm bg-amber-50 px-1.5 py-1 text-xs leading-snug text-amber-900 dark:bg-amber-500/10 dark:text-amber-300">
+          <p className="mt-1.5 inline-flex items-start gap-1.5 rounded-sm bg-warning-muted px-1.5 py-1 text-xs leading-snug text-warning">
             <AlertTriangleIcon className="mt-0.5 size-3 shrink-0" />
             <span>
               Over the {cap.toLocaleString()}-row export cap — only the most

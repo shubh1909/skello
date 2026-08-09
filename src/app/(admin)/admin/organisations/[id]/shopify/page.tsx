@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeftIcon } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
+import { SectionLabel } from "@/components/app/section-label";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CodAgentForm } from "@/components/admin/cod-agent-form";
@@ -32,9 +34,9 @@ export default async function AdminOrganisationShopifyPage({
   if (!orgRes.success) {
     if (orgRes.error === "Organisation not found") notFound();
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {orgRes.error}
-      </Card>
+      </ErrorCard>
     );
   }
 
@@ -55,9 +57,9 @@ export default async function AdminOrganisationShopifyPage({
       </div>
 
       <header className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+        <SectionLabel as="p">
           {org.name}
-        </p>
+        </SectionLabel>
         <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
           Cart Recovery (Shopify)
         </h1>

@@ -1,5 +1,6 @@
 import { PhoneCallIcon } from "lucide-react";
 
+import { SectionLabel } from "@/components/app/section-label";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import type { CodVoiceAgent } from "@/types/cod";
@@ -16,13 +17,13 @@ export function CodAgentCard({
   return (
     <Card className="flex flex-col gap-4 p-5">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+        <SectionLabel as="span">
           Voice agent
-        </span>
+        </SectionLabel>
         <Badge
           className={
             configured
-              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"
+              ? "bg-success-muted text-success"
               : "bg-muted text-muted-foreground"
           }
         >
@@ -37,18 +38,18 @@ export function CodAgentCard({
               <PhoneCallIcon className="size-4" />
             </span>
             <div className="flex min-w-0 flex-col">
-              <span className="text-xs uppercase tracking-wider text-muted-foreground">
+              <SectionLabel as="span">
                 Agent
-              </span>
+              </SectionLabel>
               <span className="truncate text-sm font-medium">
                 {voiceAgent?.name ?? "Default agent"}
               </span>
             </div>
           </div>
           <div className="flex flex-col justify-center">
-            <span className="text-xs uppercase tracking-wider text-muted-foreground">
+            <SectionLabel as="span">
               Calls placed from
-            </span>
+            </SectionLabel>
             <span className="font-mono text-sm tabular-nums">
               {voiceAgent?.callerNumber ?? "—"}
             </span>

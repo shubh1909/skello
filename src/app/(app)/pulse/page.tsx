@@ -1,3 +1,4 @@
+import { formatDurationCompact } from "@/lib/format/duration";
 import Link from "next/link";
 import {
   AlertTriangleIcon,
@@ -9,6 +10,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 
+import { SectionLabel } from "@/components/app/section-label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,7 +22,8 @@ import { listCalls } from "@/actions/calls";
 import { listLeads } from "@/actions/leads";
 import { listReminders } from "@/actions/reminders";
 import { requireSession } from "@/lib/auth/session";
-import { formatRelative, initialsOf, renderNow } from "@/lib/format";
+import { EntityAvatar } from "@/components/app/entity-avatar";
+import { formatRelative, renderNow } from "@/lib/format";
 import type { CallStatus } from "@/types/call";
 import type { LeadIntent } from "@/types/lead";
 
@@ -109,9 +112,9 @@ export default async function PulsePage() {
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1.5">
-          <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+          <SectionLabel as="p">
             Pulse
-          </p>
+          </SectionLabel>
           <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
             {greeting()}, {session.email.split("@")[0]}.
           </h1>
@@ -135,25 +138,23 @@ export default async function PulsePage() {
       <VoiceAgentBanner integration={integration} />
 
       {needsAttention.length > 0 ? (
-        <Card className="gap-3 border-amber-500/30 bg-amber-500/5 p-5">
+        <Card className="gap-3 border-warning/30 bg-warning-muted p-5">
           <div className="flex items-center gap-2">
-            <AlertTriangleIcon className="size-4 text-amber-600 dark:text-amber-400" />
-            <CardTitle className="text-amber-900 dark:text-amber-200">
+            <AlertTriangleIcon className="size-4 text-warning" />
+            <CardTitle className="text-warning">
               Needs your attention
             </CardTitle>
             <Badge variant="secondary" className="ml-auto">
               {needsAttention.length} hot · uncontacted
             </Badge>
           </div>
-          <ul className="divide-y divide-amber-500/10">
+          <ul className="divide-y divide-warning/20">
             {needsAttention.map((lead) => (
               <li
                 key={lead.id}
                 className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0"
               >
-                <span className="grid size-8 place-items-center rounded-full bg-amber-500/15 text-[11px] font-medium text-amber-900 dark:text-amber-200">
-                  {initialsOf(lead.name)}
-                </span>
+                <EntityAvatar name={lead.name} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium">
@@ -213,9 +214,7 @@ export default async function PulsePage() {
                       key={lead.id}
                       className="flex items-center gap-3 px-5 py-3"
                     >
-                      <span className="grid size-8 place-items-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
-                        {initialsOf(lead.name)}
-                      </span>
+                      <EntityAvatar name={lead.name} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="truncate text-sm font-medium">
@@ -306,7 +305,7 @@ export default async function PulsePage() {
                 {calls.slice(0, 8).map((c) => {
                   const duration =
                     typeof c.duration_seconds === "number"
-                      ? formatDuration(c.duration_seconds)
+                      ? formatDurationCompact(c.duration_seconds)
                       : null;
                   return (
                     <li
@@ -365,9 +364,3 @@ function greeting(): string {
   return "Good evening";
 }
 
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return s === 0 ? `${m}m` : `${m}m ${s}s`;
-}

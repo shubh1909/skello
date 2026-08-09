@@ -1,6 +1,6 @@
 import { MessageCircleIcon, PhoneIcon, ShoppingBagIcon } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
+import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { formatDateTime } from "@/lib/format/recovery";
 import {
   classifyWhatsAppError,
@@ -16,27 +16,26 @@ import type {
 // The recovery attempt's pipeline status (queue → dial → outcome).
 const ATTEMPT_STATUS_META: Record<
   RecoveryAttemptStatus,
-  { label: string; className: string }
+  { label: string; variant: BadgeVariant }
 > = {
   pending: {
     label: "Waiting",
-    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+    variant: "warning",
   },
   in_flight: {
     label: "Calling",
-    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+    variant: "info",
   },
   succeeded: {
     label: "Reached",
-    className:
-      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+    variant: "success",
   },
   failed: {
     label: "Not reached",
-    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+    variant: "destructive",
   },
-  canceled: { label: "Stopped", className: "bg-muted text-muted-foreground" },
-  skipped: { label: "Skipped", className: "bg-muted text-muted-foreground" },
+  canceled: { label: "Stopped", variant: "neutral" },
+  skipped: { label: "Skipped", variant: "neutral" },
 };
 
 export function AttemptStatusBadge({
@@ -46,50 +45,49 @@ export function AttemptStatusBadge({
 }) {
   const meta = ATTEMPT_STATUS_META[status];
   if (!meta) return <Badge variant="secondary">{status}</Badge>;
-  return <Badge className={meta.className}>{meta.label}</Badge>;
+  return <Badge variant={meta.variant}>{meta.label}</Badge>;
 }
 
-// Event-based colours for a recovery call's lifecycle status. Green = live call,
-// blue = connected/finished, red = failed, amber/orange = dialing / not reached.
-const CALL_STATUS_META: Record<string, { label: string; className: string }> = {
+// A recovery call's lifecycle status. success = live call, info = finished,
+// destructive = failed, warning = dialling or didn't connect. "No answer"/"Busy"
+// are warning rather than neutral here: in a call's own header, a non-connect is
+// the headline fact, and neutral would read as "nothing happened".
+const CALL_STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
   initiated: {
     label: "Queued",
-    className: "bg-slate-100 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300",
+    variant: "neutral",
   },
   ringing: {
     label: "Ringing",
-    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+    variant: "warning",
   },
   in_progress: {
     label: "In call",
-    className:
-      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+    variant: "success",
   },
   completed: {
     label: "Connected",
-    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+    variant: "info",
   },
   failed: {
     label: "Failed",
-    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+    variant: "destructive",
   },
   no_answer: {
     label: "No answer",
-    className:
-      "bg-orange-100 text-orange-800 dark:bg-orange-500/15 dark:text-orange-300",
+    variant: "warning",
   },
   busy: {
     label: "Busy",
-    className:
-      "bg-orange-100 text-orange-800 dark:bg-orange-500/15 dark:text-orange-300",
+    variant: "warning",
   },
-  canceled: { label: "Canceled", className: "bg-muted text-muted-foreground" },
+  canceled: { label: "Canceled", variant: "neutral" },
 };
 
 export function CallStatusBadge({ status }: { status: string }) {
   const meta = CALL_STATUS_META[status];
   if (!meta) return <Badge variant="secondary">{status}</Badge>;
-  return <Badge className={meta.className}>{meta.label}</Badge>;
+  return <Badge variant={meta.variant}>{meta.label}</Badge>;
 }
 
 // The cart's real-world outcome, independent of the dial pipeline status.
@@ -97,28 +95,27 @@ export function CallStatusBadge({ status }: { status: string }) {
 // renders nothing so voice-only carts stay clean.
 const WHATSAPP_TRACK_META: Record<
   RecoveryWhatsAppTrackStatus,
-  { label: string; className: string } | null
+  { label: string; variant: BadgeVariant } | null
 > = {
   none: null,
   pending: {
     label: "WhatsApp queued",
-    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+    variant: "warning",
   },
   in_flight: {
     label: "WhatsApp sending",
-    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+    variant: "info",
   },
   sent: {
     label: "WhatsApp sent",
-    className:
-      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+    variant: "success",
   },
   failed: {
     label: "WhatsApp failed",
-    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+    variant: "destructive",
   },
-  skipped: { label: "WhatsApp skipped", className: "bg-muted text-muted-foreground" },
-  canceled: { label: "WhatsApp stopped", className: "bg-muted text-muted-foreground" },
+  skipped: { label: "WhatsApp skipped", variant: "neutral" },
+  canceled: { label: "WhatsApp stopped", variant: "neutral" },
 };
 
 export function WhatsAppStatusBadge({
@@ -128,7 +125,7 @@ export function WhatsAppStatusBadge({
 }) {
   const meta = WHATSAPP_TRACK_META[status];
   if (!meta) return null;
-  return <Badge className={meta.className}>{meta.label}</Badge>;
+  return <Badge variant={meta.variant}>{meta.label}</Badge>;
 }
 
 // Concise variant for the dedicated "WhatsApp" table column + the cart drawer
@@ -136,28 +133,27 @@ export function WhatsAppStatusBadge({
 // explicit "Not sent" so the column always answers "did we WhatsApp them?".
 const WHATSAPP_SENT_META: Record<
   RecoveryWhatsAppTrackStatus,
-  { label: string; className: string }
+  { label: string; variant: BadgeVariant }
 > = {
-  none: { label: "Not sent", className: "bg-muted text-muted-foreground" },
+  none: { label: "Not sent", variant: "neutral" },
   pending: {
     label: "Queued",
-    className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+    variant: "warning",
   },
   in_flight: {
     label: "Sending",
-    className: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
+    variant: "info",
   },
   sent: {
     label: "Sent",
-    className:
-      "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+    variant: "success",
   },
   failed: {
     label: "Failed",
-    className: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+    variant: "destructive",
   },
-  skipped: { label: "Skipped", className: "bg-muted text-muted-foreground" },
-  canceled: { label: "Stopped", className: "bg-muted text-muted-foreground" },
+  skipped: { label: "Skipped", variant: "neutral" },
+  canceled: { label: "Stopped", variant: "neutral" },
 };
 
 export function WhatsAppSentBadge({
@@ -169,29 +165,21 @@ export function WhatsAppSentBadge({
 }) {
   // A skipped track carries a reason (marketing cap, opted out, undeliverable,
   // no template…). Surface the friendly label so a Meta per-user cap reads as
-  // "Capped" (amber) rather than a plain "Skipped" or a red failure.
+  // "Capped" (warning — temporary, will clear) rather than a plain "Skipped" or
+  // a red failure.
   if (status === "skipped") {
     const label = whatsappReasonLabel(reason);
     if (label) {
       const soft = reason === "cannot_receive" || reason === "invalid_recipient";
       return (
-        <Badge
-          className={
-            soft
-              ? "bg-muted text-muted-foreground"
-              : "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
-          }
-        >
-          {label}
-        </Badge>
+        <Badge variant={soft ? "neutral" : "warning"}>{label}</Badge>
       );
     }
   }
-  const meta = WHATSAPP_SENT_META[status] ?? {
-    label: status,
-    className: "bg-muted text-muted-foreground",
-  };
-  return <Badge className={meta.className}>{meta.label}</Badge>;
+  const meta: { label: string; variant: BadgeVariant } = WHATSAPP_SENT_META[
+    status
+  ] ?? { label: status, variant: "neutral" };
+  return <Badge variant={meta.variant}>{meta.label}</Badge>;
 }
 
 // Outreach status for the carts table — ONE cell, TWO independent channel chips
@@ -202,16 +190,16 @@ export function WhatsAppSentBadge({
 // WhatsApp template errored. Per-channel chips remove that: no combined verdict
 // means one channel can never red-wash the row, and the colour vocabulary is
 // deliberately calm —
-//   emerald  reached / delivered / read / clicked   (good)
-//   blue     actively calling / sending             (in motion)
-//   amber    waiting / queued / marketing-capped     (temporary, will clear)
-//   slate    no answer / busy / opted-out /          (normal, NOT our fault)
-//            undeliverable / skipped / stopped
-//   rose     a FIXABLE technical error only —        (needs a human)
-//            couldn't place the call, template/param/policy problem
-// Rose is the only alarming colour and it fires only for things someone can act
+//   good       reached / delivered / read / clicked      → success  (green)
+//   active     actively calling / sending                → info     (teal)
+//   waiting    queued / marketing-capped                 → warning  (ochre)
+//   soft       no answer / busy / opted-out / skipped     → neutral  (grey)
+//              (normal outcomes, NOT our fault)
+//   attention  a FIXABLE technical error only            → destructive (red)
+//              couldn't place the call, template/param/policy problem
+// Red is the only alarming colour and it fires only for things someone can act
 // on. When BOTH channels finish having reached nobody, the soft misses are
-// bumped slate → amber so the dead cart still stands out, but never in red.
+// bumped neutral → warning so the dead cart still stands out, but never in red.
 
 export type ChipTone = "good" | "active" | "waiting" | "soft" | "attention";
 
@@ -227,12 +215,16 @@ export interface Chip {
   scheduledAt?: string | null;
 }
 
+// Kept as classes rather than Badge variants: the chip is deliberately tighter
+// than a Badge (11px, px-1.5, leading icon) and forcing Badge here would mean
+// fighting its own sizing. The token pairs are the same ones Badge's variants
+// use, so the two vocabularies can't drift.
 const CHIP_TONE_CLASS: Record<ChipTone, string> = {
-  good: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  active: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
-  waiting: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  good: "bg-success-muted text-success",
+  active: "bg-info-muted text-info",
+  waiting: "bg-warning-muted text-warning",
   soft: "bg-muted text-muted-foreground",
-  attention: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300",
+  attention: "bg-destructive-muted text-destructive",
 };
 
 // Compact, human label for a hard WhatsApp failure — the full text lives in the
@@ -474,17 +466,11 @@ export function CartOutcomeBadge({
   outcome?: RecoveryOutcome | null;
 }) {
   if (!convertedAt) {
-    return <Badge className="bg-muted text-muted-foreground">Abandoned</Badge>;
+    return <Badge variant="neutral">Abandoned</Badge>;
   }
   // Never abandoned in the first place — a straight-through purchase.
   if (outcome === "instant_sale") {
-    return (
-      <Badge className="bg-muted text-muted-foreground">Bought · not abandoned</Badge>
-    );
+    return <Badge variant="neutral">Bought · not abandoned</Badge>;
   }
-  return (
-    <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
-      Recovered
-    </Badge>
-  );
+  return <Badge variant="success">Recovered</Badge>;
 }

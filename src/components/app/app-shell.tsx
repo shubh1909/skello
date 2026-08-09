@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "skelo.sidebar.collapsed.v1";
+// `storage` only fires in OTHER tabs, so a same-tab toggle needs its own signal
+// for useSyncExternalStore to notice the write. Same shape as the theme store.
+const CHANGE_EVENT = "skelo:sidebarchange";
 
 type AppShellContextValue = {
   collapsed: boolean;
@@ -21,32 +24,51 @@ export function useAppShell(): AppShellContextValue {
   return ctx;
 }
 
-export function AppShellProvider({ children }: { children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = React.useState(false);
+function subscribe(onChange: () => void) {
+  window.addEventListener("storage", onChange);
+  window.addEventListener(CHANGE_EVENT, onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener(CHANGE_EVENT, onChange);
+  };
+}
 
-  // Hydrate persisted preference on mount. Default (expanded) renders on the
-  // server so we accept a one-frame flash for users who collapsed previously.
-  React.useEffect(() => {
-    try {
-      if (window.localStorage.getItem(STORAGE_KEY) === "1") setCollapsed(true);
-    } catch {
-      // Ignore — quota or denied storage.
-    }
-  }, []);
+// Returns a primitive, so repeat calls are Object.is-equal and React won't loop.
+function getSnapshot(): boolean {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) === "1";
+  } catch {
+    // Private mode / blocked storage. A preference is not worth an exception.
+    return false;
+  }
+}
+
+const getServerSnapshot = (): boolean => false;
+
+export function AppShellProvider({ children }: { children: React.ReactNode }) {
+  // localStorage is an external store, so it is read through
+  // useSyncExternalStore rather than mirrored into state from an effect —
+  // which is a cascading render on every mount, and what eslint's
+  // `set-state-in-effect` was flagging here.
+  const collapsed = React.useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getServerSnapshot,
+  );
 
   const toggle = React.useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(STORAGE_KEY, next ? "1" : "0");
-      } catch {
-        // Non-fatal.
-      }
-      return next;
-    });
+    try {
+      window.localStorage.setItem(STORAGE_KEY, getSnapshot() ? "0" : "1");
+    } catch {
+      // Non-fatal: the preference won't survive a reload.
+    }
+    window.dispatchEvent(new Event(CHANGE_EVENT));
   }, []);
 
-  const value = React.useMemo(() => ({ collapsed, toggle }), [collapsed, toggle]);
+  const value = React.useMemo(
+    () => ({ collapsed, toggle }),
+    [collapsed, toggle],
+  );
 
   return (
     <AppShellContext.Provider value={value}>{children}</AppShellContext.Provider>
@@ -59,7 +81,11 @@ export function AppShellGrid({ children }: { children: React.ReactNode }) {
     <div
       className={cn(
         "grid min-h-screen w-full bg-background transition-[grid-template-columns] duration-200",
-        collapsed ? "grid-cols-[1fr]" : "grid-cols-[1fr] md:grid-cols-[260px_1fr]",
+        // Collapsed is a 4rem icon rail, not `1fr`. Animating to a single
+        // column removed every piece of wayfinding in the app.
+        collapsed
+          ? "grid-cols-[1fr] md:grid-cols-[4rem_1fr]"
+          : "grid-cols-[1fr] md:grid-cols-[260px_1fr]",
       )}
     >
       {children}

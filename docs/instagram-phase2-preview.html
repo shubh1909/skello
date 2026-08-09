@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skelo · Instagram Automation — Phase 2 Prototype</title>
+<style>
+  :root{
+    --bg:#F1F1EE; --panel:#FFFFFF; --panel-2:#FAFAF8; --border:#E9E7E2; --border-2:#DAD7D0;
+    --ink:#1A1815; --muted:#6C675F; --faint:#A39D94;
+    --accent:#0E877A; --accent-ink:#0B6E63; --accent-soft:#E4F3F0;
+    --primary:#1A1815; --good:#15803D; --good-soft:#E4F5E9;
+    --warn:#B45309; --warn-soft:#FAEEDA; --crit:#BB4936; --crit-soft:#F8E4DF;
+    --hot:#C2410C; --hot-soft:#FAE6DB; --blue:#2563EB; --violet:#7C3AED;
+    --shadow:0 1px 2px rgba(20,20,15,.05), 0 8px 24px rgba(20,20,15,.06);
+    --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    color-scheme:light;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+  b{font-weight:650;}
+
+  /* banner */
+  .banner{max-width:1120px;margin:0 auto;padding:18px 20px 8px;display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;}
+  .banner .bt{font-size:13px;color:var(--muted);}
+  .banner .bt b{color:var(--ink);}
+  .banner .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink);background:var(--accent-soft);padding:4px 9px;border-radius:6px;font-weight:650;}
+
+  /* app shell */
+  .app{max-width:1120px;margin:10px auto 40px;background:var(--panel);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:var(--shadow);}
+  .app-top{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--border);background:var(--panel);}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:750;letter-spacing:-.01em;font-size:15px;}
+  .logo{width:24px;height:24px;border-radius:7px;background:var(--primary);color:#fff;display:grid;place-items:center;font-size:13px;font-weight:800;}
+  .ctx{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.02em;}
+  .ig-badge{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:11px;color:#fff;background:linear-gradient(45deg,#F58529,#DD2A7B 45%,#8134AF 75%,#515BD4);padding:4px 10px;border-radius:999px;}
+  .top-right{margin-left:auto;display:flex;align-items:center;gap:12px;}
+  .ava{width:28px;height:28px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);display:grid;place-items:center;font-size:11px;font-weight:700;}
+
+  .app-body{display:grid;grid-template-columns:1fr;}
+  @media(min-width:860px){.app-body{grid-template-columns:216px 1fr;}}
+  .app-nav{border-bottom:1px solid var(--border);background:var(--panel-2);padding:12px;display:flex;gap:6px;overflow-x:auto;}
+  @media(min-width:860px){.app-nav{border-bottom:none;border-right:1px solid var(--border);flex-direction:column;overflow:visible;min-height:620px;}}
+  .nav-lab{display:none;}
+  @media(min-width:860px){.nav-lab{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);padding:8px 10px 4px;}}
+  .nav-item{flex:0 0 auto;display:flex;align-items:center;gap:10px;font-size:13.5px;font-weight:600;color:var(--muted);background:transparent;border:1px solid transparent;border-radius:10px;padding:10px 12px;cursor:pointer;text-align:left;white-space:nowrap;}
+  .nav-item:hover{background:var(--panel);color:var(--ink);}
+  .nav-item.on{background:var(--panel);color:var(--ink);border-color:var(--border);box-shadow:inset 3px 0 0 var(--accent);}
+  .nav-ic{width:22px;height:22px;border-radius:6px;background:var(--panel-2);border:1px solid var(--border);display:grid;place-items:center;font-size:12px;flex:0 0 auto;}
+  .nav-item.on .nav-ic{background:var(--accent-soft);border-color:transparent;color:var(--accent-ink);}
+  .nav-count{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint);}
+  @media(max-width:859px){.nav-count{display:none;}}
+  .nav-foot{display:none;}
+  @media(min-width:860px){.nav-foot{display:block;margin-top:auto;padding:12px 10px;font-size:11px;color:var(--faint);line-height:1.45;}}
+
+  .app-main{padding:22px;min-width:0;background:var(--bg);}
+  @media(min-width:860px){.app-main{padding:26px 28px;}}
+  .page{display:none;}
+  .page.on{display:block;animation:fade .28s ease;}
+  @keyframes fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+  @media(prefers-reduced-motion:reduce){.page.on{animation:none;}}
+
+  .page-head{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:20px;}
+  .page-head .h{font-size:22px;font-weight:770;letter-spacing:-.02em;}
+  .page-head .s{font-size:13px;color:var(--muted);margin-top:3px;}
+  .page-head .actions{margin-left:auto;display:flex;gap:8px;}
+
+  /* buttons */
+  .btn{font-family:var(--sans);font-size:13px;font-weight:600;border-radius:9px;padding:9px 14px;border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;gap:7px;}
+  .btn.primary{background:var(--primary);color:#fff;}
+  .btn.accent{background:var(--accent);color:#fff;}
+  .btn.ghost{background:var(--panel);color:var(--ink);border-color:var(--border-2);}
+  .btn.sm{padding:6px 11px;font-size:12px;}
+  .btn:hover{filter:brightness(1.04);}
+
+  /* pills / chips */
+  .pill{font-size:11px;font-weight:650;padding:3px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
+  .pill.live{color:var(--good);background:var(--good-soft);}
+  .pill.off{color:var(--muted);background:var(--panel-2);border:1px solid var(--border);}
+  .pill.hot{color:var(--hot);background:var(--hot-soft);}
+  .pill.warm{color:var(--warn);background:var(--warn-soft);}
+  .pill.win{color:var(--accent-ink);background:var(--accent-soft);}
+  .pill.dm{color:var(--blue);background:#E7EEFD;}
+  .pill.cm{color:var(--warn);background:var(--warn-soft);}
+  .pill.st{color:var(--violet);background:#EFE7FD;}
+
+  /* summary tiles */
+  .tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px;}
+  @media(min-width:640px){.tiles{grid-template-columns:repeat(4,1fr);}}
+  .tile{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:15px 16px;}
+  .tile .l{font-size:11.5px;color:var(--muted);}
+  .tile .v{font-size:24px;font-weight:760;letter-spacing:-.02em;margin-top:6px;font-variant-numeric:tabular-nums;}
+  .tile .d{font-size:11px;font-weight:650;margin-top:4px;color:var(--good);}
+  .tile .d.mut{color:var(--faint);}
+
+  /* rule cards */
+  .rules{display:flex;flex-direction:column;gap:12px;}
+  .rule{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:16px 18px;cursor:pointer;transition:border-color .15s,box-shadow .15s;}
+  .rule:hover{border-color:var(--border-2);box-shadow:var(--shadow);}
+  .rule.paused{opacity:.72;}
+  .rule-top{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+  .rule-name{font-weight:700;font-size:14.5px;letter-spacing:-.01em;}
+  .rule-meta{margin-left:auto;display:flex;align-items:center;gap:14px;}
+  .rule-stat{font-family:var(--mono);font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;}
+  .rule-stat b{color:var(--ink);}
+  .chain{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+  .cnode{font-size:12px;padding:7px 11px;border-radius:9px;background:var(--panel-2);border:1px solid var(--border);display:inline-flex;flex-direction:column;gap:2px;}
+  .cnode .k{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);}
+  .cnode.trig{background:var(--warn-soft);border-color:#EEDCB4;}
+  .cnode.act{background:var(--accent-soft);border-color:#CFE9E3;}
+  .carrow{color:var(--faint);font-size:13px;}
+  .toggle{width:38px;height:22px;border-radius:999px;background:var(--accent);position:relative;flex:0 0 auto;cursor:pointer;transition:background .18s;}
+  .toggle::after{content:"";position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.18s;box-shadow:0 1px 2px rgba(0,0,0,.2);}
+  .toggle.off{background:var(--border-2);}
+  .toggle.off::after{right:auto;left:2px;}
+
+  /* builder */
+  .builder{display:grid;gap:16px;}
+  @media(min-width:900px){.builder{grid-template-columns:1.4fr 1fr;align-items:start;}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px 20px;}
+  .card + .card{margin-top:16px;}
+  .card-h{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:650;margin-bottom:14px;display:flex;align-items:center;gap:8px;}
+  .field{margin-bottom:16px;}
+  .field:last-child{margin-bottom:0;}
+  .field .fl{font-size:12.5px;font-weight:650;margin-bottom:7px;}
+  .field .fh{font-size:12px;color:var(--faint);margin-top:6px;}
+  .select{display:flex;gap:8px;flex-wrap:wrap;}
+  .seg{font-size:12.5px;padding:8px 13px;border-radius:9px;border:1px solid var(--border);background:var(--panel-2);color:var(--muted);cursor:pointer;display:inline-flex;gap:7px;align-items:center;}
+  .seg.on{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .tags{display:flex;flex-wrap:wrap;gap:7px;align-items:center;}
+  .tag{font-size:12.5px;background:var(--accent-soft);color:var(--accent-ink);border:1px solid #CFE9E3;border-radius:8px;padding:5px 9px;display:inline-flex;gap:7px;align-items:center;}
+  .tag .x{cursor:pointer;font-weight:800;opacity:.6;}
+  .tag .x:hover{opacity:1;}
+  .tag-input{font-family:var(--sans);font-size:12.5px;border:1px dashed var(--border-2);background:transparent;border-radius:8px;padding:5px 9px;color:var(--ink);min-width:120px;outline:none;}
+  .tag-input:focus{border-color:var(--accent);}
+  .textarea{width:100%;font-family:var(--sans);font-size:13px;line-height:1.5;color:var(--ink);background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;resize:vertical;min-height:64px;}
+  .action-step{display:flex;gap:12px;align-items:flex-start;padding:13px 0;border-top:1px solid var(--border);}
+  .action-step:first-of-type{border-top:none;padding-top:0;}
+  .as-n{flex:0 0 auto;width:22px;height:22px;border-radius:6px;background:var(--accent);color:#06231F;font-family:var(--mono);font-weight:800;font-size:11px;display:grid;place-items:center;margin-top:1px;}
+  .as-b{flex:1;min-width:0;}
+  .as-t{font-size:13px;font-weight:650;}
+  .as-d{font-size:12.5px;color:var(--muted);margin-top:3px;}
+  .switch-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--border);}
+  .switch-row:first-child{border-top:none;}
+  .switch-row .sr-t{font-size:13px;}
+  .switch-row .sr-d{font-size:12px;color:var(--faint);margin-top:2px;}
+
+  /* builder preview / test panel */
+  .test{position:sticky;top:16px;}
+  .test-phone{background:var(--panel-2);border:1px solid var(--border);border-radius:14px;padding:14px;min-height:220px;display:flex;flex-direction:column;gap:9px;}
+  .tmsg{max-width:88%;font-size:12.5px;line-height:1.4;padding:8px 11px;border-radius:12px;}
+  .tmsg.inb{align-self:flex-start;background:var(--panel);border:1px solid var(--border);border-bottom-left-radius:4px;}
+  .tmsg.out{align-self:flex-end;background:var(--ink);color:#fff;border-bottom-right-radius:4px;}
+  .tmsg.sys{align-self:center;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;border-radius:999px;padding:5px 11px;}
+  .tmsg .mt{font-size:9px;font-family:var(--mono);opacity:.6;margin-top:4px;}
+
+  /* inbox */
+  .inbox{display:grid;grid-template-columns:1fr;border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--panel);}
+  @media(min-width:900px){.inbox{grid-template-columns:250px 1fr 250px;height:560px;}}
+  .threads{border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0;}
+  .threads-h{padding:13px 15px;border-bottom:1px solid var(--border);}
+  .threads-h .t{font-weight:750;font-size:14px;}
+  .fchips{display:flex;gap:6px;margin-top:10px;}
+  .fchip{font-size:11px;padding:4px 10px;border-radius:999px;background:var(--panel-2);border:1px solid var(--border);color:var(--muted);cursor:pointer;}
+  .fchip.on{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .tlist{overflow:auto;flex:1;}
+  .thread{display:flex;gap:10px;padding:12px 15px;border-bottom:1px solid var(--border);align-items:flex-start;cursor:pointer;}
+  .thread.on{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent);}
+  .tava{width:34px;height:34px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;font-size:12px;font-weight:700;color:#fff;}
+  .tbody{min-width:0;flex:1;}
+  .tname{font-size:13px;font-weight:650;}
+  .tsnip{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}
+  .tmeta{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:0 0 auto;}
+  .ttime{font-size:10.5px;color:var(--faint);font-family:var(--mono);}
+  .chan{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:1px 6px;border-radius:5px;}
+  .chan.dm{background:#E7EEFD;color:var(--blue);}
+  .chan.cm{background:var(--warn-soft);color:var(--warn);}
+  .chan.st{background:#EFE7FD;color:var(--violet);}
+  .stat-dot{width:8px;height:8px;border-radius:50%;}
+  .stat-dot.needs{background:var(--hot);}
+  .stat-dot.auto{background:var(--good);}
+
+  .convo{display:flex;flex-direction:column;min-height:0;background:var(--bg);}
+  .convo-h{display:flex;align-items:center;gap:10px;padding:12px 15px;background:var(--panel);border-bottom:1px solid var(--border);}
+  .convo-h .nm{font-weight:700;font-size:14px;}
+  .convo-h .hd{font-size:11px;color:var(--faint);font-family:var(--mono);}
+  .msgs{flex:1;padding:15px;display:flex;flex-direction:column;gap:9px;overflow:auto;}
+  .msg{max-width:80%;font-size:13px;line-height:1.45;padding:9px 12px;border-radius:13px;}
+  .msg.inb{align-self:flex-start;background:var(--panel);border:1px solid var(--border);border-bottom-left-radius:4px;}
+  .msg.out{align-self:flex-end;background:var(--ink);color:#fff;border-bottom-right-radius:4px;}
+  .msg.sys{align-self:center;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;border-radius:999px;padding:5px 12px;}
+  .msg .mt{font-size:9px;font-family:var(--mono);opacity:.6;margin-top:5px;}
+  .composer{border-top:1px solid var(--border);background:var(--panel);padding:11px 14px;}
+  .canned{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:9px;}
+  .canned .cch{font-size:11.5px;padding:5px 10px;border-radius:999px;background:var(--panel-2);border:1px solid var(--border);color:var(--muted);cursor:pointer;}
+  .canned .cch:hover{border-color:var(--accent);color:var(--accent-ink);}
+  .composer-row{display:flex;gap:8px;align-items:center;}
+  .cinput{flex:1;font-size:13px;color:var(--faint);background:var(--panel-2);border:1px solid var(--border);border-radius:9px;padding:9px 12px;}
+
+  .lead{border-left:1px solid var(--border);background:var(--panel);padding:15px;overflow:auto;}
+  .lead-top{display:flex;align-items:center;gap:10px;margin-bottom:4px;}
+  .lead-nm{font-weight:750;font-size:14px;}
+  .lead-sub{font-size:12.5px;color:var(--muted);}
+  .lfields{display:flex;flex-direction:column;gap:8px;margin:13px 0;}
+  .lf{display:flex;justify-content:space-between;font-size:12.5px;gap:10px;}
+  .lf .k{color:var(--faint);}
+  .lf .v{color:var(--ink);font-weight:600;text-align:right;}
+  .ltl{border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:11px;}
+  .ltl-lab{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);}
+  .ltl-row{display:flex;gap:9px;font-size:12px;color:var(--muted);align-items:flex-start;}
+  .ltl-ic{width:20px;height:20px;border-radius:6px;flex:0 0 auto;display:grid;place-items:center;font-size:9px;color:#fff;font-weight:700;}
+  .lead .btn{width:100%;justify-content:center;margin-top:13px;}
+
+  /* performance */
+  .charts{display:grid;gap:14px;}
+  @media(min-width:820px){.charts{grid-template-columns:3fr 2fr;}}
+  .chart{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:17px 19px;}
+  .chart .ct{font-size:13.5px;font-weight:700;}
+  .chart .cs{font-size:11.5px;color:var(--faint);margin:2px 0 20px;}
+  .bars{display:flex;align-items:flex-end;gap:10px;height:120px;}
+  .bar{flex:1;background:var(--panel-2);border-radius:6px 6px 0 0;position:relative;height:100%;}
+  .bar i{position:absolute;inset:auto 0 0 0;background:var(--accent);border-radius:6px 6px 0 0;height:0;transition:height .7s cubic-bezier(.2,.7,.2,1);}
+  .bar b{position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:9px;color:var(--faint);font-family:var(--mono);font-weight:500;}
+  .bar em{position:absolute;bottom:-18px;left:0;right:0;text-align:center;font-size:9px;color:var(--faint);font-style:normal;font-family:var(--mono);}
+  .funnel{display:flex;flex-direction:column;gap:11px;}
+  .fn-row .fn-top{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;}
+  .fn-top .fn-n{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);font-weight:650;}
+  .fn-bar{height:26px;border-radius:7px;background:var(--panel-2);overflow:hidden;}
+  .fn-bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),#12A392);border-radius:7px;transition:width .8s cubic-bezier(.2,.7,.2,1);}
+  .fn-drop{font-size:10.5px;color:var(--faint);font-family:var(--mono);margin-top:3px;}
+
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:14px;background:var(--panel);margin-top:16px;}
+  table{border-collapse:collapse;width:100%;min-width:520px;font-size:13px;}
+  th,td{text-align:left;padding:12px 15px;border-bottom:1px solid var(--border);}
+  thead th{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600;background:var(--panel-2);}
+  tbody tr:last-child td{border-bottom:none;}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);}
+  .fail{color:var(--crit);font-weight:600;}
+  .fails{display:flex;flex-direction:column;gap:9px;margin-top:14px;}
+  .fail-row{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);}
+  .fail-row .fd{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
+  .fail-row .fn{margin-left:auto;font-family:var(--mono);color:var(--ink);font-weight:650;}
+
+  .note{border-radius:11px;padding:13px 16px;font-size:13px;line-height:1.5;display:flex;gap:11px;margin-top:16px;background:var(--accent-soft);color:var(--accent-ink);}
+  .note .k{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;flex:0 0 auto;padding-top:2px;}
+  .note b{color:var(--ink);}
+
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(14px);background:var(--ink);color:#fff;font-size:13px;font-weight:600;padding:11px 18px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.28);opacity:0;pointer-events:none;transition:opacity .22s,transform .22s;z-index:50;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .back{font-size:12.5px;color:var(--muted);background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:0;margin-bottom:6px;}
+  .back:hover{color:var(--ink);}
+  [hidden]{display:none !important;}
+  .post-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px;}
+  @media(min-width:520px){.post-grid{grid-template-columns:repeat(3,1fr);}}
+  .post{position:relative;border:1px solid var(--border);border-radius:11px;overflow:hidden;cursor:pointer;background:var(--panel);transition:border-color .15s,box-shadow .15s;}
+  .post:hover{border-color:var(--border-2);}
+  .post.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft);}
+  .post .thumb{height:74px;display:grid;place-items:center;font-size:26px;}
+  .post .pmeta{padding:8px 10px;}
+  .post .pt{font-size:12px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .post .pd{font-size:10px;color:var(--faint);font-family:var(--mono);margin-top:2px;}
+  .post .pcheck{position:absolute;top:7px;right:7px;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;display:none;place-items:center;font-size:12px;font-weight:800;box-shadow:0 1px 3px rgba(0,0,0,.25);}
+  .post.sel .pcheck{display:grid;}
+  .phone{width:262px;max-width:100%;margin:6px auto 0;background:#141414;border-radius:32px;padding:9px;box-shadow:0 14px 34px rgba(0,0,0,.24);}
+  .phone-screen{background:var(--panel);border-radius:24px;overflow:hidden;height:430px;display:flex;flex-direction:column;}
+  .ig-bar{display:flex;align-items:center;gap:9px;padding:11px 12px;border-bottom:1px solid var(--border);background:var(--panel);}
+  .ig-ava{width:30px;height:30px;border-radius:50%;background:linear-gradient(45deg,#F58529,#DD2A7B,#8134AF);display:grid;place-items:center;color:#fff;font-size:10px;font-weight:800;flex:0 0 auto;}
+  .ig-name{font-weight:700;font-size:12.5px;}
+  .ig-sub{font-size:10px;color:var(--faint);}
+  .ig-body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--panel-2);}
+  .ig-post{background:var(--panel);border:1px solid var(--border);border-radius:11px;overflow:hidden;}
+  .ig-post-img{height:84px;display:grid;place-items:center;font-size:32px;background:linear-gradient(135deg,#FDBA74,#FB7185);}
+  .ig-post-cap{font-size:11px;color:var(--muted);padding:8px 10px;line-height:1.4;}
+  .ig-post-cap b{color:var(--ink);}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px;}
+</style>
+</head>
+<body>
+
+  <div class="banner">
+    <span class="tag">Phase 2 · Prototype</span>
+    <span class="bt"><b>Instagram Automation — rules only, no AI.</b> Interactive sample data: switch pages in the sidebar, toggle rules, open the builder and hit “Test”, click a conversation, run the funnel.</span>
+  </div>
+
+  <div class="app" id="app">
+    <div class="app-top">
+      <div class="brand"><span class="logo">S</span> Skelo</div>
+      <span class="ig-badge">◎ Instagram</span>
+      <span class="ctx">Glow Botanicals · @glowbotanicals</span>
+      <div class="top-right">
+        <span class="pill live">● Connected</span>
+        <span class="ava">GB</span>
+      </div>
+    </div>
+
+    <div class="app-body">
+      <div class="app-nav">
+        <div class="nav-lab">Instagram</div>
+        <button class="nav-item on" data-page="automations"><span class="nav-ic">⚙</span> Automations <span class="nav-count">5</span></button>
+        <button class="nav-item" data-page="inbox"><span class="nav-ic">✉</span> Inbox <span class="nav-count" id="navInboxCount">2</span></button>
+        <button class="nav-item" data-page="performance"><span class="nav-ic">▤</span> Performance</button>
+        <div class="nav-foot">Phase 2 ships rules-based replies. The RAG&nbsp;AI replier arrives in Phase&nbsp;3.</div>
+      </div>
+
+      <div class="app-main">
+
+        <!-- ============ AUTOMATIONS ============ -->
+        <section class="page on" data-page="automations">
+          <div class="page-head">
+            <div>
+              <div class="h">Automations</div>
+              <div class="s">Rules that reply to comments and DMs, and turn them into leads — all inside Instagram's 24-hour window.</div>
+            </div>
+            <div class="actions"><button class="btn primary" data-open-rule="new">+ New rule</button></div>
+          </div>
+
+          <div class="tiles">
+            <div class="tile"><div class="l">Active rules</div><div class="v" id="activeCount">4</div><div class="d mut">of 5 total</div></div>
+            <div class="tile"><div class="l">Replies sent · 7d</div><div class="v">610</div><div class="d">▲ 22%</div></div>
+            <div class="tile"><div class="l">Leads created · 7d</div><div class="v">148</div><div class="d">▲ 18%</div></div>
+            <div class="tile"><div class="l">Delivery success</div><div class="v">97.6%</div><div class="d mut">14 blocked by window</div></div>
+          </div>
+
+          <div class="rules" id="rulesList">
+            <div class="rule" data-open-rule="price">
+              <div class="rule-top">
+                <span class="pill cm">Comment</span>
+                <span class="rule-name">Comment “price” → reply &amp; DM the details</span>
+                <div class="rule-meta">
+                  <span class="rule-stat"><b>214</b> fired · <b>62%</b> →DM</span>
+                  <span class="toggle" data-toggle></span>
+                </div>
+              </div>
+              <div class="chain">
+                <span class="cnode trig"><span class="k">When</span>Comment contains “price / cost / how much”</span>
+                <span class="carrow">→</span>
+                <span class="cnode">Reply publicly</span>
+                <span class="carrow">→</span>
+                <span class="cnode act"><span class="k">Then</span>Send DM with details</span>
+                <span class="carrow">→</span>
+                <span class="cnode act"><span class="k">Then</span>Create lead · tag Hot</span>
+              </div>
+            </div>
+
+            <div class="rule" data-open-rule="shipping">
+              <div class="rule-top">
+                <span class="pill dm">DM</span>
+                <span class="rule-name">DM keyword “shipping” → send delivery info</span>
+                <div class="rule-meta">
+                  <span class="rule-stat"><b>88</b> fired</span>
+                  <span class="toggle" data-toggle></span>
+                </div>
+              </div>
+              <div class="chain">
+                <span class="cnode trig"><span class="k">When</span>DM contains “shipping / delivery / ship to”</span>
+                <span class="carrow">→</span>
+                <span class="cnode act"><span class="k">Then</span>Reply with shipping &amp; timelines</span>
+              </div>
+            </div>
+
+            <div class="rule" data-open-rule="welcome">
+              <div class="rule-top">
+                <span class="pill dm">DM</span>
+                <span class="rule-name">Welcome DM for a first-time conversation</span>
+                <div class="rule-meta">
+                  <span class="rule-stat"><b>132</b> fired</span>
+                  <span class="toggle" data-toggle></span>
+                </div>
+              </div>
+              <div class="chain">
+                <span class="cnode trig"><span class="k">When</span>First DM from a new contact</span>
+                <span class="carrow">→</span>
+                <span class="cnode act"><span class="k">Then</span>Send welcome + top 3 bestsellers</span>
+              </div>
+            </div>
+
+            <div class="rule" data-open-rule="link">
+              <div class="rule-top">
+                <span class="pill cm">Comment</span>
+                <span class="rule-name">Comment “link / buy” → DM the product link</span>
+                <div class="rule-meta">
+                  <span class="rule-stat"><b>176</b> fired · <b>58%</b> →DM</span>
+                  <span class="toggle" data-toggle></span>
+                </div>
+              </div>
+              <div class="chain">
+                <span class="cnode trig"><span class="k">When</span>Comment contains “link / buy / where”</span>
+                <span class="carrow">→</span>
+                <span class="cnode">Reply publicly</span>
+                <span class="carrow">→</span>
+                <span class="cnode act"><span class="k">Then</span>DM product link · Create lead</span>
+              </div>
+            </div>
+
+            <div class="rule paused" data-open-rule="story">
+              <div class="rule-top">
+                <span class="pill st">Story</span>
+                <span class="rule-name">Story reply “🔥” → thank &amp; drop a link</span>
+                <div class="rule-meta">
+                  <span class="pill off">Paused</span>
+                  <span class="toggle off" data-toggle></span>
+                </div>
+              </div>
+              <div class="chain">
+                <span class="cnode trig"><span class="k">When</span>Story reply contains an emoji / “🔥”</span>
+                <span class="carrow">→</span>
+                <span class="cnode act"><span class="k">Then</span>Thank + send the featured link</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ RULE BUILDER ============ -->
+        <section class="page" data-page="builder">
+          <button class="back" id="builderBack">← Back to automations</button>
+          <div class="page-head">
+            <div>
+              <div class="h" id="builderTitle">Comment “price” → reply &amp; DM the details</div>
+              <div class="s">Set what fires this rule, what it does, and the guardrails that keep it compliant.</div>
+            </div>
+            <div class="actions">
+              <button class="btn ghost" id="builderCancel">Cancel</button>
+              <button class="btn accent" id="builderSave">Save rule</button>
+            </div>
+          </div>
+
+          <div class="builder">
+            <div>
+              <div class="card">
+                <div class="card-h">① Trigger — when this runs</div>
+                <div class="field">
+                  <div class="fl">Channel</div>
+                  <div class="select" data-seg="channel">
+                    <span class="seg on">Comment</span>
+                    <span class="seg">DM</span>
+                    <span class="seg">Story reply</span>
+                  </div>
+                </div>
+                <div class="field">
+                  <div class="fl">Contains any of these keywords</div>
+                  <div class="tags" id="kwTags">
+                    <span class="tag">price <span class="x" data-rmtag>×</span></span>
+                    <span class="tag">cost <span class="x" data-rmtag>×</span></span>
+                    <span class="tag">how much <span class="x" data-rmtag>×</span></span>
+                    <input class="tag-input" id="kwInput" placeholder="+ add keyword, Enter">
+                  </div>
+                  <div class="fh">Case-insensitive. Leave empty to match every comment on selected posts.</div>
+                </div>
+                <div class="field">
+                  <div class="fl">On which posts</div>
+                  <div class="select" data-seg="scope">
+                    <span class="seg on">Any post or reel</span>
+                    <span class="seg">Specific posts…</span>
+                  </div>
+                  <div class="post-grid" id="postGrid" hidden>
+                    <div class="post sel" data-post><div class="thumb" style="background:linear-gradient(135deg,#FDBA74,#FB7185)">🍊</div><div class="pmeta"><div class="pt">Vitamin C reel</div><div class="pd">1.2k · 340c</div></div><span class="pcheck">✓</span></div>
+                    <div class="post sel" data-post><div class="thumb" style="background:linear-gradient(135deg,#6EE7B7,#0E877A)">🌿</div><div class="pmeta"><div class="pt">Glow Duo launch</div><div class="pd">2.4k · 176c</div></div><span class="pcheck">✓</span></div>
+                    <div class="post" data-post><div class="thumb" style="background:linear-gradient(135deg,#93C5FD,#6366F1)">💧</div><div class="pmeta"><div class="pt">Hydra Moisturiser</div><div class="pd">860 · 44c</div></div><span class="pcheck">✓</span></div>
+                    <div class="post" data-post><div class="thumb" style="background:linear-gradient(135deg,#FCA5A5,#C2410C)">✨</div><div class="pmeta"><div class="pt">Before / After</div><div class="pd">3.1k · 512c</div></div><span class="pcheck">✓</span></div>
+                    <div class="post" data-post><div class="thumb" style="background:linear-gradient(135deg,#DDD6FE,#7C3AED)">🎬</div><div class="pmeta"><div class="pt">Founder story</div><div class="pd">540 · 28c</div></div><span class="pcheck">✓</span></div>
+                    <div class="post" data-post><div class="thumb" style="background:linear-gradient(135deg,#FEF08A,#EAB308)">🪔</div><div class="pmeta"><div class="pt">Diwali offer</div><div class="pd">1.8k · 209c</div></div><span class="pcheck">✓</span></div>
+                  </div>
+                  <div class="fh" id="postCount" hidden>2 posts selected</div>
+                </div>
+                <div class="field">
+                  <div class="fl">Audience — who it replies to</div>
+                  <div class="select" data-seg="audience">
+                    <span class="seg on">Anyone</span>
+                    <span class="seg">Followers only</span>
+                    <span class="seg">New (non-followers)</span>
+                  </div>
+                  <div class="fh">We check whether the commenter follows <b>@glowbotanicals</b> before replying — pick “Followers only” to reward fans, or “New (non-followers)” to win over people who haven't followed yet.</div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-h">② Actions — what it does, in order</div>
+                <div class="action-step">
+                  <span class="as-n">1</span>
+                  <div class="as-b">
+                    <div class="as-t">Reply publicly to the comment</div>
+                    <div class="as-d">Public nudge — keeps it short so it moves to a DM.</div>
+                    <textarea class="textarea" style="margin-top:9px">Just DM'd you the details 💬</textarea>
+                  </div>
+                </div>
+                <div class="action-step">
+                  <span class="as-n">2</span>
+                  <div class="as-b">
+                    <div class="as-t">Send a DM with the details</div>
+                    <div class="as-d">The real answer — sent within the 24-hour window.</div>
+                    <textarea class="textarea" style="margin-top:9px">Hi! Our Vitamin C Serum (30ml) is ₹899, free shipping over ₹799. Here's the link 🌿 — want the Glow Duo combo instead?</textarea>
+                  </div>
+                </div>
+                <div class="action-step">
+                  <span class="as-n">3</span>
+                  <div class="as-b">
+                    <div class="as-t">Create a lead &amp; tag it <b>Hot</b></div>
+                    <div class="as-d">Filed under this org, with the whole thread attached.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-h">③ Guardrails</div>
+                <div class="switch-row">
+                  <span class="toggle" data-toggle></span>
+                  <div style="flex:1"><div class="sr-t">Respect Instagram's 24-hour window</div><div class="sr-d">Never send a DM that would be blocked; if the window's closed, skip or hand to a follow-up.</div></div>
+                  <span class="pill live" data-guard-pill>On</span>
+                </div>
+                <div class="switch-row">
+                  <span class="toggle" data-toggle></span>
+                  <div style="flex:1"><div class="sr-t">Only reply once per person per day</div><div class="sr-d">Avoids spamming a user who comments repeatedly.</div></div>
+                  <span class="pill live" data-guard-pill>On</span>
+                </div>
+                <div class="switch-row">
+                  <span class="toggle off" data-toggle></span>
+                  <div style="flex:1"><div class="sr-t">Quiet hours (10pm–8am IST)</div><div class="sr-d">Hold replies overnight and send in the morning.</div></div>
+                  <span class="pill off" data-guard-pill>Off</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="test">
+              <div class="card">
+                <div class="card-h">Live preview <span style="margin-left:auto"><button class="btn accent sm" id="testRun">▶ Replay</button></span></div>
+                <div class="phone">
+                  <div class="phone-screen">
+                    <div class="ig-bar">
+                      <span class="ig-ava">GB</span>
+                      <div style="flex:1"><div class="ig-name">glowbotanicals</div><div class="ig-sub">Instagram · automated by Skelo</div></div>
+                    </div>
+                    <div class="ig-body" id="previewBody"></div>
+                  </div>
+                </div>
+                <div class="fh" style="margin-top:10px">Updates live as you edit — channel, keywords, audience and message text. Nothing is actually sent.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ INBOX ============ -->
+        <section class="page" data-page="inbox">
+          <div class="page-head">
+            <div>
+              <div class="h">Inbox</div>
+              <div class="s">Every DM and comment, on the lead — see what a rule auto-handled, and jump in when it didn't.</div>
+            </div>
+          </div>
+          <div class="inbox">
+            <div class="threads">
+              <div class="threads-h">
+                <div class="t">Conversations</div>
+                <div class="fchips" id="fchips">
+                  <span class="fchip on" data-filter="all">All</span>
+                  <span class="fchip" data-filter="needs">Needs reply</span>
+                  <span class="fchip" data-filter="auto">Auto-handled</span>
+                </div>
+              </div>
+              <div class="tlist" id="tlist">
+                <div class="thread on" data-thread="aarti" data-status="auto">
+                  <span class="tava" style="background:#C2410C">AM</span>
+                  <div class="tbody"><div class="tname">Aarti Mehta</div><div class="tsnip">price? 👀 — auto-replied</div></div>
+                  <div class="tmeta"><span class="stat-dot auto" title="Auto-handled"></span><span class="chan cm">Cmt</span></div>
+                </div>
+                <div class="thread" data-thread="karan" data-status="auto">
+                  <span class="tava" style="background:#7C3AED">KP</span>
+                  <div class="tbody"><div class="tname">Karan P.</div><div class="tsnip">drop the link! — auto-replied</div></div>
+                  <div class="tmeta"><span class="stat-dot auto"></span><span class="chan cm">Cmt</span></div>
+                </div>
+                <div class="thread" data-thread="dev" data-status="auto">
+                  <span class="tava" style="background:#2563EB">DV</span>
+                  <div class="tbody"><div class="tname">Dev Varma</div><div class="tsnip">Do you ship to Pune? — auto-replied</div></div>
+                  <div class="tmeta"><span class="stat-dot auto"></span><span class="chan dm">DM</span></div>
+                </div>
+                <div class="thread" data-thread="meera" data-status="needs">
+                  <span class="tava" style="background:#BB4936">MR</span>
+                  <div class="tbody"><div class="tname">Meera R.</div><div class="tsnip">this arrived damaged, not happy…</div></div>
+                  <div class="tmeta"><span class="stat-dot needs" title="Needs a human"></span><span class="chan dm">DM</span></div>
+                </div>
+                <div class="thread" data-thread="sneha" data-status="needs">
+                  <span class="tava" style="background:#0E877A">SN</span>
+                  <div class="tbody"><div class="tname">Sneha Nair</div><div class="tsnip">do you have a bulk discount?</div></div>
+                  <div class="tmeta"><span class="stat-dot needs"></span><span class="chan dm">DM</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="convo" id="convo"></div>
+            <div class="lead" id="lead"></div>
+          </div>
+        </section>
+
+        <!-- ============ PERFORMANCE ============ -->
+        <section class="page" data-page="performance">
+          <div class="page-head">
+            <div>
+              <div class="h">Performance</div>
+              <div class="s">What the rules actually drove over the last 7 days — activity, the comment→DM funnel, and delivery health.</div>
+            </div>
+          </div>
+
+          <div class="tiles">
+            <div class="tile"><div class="l">Replies sent</div><div class="v">610</div><div class="d">▲ 22%</div></div>
+            <div class="tile"><div class="l">Comment → DM</div><div class="v">60%</div><div class="d">▲ 7 pts</div></div>
+            <div class="tile"><div class="l">Leads created</div><div class="v">148</div><div class="d">▲ 18%</div></div>
+            <div class="tile"><div class="l">Delivery success</div><div class="v">97.6%</div><div class="d mut">24 failed</div></div>
+          </div>
+
+          <div class="charts">
+            <div class="chart">
+              <div class="ct">Rule activity</div>
+              <div class="cs">Replies sent per day · last 7 days</div>
+              <div class="bars" data-bars>
+                <div class="bar"><b>72</b><i data-h="58%"></i><em>Mon</em></div>
+                <div class="bar"><b>88</b><i data-h="71%"></i><em>Tue</em></div>
+                <div class="bar"><b>79</b><i data-h="64%"></i><em>Wed</em></div>
+                <div class="bar"><b>104</b><i data-h="84%"></i><em>Thu</em></div>
+                <div class="bar"><b>123</b><i data-h="100%"></i><em>Fri</em></div>
+                <div class="bar"><b>86</b><i data-h="70%"></i><em>Sat</em></div>
+                <div class="bar"><b>58</b><i data-h="47%"></i><em>Sun</em></div>
+              </div>
+            </div>
+            <div class="chart">
+              <div class="ct">Comment → DM funnel</div>
+              <div class="cs">How public comments become leads</div>
+              <div class="funnel" data-funnel>
+                <div class="fn-row"><div class="fn-top"><span>Comments matched</span><span class="fn-n">342</span></div><div class="fn-bar"><i data-w="100%"></i></div></div>
+                <div class="fn-row"><div class="fn-top"><span>Public replies sent</span><span class="fn-n">340</span></div><div class="fn-bar"><i data-w="99%"></i></div><div class="fn-drop">−0.6%</div></div>
+                <div class="fn-row"><div class="fn-top"><span>DMs delivered</span><span class="fn-n">318</span></div><div class="fn-bar"><i data-w="93%"></i></div><div class="fn-drop">−6.5% · window / rate</div></div>
+                <div class="fn-row"><div class="fn-top"><span>Leads created</span><span class="fn-n">205</span></div><div class="fn-bar"><i data-w="60%"></i></div><div class="fn-drop">60% of matched comments</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Rule</th><th class="num">Fired</th><th class="num">Delivered</th><th class="num">Failed</th><th class="num">Leads</th></tr></thead>
+              <tbody>
+                <tr><td>Comment “price” → reply &amp; DM</td><td class="num">214</td><td class="num">208</td><td class="num fail">6</td><td class="num">133</td></tr>
+                <tr><td>Comment “link / buy” → DM link</td><td class="num">176</td><td class="num">170</td><td class="num fail">6</td><td class="num">41</td></tr>
+                <tr><td>Welcome DM (first contact)</td><td class="num">132</td><td class="num">130</td><td class="num fail">2</td><td class="num">—</td></tr>
+                <tr><td>DM keyword “shipping”</td><td class="num">88</td><td class="num">86</td><td class="num fail">2</td><td class="num">12</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="charts" style="margin-top:16px">
+            <div class="chart">
+              <div class="ct">Why sends failed</div>
+              <div class="cs">24 failed of 634 attempts</div>
+              <div class="fails">
+                <div class="fail-row"><span class="fd" style="background:var(--warn)"></span> Outside the 24-hour window <span class="fn">14</span></div>
+                <div class="fail-row"><span class="fd" style="background:var(--crit)"></span> Rate-limited by Instagram <span class="fn">6</span></div>
+                <div class="fail-row"><span class="fd" style="background:var(--faint)"></span> User unavailable / blocked us <span class="fn">4</span></div>
+              </div>
+            </div>
+            <div class="chart">
+              <div class="ct">Handled by</div>
+              <div class="cs">Rules vs. a human stepping in</div>
+              <div class="funnel" data-funnel>
+                <div class="fn-row"><div class="fn-top"><span>Auto-handled by rules</span><span class="fn-n">88%</span></div><div class="fn-bar"><i data-w="88%"></i></div></div>
+                <div class="fn-row"><div class="fn-top"><span>Needed a human</span><span class="fn-n">12%</span></div><div class="fn-bar"><i data-w="12%"></i></div><div class="fn-drop">complaints, bulk pricing, edge cases</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="note">
+            <span class="k">Phase 3</span>
+            <span>The 12% that needs a human — complaints, bulk-pricing, out-of-script questions — is exactly what the <b>RAG AI replier</b> will take on next, grounded in the catalog, with the handoff &amp; cost caps we agreed.</span>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  var toastEl;
+  function toast(m){ if(!toastEl){toastEl=document.createElement('div');toastEl.className='toast';document.body.appendChild(toastEl);} toastEl.textContent=m; toastEl.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(function(){toastEl.classList.remove('show');},2200); }
+
+  var app=document.getElementById('app');
+  var pages=app.querySelectorAll('.page');
+  var navItems=app.querySelectorAll('.nav-item');
+
+  function showPage(name,fromNav){
+    pages.forEach(function(p){p.classList.toggle('on',p.dataset.page===name);});
+    navItems.forEach(function(n){
+      // builder keeps "Automations" highlighted
+      var match = n.dataset.page===name || (name==='builder' && n.dataset.page==='automations');
+      n.classList.toggle('on',match);
+    });
+    if(name==='performance') revealPerf();
+    if(name==='inbox' && !inboxInit){ openThread('aarti'); inboxInit=true; }
+    app.scrollIntoView({block:'nearest'});
+  }
+  navItems.forEach(function(n){ n.addEventListener('click',function(){ showPage(n.dataset.page,true); }); });
+
+  // ---- generic toggles ----
+  app.addEventListener('click',function(e){
+    var tg=e.target.closest('[data-toggle]');
+    if(tg){
+      tg.classList.toggle('off');
+      var row=tg.closest('.switch-row')||tg.closest('.rule-top');
+      if(row){var pill=row.querySelector('[data-guard-pill]')||row.querySelector('.pill.off, .pill.live'); if(pill && (pill.hasAttribute('data-guard-pill')||pill.classList.contains('off')||pill.classList.contains('live'))){ var on=!tg.classList.contains('off'); if(pill.hasAttribute('data-guard-pill')){pill.textContent=on?'On':'Off'; pill.classList.toggle('live',on); pill.classList.toggle('off',!on);} }}
+      var card=tg.closest('.rule'); if(card){ card.classList.toggle('paused',tg.classList.contains('off')); var p=card.querySelector('.pill.off,.pill.live'); }
+      updateActiveCount();
+      renderPreview();
+      e.stopPropagation(); return;
+    }
+  });
+  function updateActiveCount(){
+    var on=app.querySelectorAll('#rulesList .toggle:not(.off)').length;
+    var el=document.getElementById('activeCount'); if(el) el.textContent=on;
+  }
+
+  // ---- open rule builder ----
+  var RULE_TITLES={
+    price:'Comment “price” → reply & DM the details',
+    shipping:'DM keyword “shipping” → send delivery info',
+    welcome:'Welcome DM for a first-time conversation',
+    link:'Comment “link / buy” → DM the product link',
+    story:'Story reply “🔥” → thank & drop a link',
+    'new':'New rule'
+  };
+  app.addEventListener('click',function(e){
+    var r=e.target.closest('[data-open-rule]'); if(!r) return;
+    if(e.target.closest('[data-toggle]')) return;
+    var id=r.getAttribute('data-open-rule');
+    document.getElementById('builderTitle').textContent=RULE_TITLES[id]||'Edit rule';
+    showPage('builder');
+  });
+  document.getElementById('builderBack').addEventListener('click',function(){showPage('automations');});
+  document.getElementById('builderCancel').addEventListener('click',function(){showPage('automations');});
+  document.getElementById('builderSave').addEventListener('click',function(){ toast('Rule saved ✓'); showPage('automations'); });
+
+  // ---- segmented controls ----
+  app.querySelectorAll('[data-seg]').forEach(function(seg){
+    seg.addEventListener('click',function(e){
+      var s=e.target.closest('.seg'); if(!s) return;
+      var segs=[].slice.call(seg.querySelectorAll('.seg'));
+      segs.forEach(function(x){x.classList.toggle('on',x===s);});
+      if(seg.getAttribute('data-seg')==='scope'){
+        var specific=segs.indexOf(s)===1;
+        var grid=document.getElementById('postGrid'), cnt=document.getElementById('postCount');
+        if(grid) grid.hidden=!specific;
+        if(cnt) cnt.hidden=!specific;
+      }
+      renderPreview();
+    });
+  });
+  var postGrid=document.getElementById('postGrid');
+  if(postGrid){
+    postGrid.addEventListener('click',function(e){
+      var p=e.target.closest('[data-post]'); if(!p) return;
+      p.classList.toggle('sel');
+      var n=postGrid.querySelectorAll('.post.sel').length;
+      var cnt=document.getElementById('postCount'); if(cnt) cnt.textContent=n+' post'+(n===1?'':'s')+' selected';
+    });
+  }
+
+  // ---- keyword tags ----
+  var kwTags=document.getElementById('kwTags');
+  var kwInput=document.getElementById('kwInput');
+  if(kwTags){
+    kwTags.addEventListener('click',function(e){ if(e.target.matches('[data-rmtag]')){ e.target.closest('.tag').remove(); renderPreview(); } });
+    kwInput.addEventListener('keydown',function(e){
+      if(e.key==='Enter' && kwInput.value.trim()){
+        var t=document.createElement('span'); t.className='tag'; t.innerHTML=esc(kwInput.value.trim())+' <span class="x" data-rmtag>×</span>';
+        kwTags.insertBefore(t,kwInput); kwInput.value=''; renderPreview();
+      }
+    });
+  }
+
+  // ---- live mobile preview ----
+  function segText(name){var el=app.querySelector('[data-seg="'+name+'"] .seg.on');return el?el.textContent.trim():'';}
+  function firstKeyword(){var t=document.querySelector('#kwTags .tag');if(!t)return 'your keyword';return t.textContent.replace('×','').trim();}
+  function actionText(i){var tas=document.querySelectorAll('.builder .textarea');return tas[i]?tas[i].value.trim():'';}
+  function guardOn(){var tg=document.querySelector('.switch-row .toggle');return tg?!tg.classList.contains('off'):true;}
+  function chip(t){return '<div class="tmsg sys">'+esc(t)+'</div>';}
+  function bubble(cls,text,label){return '<div class="tmsg '+cls+'">'+esc(text||'…')+(label?'<div class="mt">'+label+'</div>':'')+'</div>';}
+  function renderPreview(animate){
+    var body=document.getElementById('previewBody'); if(!body) return;
+    var ch=segText('channel'), kw=firstKeyword(), aud=segText('audience');
+    var pub=actionText(0), dm=actionText(1);
+    var followLine = aud==='Followers only' ? '✓ @aarti_m follows you — rule applies'
+                   : aud==='New (non-followers)' ? '✓ @aarti_m isn’t following yet — good to convert'
+                   : 'Audience: anyone who comments';
+    var html='';
+    if(ch==='DM'){
+      html+=chip('Instagram Direct');
+      html+=bubble('inb',kw,'their message');
+      html+=chip(followLine);
+      html+=bubble('out',dm||pub,'auto reply');
+    } else if(ch==='Story reply'){
+      html+=chip('Story reply');
+      html+=bubble('inb',kw+' 🔥','story reply');
+      html+=chip(followLine);
+      html+=bubble('out',dm||pub,'auto reply');
+    } else {
+      html+='<div class="ig-post"><div class="ig-post-img">🍊</div><div class="ig-post-cap"><b>glowbotanicals</b> New Vitamin C serum is live ✨</div></div>';
+      html+=chip('Comment');
+      html+=bubble('inb',kw+' 👀','@aarti_m · comment');
+      html+=chip(followLine);
+      html+=bubble('out',pub,'public reply');
+      html+=chip(guardOn()?'Sliding into DMs · 23h left in window':'⚠ 24-hour guard is off');
+      html+=bubble('out',dm,'direct message');
+      html+=chip('✓ Lead created · tagged Hot');
+    }
+    body.innerHTML=html;
+    if(animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+      var kids=[].slice.call(body.children);
+      kids.forEach(function(k){k.style.opacity='0';k.style.transform='translateY(6px)';k.style.transition='opacity .3s, transform .3s';});
+      var i=0;(function n(){ if(i>=kids.length) return; kids[i].style.opacity='1'; kids[i].style.transform='none'; i++; setTimeout(n,240); })();
+    }
+  }
+  document.querySelectorAll('.builder .textarea').forEach(function(t){ t.addEventListener('input',function(){ renderPreview(); }); });
+  var replayBtn=document.getElementById('testRun');
+  if(replayBtn) replayBtn.addEventListener('click',function(){ renderPreview(true); });
+  renderPreview();
+
+  // ---- inbox ----
+  var THREADS={
+    aarti:{follows:false,name:'Aarti Mehta',handle:'comment on Vitamin C reel',initials:'AM',color:'#C2410C',win:'◷ 23h left',winClass:'win',
+      msgs:[{w:'inb',t:'price? 👀',time:'now'},{w:'sys',t:'⚡ Rule fired · Comment “price” → reply & DM'},{w:'out',t:"Just DM'd you the details 💬",time:'now'},{w:'out',t:"Hi! Our Vitamin C Serum (30ml) is ₹899, free shipping over ₹799. Here's the link 🌿",time:'now'}],
+      canned:['Send catalog','Share discount code','Ask for pincode'],
+      lead:{nm:'Aarti Mehta',pill:['hot','● Hot'],sub:'Lead · from Instagram comment',fields:[['Source','Instagram comment'],['Post','Vitamin C reel'],['Handled by','Rule (auto)'],['Intent','Price enquiry']],tl:[['IG','#C2410C','Commented “price?”','now'],['IG','#C2410C','Auto public reply + DM','now']],btn:'Start voice callback'}},
+    karan:{follows:true,name:'Karan P.',handle:'comment on Launch post',initials:'KP',color:'#7C3AED',win:'◷ 22h left',winClass:'win',
+      msgs:[{w:'inb',t:'drop the link!',time:'12m'},{w:'sys',t:'⚡ Rule fired · Comment “link” → DM link'},{w:'out',t:'Sent it to your DMs 💬',time:'12m'},{w:'out',t:"Here's the Glow Duo — glowbotanicals.in/glow-duo 🌿",time:'12m'}],
+      canned:['Send catalog','Share discount code'],
+      lead:{nm:'Karan P.',pill:['warm','● Warm'],sub:'Lead · from Instagram comment',fields:[['Source','Instagram comment'],['Post','Launch post'],['Handled by','Rule (auto)'],['Intent','Wants link']],tl:[['IG','#C2410C','Commented “drop the link”','12m'],['IG','#C2410C','Auto DM sent','12m']],btn:'Start voice callback'}},
+    dev:{follows:true,name:'Dev Varma',handle:'@dev.varma · Instagram DM',initials:'DV',color:'#2563EB',win:'◷ 19h left',winClass:'win',
+      msgs:[{w:'inb',t:'Do you ship to Pune?',time:'1h'},{w:'sys',t:'⚡ Rule fired · DM keyword “shipping”'},{w:'out',t:'Yes! We ship across India 🚚 — Pune takes 2–3 days, free over ₹799.',time:'1h'}],
+      canned:['Share tracking','Send catalog','Offer COD'],
+      lead:{nm:'Dev Varma',pill:['warm','● Warm'],sub:'Lead · created from Instagram',fields:[['Source','Instagram DM'],['City','Pune'],['Handled by','Rule (auto)'],['Intent','Shipping question']],tl:[['IG','#C2410C','DM — shipping','1h'],['IG','#C2410C','Auto reply sent','1h']],btn:'Start voice callback'}},
+    meera:{follows:true,name:'Meera R.',handle:'@meera.r · Instagram DM',initials:'MR',color:'#BB4936',win:'◷ 20h left',winClass:'win',
+      msgs:[{w:'inb',t:'this arrived damaged, not happy 😞',time:'20m'},{w:'sys',t:'No rule matched — needs a human'}],
+      canned:['Apologise + offer replacement','Start a return','Ask for a photo'],
+      lead:{nm:'Meera R.',pill:['warm','● Warm'],sub:'Lead · needs attention',fields:[['Source','Instagram DM'],['Order','#GB-2291'],['Handled by','Awaiting human'],['Intent','Complaint']],tl:[['IG','#C2410C','DM — damaged item','20m'],['WA','#15803D','Order confirmation','4d ago']],btn:'Call Meera'}},
+    sneha:{follows:false,name:'Sneha Nair',handle:'@sneha.nair · Instagram DM',initials:'SN',color:'#0E877A',win:'◷ 21h left',winClass:'win',
+      msgs:[{w:'inb',t:'do you have a bulk discount for 20+ units?',time:'35m'},{w:'sys',t:'No rule matched — needs a human'}],
+      canned:['Send bulk pricing','Loop in sales','Ask quantity'],
+      lead:{nm:'Sneha Nair',pill:['hot','● Hot'],sub:'Lead · needs attention',fields:[['Source','Instagram DM'],['City','Bengaluru'],['Handled by','Awaiting human'],['Intent','Bulk / wholesale']],tl:[['IG','#C2410C','DM — bulk discount','35m']],btn:'Start voice callback'}}
+  };
+  var current='aarti', inboxInit=false;
+  var convo=document.getElementById('convo'), lead=document.getElementById('lead');
+  function renderConvo(id){
+    var d=THREADS[id];
+    var msgs=d.msgs.map(function(m){ return m.w==='sys' ? '<div class="msg sys">'+esc(m.t)+'</div>' : '<div class="msg '+m.w+'">'+esc(m.t)+'<div class="mt">'+m.time+'</div></div>'; }).join('');
+    var canned=d.canned.map(function(c){return '<span class="cch" data-canned="'+esc(c)+'">'+esc(c)+'</span>';}).join('');
+    var followPill='<span class="pill '+(d.follows?'win':'off')+'" style="margin-right:6px">'+(d.follows?'♥ Follows you':'○ Not following')+'</span>';
+    convo.innerHTML=
+      '<div class="convo-h"><span class="tava" style="background:'+d.color+';width:30px;height:30px;font-size:11px">'+d.initials+'</span><div style="flex:1"><div class="nm">'+esc(d.name)+'</div><div class="hd">'+esc(d.handle)+'</div></div>'+followPill+'<span class="pill '+d.winClass+'">'+d.win+'</span></div>'
+      +'<div class="msgs" id="msgs">'+msgs+'</div>'
+      +'<div class="composer"><div class="canned">'+canned+'</div><div class="composer-row"><div class="cinput">Write a reply…</div><button class="btn primary" data-send-free>Send</button></div></div>';
+  }
+  function renderLead(id){
+    var L=THREADS[id].lead;
+    var fields=L.fields.map(function(f){return '<div class="lf"><span class="k">'+f[0]+'</span><span class="v">'+esc(f[1])+'</span></div>';}).join('');
+    var tl=L.tl.map(function(r){return '<div class="ltl-row"><span class="ltl-ic" style="background:'+r[1]+'">'+r[0]+'</span><div><b>'+esc(r[2])+'</b><div style="color:var(--faint)">'+r[3]+'</div></div></div>';}).join('');
+    lead.innerHTML=
+      '<div class="lead-top"><span class="lead-nm">'+esc(L.nm)+'</span><span class="pill '+L.pill[0]+'">'+L.pill[1]+'</span></div>'
+      +'<div class="lead-sub">'+esc(L.sub)+'</div>'
+      +'<div class="lfields">'+fields+'</div>'
+      +'<div class="ltl"><div class="ltl-lab">Activity · all channels</div>'+tl+'</div>'
+      +'<button class="btn ghost">'+esc(L.btn)+'</button>';
+  }
+  function openThread(id){
+    current=id;
+    app.querySelectorAll('.thread').forEach(function(el){el.classList.toggle('on',el.dataset.thread===id);});
+    renderConvo(id); renderLead(id);
+  }
+  app.querySelectorAll('.thread').forEach(function(el){ el.addEventListener('click',function(){ openThread(el.dataset.thread); }); });
+  if(convo){
+    convo.addEventListener('click',function(e){
+      var c=e.target.closest('[data-canned]');
+      var f=e.target.closest('[data-send-free]');
+      if(c || f){
+        var text = c ? c.getAttribute('data-canned') : 'Thanks! Someone from our team will help you right away 🙌';
+        var d=THREADS[current];
+        d.msgs.push({w:'out',t:text,time:'now'});
+        renderConvo(current);
+        toast('Reply sent on Instagram ✓');
+      }
+    });
+  }
+
+  // ---- inbox filter ----
+  var tlist=document.getElementById('tlist');
+  app.querySelectorAll('#fchips .fchip').forEach(function(ch){
+    ch.addEventListener('click',function(){
+      app.querySelectorAll('#fchips .fchip').forEach(function(x){x.classList.toggle('on',x===ch);});
+      var f=ch.getAttribute('data-filter');
+      app.querySelectorAll('.thread').forEach(function(t){ t.style.display=(f==='all'||t.dataset.status===f)?'':'none'; });
+    });
+  });
+
+  // ---- performance reveal ----
+  var perfDone=false;
+  function revealPerf(){
+    if(perfDone) return; perfDone=true;
+    setTimeout(function(){
+      app.querySelectorAll('.page[data-page="performance"] .bar i').forEach(function(i){ i.style.height=i.getAttribute('data-h'); });
+      app.querySelectorAll('.page[data-page="performance"] .fn-bar i').forEach(function(i){ i.style.width=i.getAttribute('data-w'); });
+    },60);
+  }
+
+  updateActiveCount();
+})();
+</script>
+</body>
+</html>

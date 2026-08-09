@@ -31,15 +31,11 @@ export interface CustomFieldsCarrier {
 // payloads that pre-date that decision.
 export const UNGROUPED_CATEGORIES = new Set(["", "__general__", "general"]);
 
-export function humaniseFieldKey(key: string): string {
-  return key
-    .replace(/[_-]+/g, " ")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(" ")
-    .filter(Boolean)
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(" ");
-}
+// Re-exported (not just imported) because callers have long imported it from
+// here; the implementation now lives with the other key/label formatters.
+import { humaniseFieldKey } from "@/lib/format/keys";
+
+export { humaniseFieldKey };
 
 export function stringifyCustomValue(value: unknown): string | null {
   if (value === null || value === undefined) return null;

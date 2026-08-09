@@ -2,6 +2,9 @@
 
 import * as React from "react";
 
+import { chartSeries } from "@/lib/charts";
+import { cn } from "@/lib/utils";
+
 export interface PieSlice {
   label: string;
   value: number;
@@ -17,11 +20,16 @@ interface Props {
 // custom charts in this folder. Up to 8 slices are drawn; anything
 // beyond is folded into an "Other" wedge so the legend stays scannable.
 //
-// The wedges share a tactile-minimalism palette: foreground tones
-// with descending opacity so the busier the chart, the calmer the
-// colour. Hovering a slice highlights both wedge and legend row.
+// Wedges used to be one ink (`fill-foreground`) at eight descending opacity
+// steps, which put the smallest slices at 0.18 — a near-invisible smudge
+// against a wedge two places up that looked much the same. Opacity now encodes
+// **hover only**; identity comes from `--chart-1..8`, which is why there are
+// eight of those and not the stock five. Hovering a slice highlights both the
+// wedge and its legend row.
 
 const MAX_SLICES = 8;
+// Dimming the rest is what makes a hovered wedge legible in a busy donut.
+const DIM = 0.2;
 const SIZE = 220;
 const THICKNESS = 40;
 const RADIUS = SIZE / 2;
@@ -69,14 +77,12 @@ export function PieChart({ data, emptyLabel = "No data" }: Props) {
             <path
               key={slice.label}
               d={path}
-              className="fill-foreground transition-opacity"
+              // No `outline-none` here: the wedges are `tabIndex={0}`, so the
+              // UA focus ring is the only indicator a keyboard user gets. The
+              // onFocus handler below un-dims the wedge as well.
+              className={cn("transition-opacity", chartSeries(idx).fill)}
               style={{
-                opacity:
-                  activeIdx === null
-                    ? 0.18 + (0.7 * (wedges.length - idx)) / wedges.length
-                    : isActive
-                      ? 0.92
-                      : 0.12,
+                opacity: activeIdx === null || isActive ? 1 : DIM,
               }}
               onMouseEnter={() => setActiveIdx(idx)}
               onMouseLeave={() => setActiveIdx(null)}
@@ -119,14 +125,12 @@ export function PieChart({ data, emptyLabel = "No data" }: Props) {
               onMouseLeave={() => setActiveIdx(null)}
             >
               <span
-                className="size-2.5 shrink-0 rounded-sm bg-foreground transition-opacity"
+                className={cn(
+                  "size-2.5 shrink-0 rounded-sm transition-opacity",
+                  chartSeries(idx).bg,
+                )}
                 style={{
-                  opacity:
-                    activeIdx === null
-                      ? 0.18 + (0.7 * (wedges.length - idx)) / wedges.length
-                      : isActive
-                        ? 0.92
-                        : 0.12,
+                  opacity: activeIdx === null || isActive ? 1 : DIM,
                 }}
                 aria-hidden
               />

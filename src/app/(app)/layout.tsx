@@ -2,6 +2,7 @@ import { countLeadCallActivity } from "@/actions/lead-activity";
 import { requireSession } from "@/lib/auth/session";
 import { Topbar } from "@/components/app/topbar";
 import { SidebarNav } from "@/components/app/sidebar-nav";
+import { MobileNav } from "@/components/app/mobile-nav";
 import {
   AppShellGrid,
   AppShellProvider,
@@ -21,21 +22,31 @@ export default async function AppLayout({
   });
   const uniqueLeadCount = uniqueResult.success ? uniqueResult.data : 0;
 
+  const nav = {
+    organisationName: session.organisation.name,
+    organisationSlug: session.organisation.slug,
+    uniqueLeadCount,
+  };
+
   return (
     <AppShellProvider>
       <AppShellGrid>
-        <SidebarNav
-          organisationName={session.organisation.name}
-          organisationSlug={session.organisation.slug}
-          uniqueLeadCount={uniqueLeadCount}
-        />
+        <SidebarNav {...nav} />
         <div className="flex min-w-0 flex-col">
           <Topbar
             email={session.email}
             organisationId={session.organisation.id}
-            leftSlot={<SidebarToggle />}
+            orgSlug={session.organisation.slug}
+            leftSlot={
+              <>
+                {/* Below md the aside is gone entirely; the drawer is the only
+                    navigation there. */}
+                <MobileNav {...nav} />
+                <SidebarToggle />
+              </>
+            }
           />
-          <main className="flex-1 overflow-y-auto bg-muted/30 px-6 py-8 md:px-8 lg:px-10">
+          <main className="flex-1 overflow-y-auto bg-muted/30 px-4 py-6 md:px-8 md:py-8 lg:px-10">
             <div className="mx-auto w-full max-w-screen-2xl">{children}</div>
           </main>
         </div>

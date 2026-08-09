@@ -222,8 +222,15 @@ Shopify store
 POST /api/webhooks/shopify        app/api/webhooks/shopify/route.ts
    │  1. verify HMAC with THAT store's api_secret
    │  2. resolve org from the shop domain (never the payload)
-   │  3. ack fast, do work in after()
+   │  3. checkouts/* → RECORD the receipt, then ack; work runs in after()
+   │       shopify_checkout_events  lib/shopify/checkout-events.ts
+   │       · written BEFORE the 200 — the ack is a promise we stored it
+   │       · can't write it? → 503, so Shopify retries (the one non-2xx path)
+   │       · x-shopify-webhook-id dedupes Shopify's own retries
+   │       · x-shopify-triggered-at → delivery lag = received_at - triggered_at
+   │  4. otherwise ack fast and do the work in after()
    ├── checkouts/* → scheduleRecoveryFromCheckout()   lib/shopify/recovery.ts
+   │     └─ receipt stamped processed_at; a failure here is replayed by the tick
    └── orders/create → cancelRecoveryForOrder()        lib/shopify/recovery.ts
         └─ sets converted_at, cancels a pending/in-flight attempt
 
@@ -236,6 +243,10 @@ scheduleRecoveryFromCheckout()
    │  find-or-create the lead; insert shopify_recovery_attempts row (pending)
    ▼
 Cron tick  POST /api/cron/campaigns/tick   (x-cron-secret; ~once a minute)
+   │  drainPendingCheckoutEvents()  lib/shopify/checkout-events.ts
+   │    replays receipts whose scheduling never finished (process killed
+   │    mid-after(), DB blip). Skips anything under 60s old so it can't race
+   │    the inline attempt; skips carts that have since converted.
    │  dispatchDueRecoveries()  lib/shopify/recovery.ts
    │    calling-window gate: rows outside their org's window are deferred to the
    │      next window open (isWithinCallWindow / nextCallWindowOpen, IST)
@@ -380,7 +391,38 @@ unknown, so the prompt never renders a literal `{name}`).
 | `{discount_amount}` | `1000` | computed from the offer (whole units) |
 | `{discounted_cart_total}` | `4000` | `cart_total − discount_amount` (whole units) |
 | `{recovery_url}` | `https://…` | Shopify's RAW abandoned-checkout URL. Still emitted, but **no template sends it** — it bypasses our redirect, so a click on it is invisible. Use `{discount_link}`. |
-| `{discount_link}` | `https://<store>/apps/skelo/r/…` | the short link both layouts send: store's own domain, pre-applies the coupon, records the click |
+| `{discount_link}` | `https://<store>/apps/skelo/r/…` | the short link every layout sends: store's own domain, pre-applies the coupon, records the click |
+
+#### The message layouts
+
+An org picks one **layout** on the Cart Recovery page. The layout decides the
+positional order the dispatcher sends; the *wording* lives on Meta's side under
+the org's approved template name. Skelo's reference copy for each layout is in
+`RECOVERY_TEMPLATE_LAYOUTS[…].previewBody` (`lib/shopify/recovery-templates.ts`)
+— submit that text to Meta when creating the template, and the settings preview
+will match what shoppers get.
+
+| Layout | Vars | `{{1}}…{{n}}` | Offer model |
+| --- | --- | --- | --- |
+| `classic` | 6 | `customer_name`, `top_product`, `cart_total`, `discounted_cart_total`, `discount_code`, `discount_link` | one coupon code, quoted with the discounted total |
+| `coupon_link` (default) | 4 | `customer_name`, `top_product`, `store_name`, `discount_link` | one coupon, pre-applied by the link — never named in the copy |
+| `rakhi_offer` | 4 | `customer_name`, `top_product`, `cart_total`, `discount_link` | **tiered ladder** — Buy 1 / 2 / 3 → 15% / 25% / 35%, static copy in the approved body |
+
+**`rakhi_offer` carries no `discount_code` and no `discounted_cart_total`, and
+that is not an omission.** The saving depends on how many items the shopper ends
+up adding, which is unknowable at send time, so quoting one number would be a
+promise we can't keep. The tiers are baked into the Meta body instead — which
+costs nothing, because Meta owns the body regardless, and keeps the parameter
+count at 4. Consequently a tiered org needs **no Shopify discount configured**;
+the settings page suppresses the "no offer set" warning for it.
+
+> ⚠️ **`coupon_link` and `rakhi_offer` both send 4 parameters but mean different
+> things** — `{{3}}` is the store name in one and the cart total in the other.
+> Meta validates *count* only, so switching layout without repointing
+> **WhatsApp template** at the matching approved template produces a well-formed
+> message with the wrong words in it, and no error anywhere. The admin **Send
+> test** can't catch this either. Change the layout and the template name
+> together.
 
 Currency values are rounded to whole units (`wholeAmount()`) so the agent quotes
 "5000 rupees", never "4999.50" — the same values flow into the WhatsApp template.
@@ -447,8 +489,8 @@ still quotes the cart total, just no "you save X."
 
 ### The short recovery link (App Proxy)
 
-**Both** layouts send this link (`discount_link` — classic as `{{6}}`,
-coupon_link as `{{4}}`). It is deliberately short and on the **store's own
+**Every** layout sends this link (`discount_link` — classic as `{{6}}`,
+coupon_link and rakhi_offer as `{{4}}`). It is deliberately short and on the **store's own
 domain** — a shopper who gets an `app.skelo.team` link in a message about *their*
 cart has every reason not to tap it:
 
@@ -775,6 +817,7 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Area | File |
 | --- | --- |
 | Webhook entry | `app/api/webhooks/shopify/route.ts` |
+| Checkout receipt log + replay drainer (+ test) | `lib/shopify/checkout-events.ts` · `checkout-events.test.ts` |
 | Normalize + HMAC | `lib/shopify/webhooks.ts` |
 | Short link: proxy signature + token + probe (+ test) | `lib/shopify/app-proxy.ts` · `app-proxy.test.ts` |
 | Short-link redirect route (+ health probe) | `app/api/shopify/proxy/r/[token]/route.ts` |
@@ -798,7 +841,7 @@ and the dispatcher additionally skips any row with `converted_at` set.
 | Status/outcome badges · Outreach chips (+ test) | `components/app/recovery-badges.tsx` · `outreach-status.test.ts` |
 | Voice agent card | `components/app/recovery-agent-card.tsx` |
 | Page | `app/(app)/campaigns/templates/cart-recovery/page.tsx` |
-| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql`, `20260717000000_recovery_message_error_code.sql`, `20260719000000_recovery_conversion_match.sql`, `20260720000000_recovery_is_recovery.sql` |
+| Migrations | `supabase/migrations/2026062*_shopify*.sql`, `20260630*/20260701*_recovery_*.sql`, `20260702*_{dashboard_recovery_source,recovery_realtime,recovery_abandoned_at}.sql`, `20260703000000_recovery_connected_at.sql`, `20260703000001_recovery_call_window.sql`, `20260704000000_recovery_whatsapp.sql`, `20260711000000_recovery_drop_channel_ordering.sql`, `20260711000001_whatsapp_template_language.sql`, `20260715000000_recovery_cart_token.sql`, `20260716000000_recovery_whatsapp_template_layout.sql`, `20260716000001_recovery_short_link.sql`, `20260716000002_recovery_offer_code_spoken.sql`, `20260717000000_recovery_message_error_code.sql`, `20260719000000_recovery_conversion_match.sql`, `20260720000000_recovery_is_recovery.sql`, `20260722000000_recovery_outcome_and_order_events.sql`, `20260722000001_recovery_order_value.sql`, `20260725000000_shopify_cod_confirmation.sql`, `20260806000000_shopify_checkout_events.sql` |
 
 ## Going live: setup checklist
 
@@ -896,10 +939,13 @@ and the dispatcher additionally skips any row with `converted_at` set.
    calls first; WhatsApp is sent once the connected call ends (or as a fallback if
    voice never connects) — there's no ordering or gap to configure. Without an
    approved template the WhatsApp track is skipped and voice still runs. The
-   template's positional variable order follows the org's **layout** (Classic, 6
-   vars, or Coupon link, 4 vars — picked on the Cart Recovery page); the orders
-   live in `lib/shopify/recovery-templates.ts`. The layout must match the
-   approved Meta template's variable count, or the send fails on param count.
+   template's positional variable order follows the org's **layout** (Classic 6
+   vars, Coupon link 4 vars, Rakhi offer 4 vars — picked on the Cart Recovery
+   page, where a live **Message preview** shows the resulting copy with your
+   offer filled in); the orders live in `lib/shopify/recovery-templates.ts`. The
+   layout must match the approved Meta template's variable count, or the send
+   fails on param count — and for the two 4-var layouts, must match the right
+   *template*, since the counts collide. See § The message layouts.
 6. **Validate the connection** (admin) — the admin WhatsApp form has a **Send
    test** button (`sendTestWhatsAppAdmin`) that fires one real template send, with
    sample values, to any number. It uses the **saved** config, so save first. A

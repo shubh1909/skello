@@ -2,8 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeftIcon } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
+import { SectionLabel } from "@/components/app/section-label";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { WidgetListClient } from "@/components/admin/dashboard/widget-list-client";
 import { getDashboardSourceCatalog } from "@/actions/admin/dashboard-catalog";
 import {
@@ -38,23 +39,23 @@ export default async function AdminOrgDashboardConfigPage({
   if (!orgResult.success) {
     if (orgResult.error === "Organisation not found") notFound();
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {orgResult.error}
-      </Card>
+      </ErrorCard>
     );
   }
   if (!widgetsResult.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {widgetsResult.error}
-      </Card>
+      </ErrorCard>
     );
   }
   if (!catalogResult.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {catalogResult.error}
-      </Card>
+      </ErrorCard>
     );
   }
 
@@ -82,9 +83,9 @@ export default async function AdminOrgDashboardConfigPage({
       </div>
 
       <header className="space-y-1.5">
-        <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+        <SectionLabel as="p">
           Dashboard
-        </p>
+        </SectionLabel>
         <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
           {orgResult.data.name}
         </h1>

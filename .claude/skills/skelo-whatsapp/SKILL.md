@@ -72,6 +72,7 @@ Load `skelo-tenancy` alongside this for org scoping and client selection.
 - `coerceToE164` defaults bare 10-digit numbers to **+91**; `client.ts:75` then strips the `+`.
 - **`delivered`/`read` do NOT stop voice escalation** — only conversion does. The attempt's terminal WhatsApp state is `sent`; `delivered`/`read` live only on the message ledger.
 - **`variableOrder` has no default by design.** Adding a fallback silently sends a 6-param classic payload at a 4-param `coupon_link` template.
+- **Three layouts, and two of them collide on count.** `classic` (6), `coupon_link` (4), `rakhi_offer` (4 — tiered Buy 1/2/3 festive ladder, no `discount_code`). `coupon_link` `{{3}}` is `store_name`; `rakhi_offer` `{{3}}` is `cart_total`. Meta validates count only, so a layout/template mismatch *between those two* sends wrong wording with no error — and `sendTestWhatsAppAdmin` can't detect it either. Offer arithmetic + the settings preview renderer live in the same pure module (`recovery-templates.ts`) precisely so the preview can't drift from the send.
 - **`sender_id` is stored, validated, and shown in the UI but never sent** — `client.ts` reads it into the type and ignores it.
 - **`template_id` is not an id** — it's the template *name* string.
 - **Dead columns:** `20260704000000` creates `first_channel` and `escalation_gap_minutes`; `20260711000000` **drops both**. Reading only the first migration gives you a channel-ordering model that no longer exists.

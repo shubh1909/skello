@@ -2,8 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeftIcon } from "lucide-react";
 
+import { ErrorCard } from "@/components/app/error-card";
+import { SectionLabel } from "@/components/app/section-label";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { OutcomePoliciesEditor } from "@/components/admin/outcome-policies-editor";
 import { getOrganisationAdmin } from "@/actions/admin/organisations";
 import { listOutcomePolicies } from "@/actions/admin/outcome-policies";
@@ -29,16 +30,16 @@ export default async function AdminOrganisationOutcomesPage({
   if (!orgRes.success) {
     if (orgRes.error === "Organisation not found") notFound();
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {orgRes.error}
-      </Card>
+      </ErrorCard>
     );
   }
   if (!policiesRes.success) {
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {policiesRes.error}
-      </Card>
+      </ErrorCard>
     );
   }
 
@@ -58,9 +59,9 @@ export default async function AdminOrganisationOutcomesPage({
       </div>
 
       <header className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+        <SectionLabel as="p">
           {org.name}
-        </p>
+        </SectionLabel>
         <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
           Call outcomes
         </h1>

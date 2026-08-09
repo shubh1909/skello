@@ -11,6 +11,8 @@ import {
   reorderOutcomePolicies,
   updateOutcomePolicy,
 } from "@/actions/admin/outcome-policies";
+import { DataTableHead } from "@/components/app/data-table";
+import { SectionLabel } from "@/components/app/section-label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -132,16 +134,14 @@ export function OutcomePoliciesEditor({ organisationId, policies }: Props) {
 
       <div className="overflow-x-auto rounded-lg border border-border/60">
         <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-border/60 bg-muted/30 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              <th className="px-3 py-2 font-medium">Priority</th>
-              <th className="px-3 py-2 font-medium">Outcome key</th>
-              <th className="px-3 py-2 font-medium">Label</th>
-              <th className="px-3 py-2 font-medium">Action</th>
-              <th className="px-3 py-2 text-center font-medium">Counts as success</th>
-              <th className="px-3 py-2 text-right font-medium">&nbsp;</th>
-            </tr>
-          </thead>
+          <DataTableHead>
+            <th className="px-3 py-2 font-medium">Priority</th>
+            <th className="px-3 py-2 font-medium">Outcome key</th>
+            <th className="px-3 py-2 font-medium">Label</th>
+            <th className="px-3 py-2 font-medium">Action</th>
+            <th className="px-3 py-2 text-center font-medium">Counts as success</th>
+            <th className="px-3 py-2 text-right font-medium">&nbsp;</th>
+          </DataTableHead>
           <tbody className="divide-y divide-border/60">
             {policies.map((p) => {
               const thisViewRank = p.is_fallback ? null : ++viewRank;
@@ -419,9 +419,9 @@ function AddOutcomeForm({ organisationId }: { organisationId: string }) {
       onSubmit={onAdd}
       className="grid gap-3 rounded-lg border border-border/60 bg-muted/20 p-4"
     >
-      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+      <SectionLabel as="p">
         Add an outcome
-      </p>
+      </SectionLabel>
       <div className="grid gap-3 md:grid-cols-2">
         <div className="grid gap-1.5">
           <Label htmlFor="new-outcome-key">Outcome key (what the agent emits)</Label>
@@ -500,7 +500,7 @@ function AgentLabelsPanel({ policies }: { policies: OutcomePolicy[] }) {
   }
 
   return (
-    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+    <div className="rounded-lg border border-warning/30 bg-warning-muted p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-1">
           <p className="text-sm font-medium">Keep your voice agent in sync</p>

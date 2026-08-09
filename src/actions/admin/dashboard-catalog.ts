@@ -1,5 +1,6 @@
 "use server";
 
+import { humaniseFieldKey } from "@/lib/format/keys";
 import { z } from "zod";
 
 import { requireAdmin } from "@/lib/auth/admin";
@@ -265,7 +266,7 @@ export async function getDashboardSourceCatalog(
       f.source_column === "column"
         ? `column:${f.key_path}`
         : `${f.source_column}:${f.category ?? ""}:${f.key_path}`;
-    const label = f.label ?? humanise(f.key_path);
+    const label = f.label ?? humaniseFieldKey(f.key_path);
     const enumOpts = f.enum_options ?? undefined;
     const column: SourceCatalogColumn = {
       key:
@@ -324,9 +325,3 @@ export async function getDashboardSourceCatalog(
   return ok(catalog);
 }
 
-function humanise(key: string): string {
-  return key
-    .split("_")
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(" ");
-}

@@ -1,3 +1,7 @@
+import {
+  DataTableCard,
+  DataTableHead,
+} from "@/components/app/data-table";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -75,15 +79,13 @@ export function TableSkeleton({
     <Card className={cn("overflow-hidden p-0", className)}>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-border/60 bg-muted/30">
-            <tr>
-              {Array.from({ length: columns }).map((_, i) => (
-                <th key={i} className="px-4 py-4">
-                  <Skeleton className="h-3 w-20" />
-                </th>
-              ))}
-            </tr>
-          </thead>
+          <DataTableHead>
+            {Array.from({ length: columns }).map((_, i) => (
+              <th key={i} className="px-4 py-4">
+                <Skeleton className="h-3 w-20" />
+              </th>
+            ))}
+          </DataTableHead>
           <tbody className="divide-y divide-border/60">
             {Array.from({ length: rows }).map((_, r) => (
               <tr key={r}>
@@ -113,7 +115,7 @@ export function TableSkeleton({
 /** Vertical stack of items (used for /reminders). */
 export function ListSkeleton({ rows = 6 }: { rows?: number }) {
   return (
-    <Card className="overflow-hidden p-0">
+    <DataTableCard>
       <ul className="divide-y divide-border/60">
         {Array.from({ length: rows }).map((_, i) => (
           <li
@@ -134,7 +136,7 @@ export function ListSkeleton({ rows = 6 }: { rows?: number }) {
           </li>
         ))}
       </ul>
-    </Card>
+    </DataTableCard>
   );
 }
 

@@ -39,7 +39,7 @@ export function HorizontalBarList({
               </span>
               <div className="h-2 overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-primary/70 to-primary"
+                  className="h-full rounded-full bg-gradient-to-r from-chart-1/70 to-chart-1"
                   style={{ width: `${pct}%` }}
                 />
               </div>

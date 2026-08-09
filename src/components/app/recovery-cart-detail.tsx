@@ -1,37 +1,39 @@
 "use client";
 
 import * as React from "react";
-import { InfoIcon, Loader2Icon } from "lucide-react";
+import { Loader2Icon } from "lucide-react";
 
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
   AttemptStatusBadge,
-  CallStatusBadge,
   CartOutcomeBadge,
   WhatsAppSentBadge,
 } from "@/components/app/recovery-badges";
+import { CallSplitView } from "@/components/app/call-detail";
+import {
+  DescriptionList,
+  DetailPanel,
+  DetailSheetPanel,
+  DetailSheetShell,
+  DetailTimeline,
+  type TimelineEvent,
+} from "@/components/app/detail-sheet";
 import {
   WhatsAppClickStep,
   WhatsAppMessageTimeline,
 } from "@/components/app/whatsapp-timeline";
 import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import {
   getRecoveryCallsForAttempt,
   getRecoveryMessagesForAttempt,
 } from "@/actions/shopify-recovery";
+import { useClientNow } from "@/hooks/use-client-now";
 import {
   formatDateTime,
-  formatDuration,
   formatMoney,
   productsSummary,
 } from "@/lib/format/recovery";
@@ -41,68 +43,34 @@ import type {
   RecoveryMessageRow,
 } from "@/types/shopify";
 
-function Field({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: React.ReactNode;
-  // Fuller explanation on hover — used to disambiguate the several timestamps
-  // (checkout time vs our receipt time vs order time) that otherwise look alike.
-  hint?: string;
-}) {
-  if (value === null || value === undefined || value === "") return null;
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="inline-flex items-center gap-1 text-xs uppercase tracking-wider text-muted-foreground">
-        {label}
-        {hint ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label={`About ${label}`}
-                  className="inline-flex cursor-help text-muted-foreground/60 hover:text-foreground"
-                />
-              }
-            >
-              <InfoIcon className="size-3" />
-            </TooltipTrigger>
-            {/* max-w-xs on TooltipContent wraps the text to a readable column
-                instead of the browser's full-width native title. */}
-            <TooltipContent className="max-w-[16rem] leading-snug">
-              {hint}
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
-      </span>
-      <span className="text-sm">{value}</span>
-    </div>
-  );
-}
-
-// Cart-level detail drawer. Mirrors the call-history drawer but keyed to one
-// abandoned cart (recovery attempt): its shopper + cart + offer, plus the full
-// call history for that cart. Clicking a call opens the per-call drawer.
+/**
+ * Cart-level detail drawer — one abandoned cart (recovery attempt): its shopper,
+ * cart and offer, its lifecycle, and the calls and messages we sent.
+ *
+ * Clicking a call used to open a SECOND drawer on top of this one, which hid
+ * the cart you opened it from and made comparing two calls a
+ * close-and-reopen. The Calls tab is now the same rail + pane the lead sheet
+ * uses, at the same `lg` width.
+ */
 export function RecoveryCartDetail({
   cart,
   open,
   onOpenChange,
-  onOpenCall,
 }: {
   cart: RecoveryAttemptRow | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onOpenCall: (call: RecoveryCallRow) => void;
 }) {
   const [calls, setCalls] = React.useState<RecoveryCallRow[] | null>(null);
   const [messages, setMessages] = React.useState<RecoveryMessageRow[] | null>(
     null,
   );
+  const [selectedCallId, setSelectedCallId] = React.useState<string | null>(
+    null,
+  );
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const now = useClientNow();
 
   const cartId = cart?.id ?? null;
   React.useEffect(() => {
@@ -113,6 +81,7 @@ export function RecoveryCartDetail({
       setError(null);
       setCalls(null);
       setMessages(null);
+      setSelectedCallId(null);
       const [callsRes, msgRes] = await Promise.all([
         getRecoveryCallsForAttempt(cartId),
         getRecoveryMessagesForAttempt(cartId),
@@ -124,6 +93,8 @@ export function RecoveryCartDetail({
         return;
       }
       setCalls(callsRes.data);
+      // Preselect the most recent call so the pane is never empty on arrival.
+      setSelectedCallId(callsRes.data[0]?.id ?? null);
       if (msgRes.success) setMessages(msgRes.data);
     })();
     return () => {
@@ -132,166 +103,177 @@ export function RecoveryCartDetail({
   }, [open, cartId]);
 
   if (!cart) return null;
+
   const shopper = cart.customer_name ?? cart.email ?? "Unknown shopper";
   const products = productsSummary(cart.cart_items);
 
+  // The lifecycle, in order. Labels are rewritten to say WHOSE clock each one
+  // is on — that ambiguity is why the old grid needed a tooltip per row.
+  const timeline: TimelineEvent[] = [
+    {
+      label: "Abandoned at checkout",
+      at: cart.abandoned_at ?? cart.created_at,
+      display: formatDateTime(cart.abandoned_at ?? cart.created_at),
+    },
+    {
+      label: "Webhook received",
+      at: cart.created_at,
+      display: formatDateTime(cart.created_at),
+    },
+    {
+      label: "WhatsApp sent",
+      at: cart.whatsapp_sent_at,
+      display: formatDateTime(cart.whatsapp_sent_at),
+    },
+    {
+      label: "Link clicked",
+      at: cart.clicked_at,
+      display: formatDateTime(cart.clicked_at),
+    },
+    {
+      label: "Order matched",
+      at: cart.converted_at,
+      display: formatDateTime(cart.converted_at),
+      // Kept as a hint because it IS genuinely non-obvious: a phone match will
+      // never reconcile with Shopify's own "recovered" figure, and someone
+      // comparing the two dashboards needs to know why.
+      hint:
+        cart.converted_at && cart.conversion_match
+          ? cart.conversion_match === "token"
+            ? "Matched by checkout/cart token — Shopify attributes this the same way, so it shows as recovered there too."
+            : "Matched by phone; the order carried no tokens (GoKwik / custom checkout). Shopify shows it as a plain order, never 'recovered'."
+          : undefined,
+    },
+    {
+      label: "Next call",
+      at: cart.status === "pending" ? cart.next_attempt_at : null,
+      display: formatDateTime(cart.next_attempt_at),
+      upcoming: true,
+    },
+  ];
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-md">
-        <SheetHeader className="gap-1 border-b">
-          <SheetTitle>{shopper}</SheetTitle>
-          <SheetDescription className="font-mono tabular-nums">
-            {cart.phone ?? "no phone"}
-          </SheetDescription>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <CartOutcomeBadge
-              convertedAt={cart.converted_at}
-              outcome={cart.recovery_outcome}
-            />
-            <AttemptStatusBadge status={cart.status} />
-            {cart.status === "skipped" && cart.skip_reason ? (
-              <span className="text-[11px] text-muted-foreground">
-                {cart.skip_reason.replace(/_/g, " ")}
-              </span>
-            ) : null}
-            <WhatsAppSentBadge
-              status={cart.whatsapp_status}
-              reason={cart.whatsapp_skip_reason}
-            />
-          </div>
-        </SheetHeader>
-
-        <div className="flex flex-col gap-5 p-4">
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Email" value={cart.email} />
-            <Field
-              label="Cart value"
-              value={formatMoney(cart.cart_total, cart.currency)}
-            />
-            <Field label="Products" value={products.full || "—"} />
-            <Field label="Offer" value={cart.offer_label} />
-            <Field label="Discount code" value={cart.offer_code} />
-            {/* Snapshotted per attempt — what the agent was told to SAY on this
-                call, which is not necessarily today's setting. */}
-            {cart.offer_code_spoken ? (
-              <Field label="Agent says" value={cart.offer_code_spoken} />
-            ) : null}
-            <Field
-              label="Attempts"
-              value={`${cart.attempt}/${cart.max_attempts}`}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 border-t pt-4">
-            <Field
-              label="Checkout started"
-              hint="When the shopper reached checkout in Shopify. This is Shopify's checkout timestamp — it should match the store."
-              value={formatDateTime(cart.abandoned_at ?? cart.created_at)}
-            />
-            <Field
-              label="Received by us"
-              hint="When our system received the checkout webhook — a few moments after the checkout. This is our receipt time, not a Shopify time."
-              value={formatDateTime(cart.created_at)}
-            />
-            {cart.status === "pending" ? (
-              <Field
-                label="Next call"
-                hint="When the next recovery call is scheduled (in the store's timezone)."
-                value={formatDateTime(cart.next_attempt_at)}
-              />
-            ) : null}
-            <Field
-              label="WhatsApp sent"
-              hint="When we handed the WhatsApp message to the provider."
-              value={formatDateTime(cart.whatsapp_sent_at)}
-            />
-            <Field
-              label="Marked recovered"
-              hint="When we recorded the matching order (≈ the order time in Shopify)."
-              value={formatDateTime(cart.converted_at)}
-            />
-            {cart.converted_at && cart.conversion_match ? (
-              <Field
-                label="Matched by"
-                hint={
-                  cart.conversion_match === "token"
-                    ? "Matched to the order by checkout/cart token — Shopify attributes this the same way, so it also shows as recovered in Shopify."
-                    : "Matched by phone because the order carried no tokens (GoKwik / custom checkout). Shopify can't attribute these — it shows a plain order, never 'recovered'."
-                }
-                value={
-                  cart.conversion_match === "token"
-                    ? "Order token · Shopify agrees"
-                    : "Phone · GoKwik-style"
-                }
-              />
-            ) : null}
-          </div>
-
-          <div className="flex flex-col gap-2 border-t pt-4">
-            <span className="text-xs uppercase tracking-wider text-muted-foreground">
-              Call history
+    <DetailSheetShell
+      open={open}
+      onOpenChange={onOpenChange}
+      // `lg`, matching the lead sheet: the Calls tab is a two-pane rail and
+      // detail, which does not fit in `md`.
+      width="lg"
+      title={shopper}
+      description="Abandoned cart details"
+      subtitle={
+        <span className="font-mono tabular-nums">
+          {cart.phone ?? "no phone"}
+        </span>
+      }
+      pills={
+        <>
+          <CartOutcomeBadge
+            convertedAt={cart.converted_at}
+            outcome={cart.recovery_outcome}
+          />
+          <AttemptStatusBadge status={cart.status} />
+          {cart.status === "skipped" && cart.skip_reason ? (
+            <span className="text-[11px] text-muted-foreground">
+              {cart.skip_reason.replace(/_/g, " ")}
             </span>
-            {loading ? (
-              <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-                <Loader2Icon className="size-4 animate-spin" />
-                Loading calls…
-              </div>
-            ) : error ? (
-              <p className="text-sm text-destructive">{error}</p>
-            ) : calls && calls.length > 0 ? (
-              <ul className="flex flex-col gap-2">
-                {calls.map((c) => (
-                  <li key={c.id}>
-                    <button
-                      type="button"
-                      onClick={() => onOpenCall(c)}
-                      className="flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-card px-3 py-2 text-left transition-colors hover:bg-muted/40"
-                    >
-                      <div className="flex min-w-0 flex-col">
-                        <span className="text-sm">
-                          {formatDateTime(c.started_at ?? c.created_at)}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {formatDuration(c.duration_seconds)}
-                          {c.call_outcome ? ` · ${c.call_outcome}` : ""}
-                        </span>
-                      </div>
-                      <CallStatusBadge status={c.status} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No calls placed for this cart yet.
-              </p>
-            )}
-          </div>
+          ) : null}
+          <WhatsAppSentBadge
+            status={cart.whatsapp_status}
+            reason={cart.whatsapp_skip_reason}
+          />
+        </>
+      }
+      tabs={[
+        { value: "summary", label: "Summary" },
+        { value: "calls", label: "Calls", count: calls?.length },
+        { value: "whatsapp", label: "WhatsApp", count: messages?.length },
+      ]}
+    >
+      <DetailSheetPanel value="summary">
+        <DetailPanel title="Cart">
+          {/* omitEmpty is safe here: every one of these is a fact about the
+              cart, and an absent offer is genuinely nothing to report. The
+              items array is filtered BEFORE layout, so the columns can't
+              reshuffle the way the old null-returning Field made them. */}
+          <DescriptionList
+            omitEmpty
+            columns={2}
+            items={[
+              { label: "Email", value: cart.email },
+              {
+                label: "Cart value",
+                value: formatMoney(cart.cart_total, cart.currency),
+              },
+              { label: "Offer", value: cart.offer_label },
+              { label: "Discount code", value: cart.offer_code, mono: true },
+              // Snapshotted per attempt — what the agent was told to SAY on
+              // this call, not necessarily today's setting.
+              { label: "Agent says", value: cart.offer_code_spoken },
+              {
+                label: "Attempts",
+                value: `${cart.attempt}/${cart.max_attempts}`,
+              },
+              { label: "Products", value: products.full, span: "full" },
+            ]}
+          />
+        </DetailPanel>
 
-          <div className="flex flex-col gap-2 border-t pt-4">
-            <span className="text-xs uppercase tracking-wider text-muted-foreground">
-              WhatsApp
-            </span>
-            {loading ? (
-              <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-                <Loader2Icon className="size-4 animate-spin" />
-                Loading messages…
-              </div>
-            ) : messages && messages.length > 0 ? (
-              <div className="flex flex-col gap-2">
-                {messages.map((m) => (
-                  <WhatsAppMessageTimeline key={m.id} message={m} />
-                ))}
-                <WhatsAppClickStep clickedAt={cart.clicked_at} />
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No WhatsApp messages for this cart yet.
-              </p>
-            )}
-          </div>
-        </div>
-      </SheetContent>
-    </Sheet>
+        <DetailPanel title="Lifecycle">
+          <DetailTimeline events={timeline} />
+        </DetailPanel>
+
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      </DetailSheetPanel>
+
+      {/* `fill` is required: the split view owns its own scrolling on each
+          side, and without it the panel scrolls too — two nested scrollbars
+          and a rail that drifts out of view. */}
+      <DetailSheetPanel value="calls" fill>
+        <CallSplitView
+          calls={calls}
+          selectedId={selectedCallId}
+          onSelect={setSelectedCallId}
+          counterpartyName={cart.customer_name}
+          now={now}
+          emptyLabel="No calls placed for this cart yet."
+        />
+      </DetailSheetPanel>
+
+      <DetailSheetPanel value="whatsapp">
+        {loading ? (
+          <LoadingRow label="Loading messages…" />
+        ) : messages && messages.length > 0 ? (
+          <>
+            {messages.map((m) => (
+              <WhatsAppMessageTimeline key={m.id} message={m} />
+            ))}
+            {/* Cart-level, so it sits after the messages rather than inside
+                one: the short link belongs to the ATTEMPT, and when retries
+                sent several messages we can't say which was clicked. */}
+            <WhatsAppClickStep clickedAt={cart.clicked_at} />
+          </>
+        ) : (
+          <Empty>
+            <EmptyHeader>
+              <EmptyTitle>No WhatsApp messages</EmptyTitle>
+              <EmptyDescription>
+                Nothing has been sent to this cart yet. Messages appear here once
+                the recovery run picks it up.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+      </DetailSheetPanel>
+    </DetailSheetShell>
+  );
+}
+
+function LoadingRow({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+      <Loader2Icon className="size-4 animate-spin" />
+      {label}
+    </div>
   );
 }

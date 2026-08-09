@@ -1,16 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import {
-  ArrowLeftIcon,
-  BarChart3Icon,
-  DownloadIcon,
-  ListIcon,
-} from "lucide-react";
+import { ArrowLeftIcon, BarChart3Icon, ListIcon } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
+import { ErrorCard } from "@/components/app/error-card";
+import { NavTabs } from "@/components/app/nav-tabs";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { CampaignCallsFilterBar } from "@/components/app/campaign-calls-filter-bar";
+import { CampaignDetailHeader } from "@/components/app/campaign-detail-header";
 import { CampaignPerformance } from "@/components/app/campaign-performance";
 import { ConversationsTable } from "@/components/app/conversations-table";
 import {
@@ -20,34 +16,11 @@ import {
 } from "@/actions/campaigns";
 import { listConversations } from "@/actions/calls";
 import { requireSession } from "@/lib/auth/session";
-import { cn } from "@/lib/utils";
 import type { CallStatus } from "@/types/call";
-import type { CampaignStatus } from "@/types/campaign";
 
 export const metadata = { title: "Campaign · Skelo" };
 
 const INITIAL_PAGE_SIZE = 50;
-
-const STATUS_LABEL: Record<CampaignStatus, string> = {
-  draft: "Draft",
-  scheduled: "Scheduled",
-  in_progress: "Running",
-  paused: "Paused",
-  stopped: "Stopped",
-  completed: "Completed",
-  failed: "Failed",
-};
-
-const STATUS_CLASS: Record<CampaignStatus, string> = {
-  draft: "bg-muted text-muted-foreground",
-  scheduled: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300",
-  in_progress:
-    "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  paused: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
-  stopped: "bg-muted text-foreground",
-  completed: "bg-muted text-foreground",
-  failed: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
-};
 
 type Tab = "performance" | "calls";
 
@@ -103,9 +76,9 @@ export default async function CampaignDetailPage({
   if (!campaignResult.success) {
     if (campaignResult.error === "Campaign not found") notFound();
     return (
-      <Card className="border-destructive/40 p-6 text-sm text-destructive">
+      <ErrorCard>
         {campaignResult.error}
-      </Card>
+      </ErrorCard>
     );
   }
   const campaign = campaignResult.data;
@@ -149,59 +122,43 @@ export default async function CampaignDetailPage({
         </Button>
       </div>
 
-      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2">
-            <h1 className="font-heading text-2xl font-semibold leading-tight tracking-tight md:text-3xl">
-              {campaign.name}
-            </h1>
-            <Badge className={STATUS_CLASS[campaign.status]}>
-              {STATUS_LABEL[campaign.status]}
-            </Badge>
-          </div>
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            {campaign.file_name ?? "Campaign"} ·{" "}
-            {campaign.total_contacts.toLocaleString()} contacts
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          render={
-            <a href={`/api/campaigns/${campaign.id}/export`} download />
-          }
-        >
-          <DownloadIcon /> Export calls (CSV)
-        </Button>
-      </header>
+      {/* Client component: it subscribes to campaign realtime, so this page
+          follows a running campaign instead of being a snapshot you refresh. */}
+      <CampaignDetailHeader
+        campaign={campaign}
+        organisationId={session.organisation.id}
+      />
 
-      {/* Tabs */}
-      <nav className="flex items-center gap-1 border-b border-border/60">
-        <TabLink
-          href={`/campaigns/${campaign.id}?tab=performance`}
-          active={tab === "performance"}
-          icon={<BarChart3Icon className="size-4" />}
-          label="Performance"
-        />
-        <TabLink
-          href={`/campaigns/${campaign.id}?tab=calls`}
-          active={tab === "calls"}
-          icon={<ListIcon className="size-4" />}
-          label="Calls"
-        />
-      </nav>
+      <NavTabs
+        aria-label="Campaign view"
+        items={[
+          {
+            href: `/campaigns/${campaign.id}?tab=performance`,
+            label: "Performance",
+            active: tab === "performance",
+            icon: <BarChart3Icon />,
+          },
+          {
+            href: `/campaigns/${campaign.id}?tab=calls`,
+            label: "Calls",
+            active: tab === "calls",
+            icon: <ListIcon />,
+          },
+        ]}
+      />
 
       {tab === "performance" ? (
         !statsResult || !statsResult.success ? (
-          <Card className="border-destructive/40 p-6 text-sm text-destructive">
+          <ErrorCard>
             {statsResult?.error ?? "Could not load performance data."}
-          </Card>
+          </ErrorCard>
         ) : (
           <CampaignPerformance stats={statsResult.data} />
         )
       ) : !callsResult || !callsResult.success ? (
-        <Card className="border-destructive/40 p-6 text-sm text-destructive">
+        <ErrorCard>
           {callsResult?.error ?? "Could not load calls."}
-        </Card>
+        </ErrorCard>
       ) : (
         <div className="flex flex-col gap-4">
           <CampaignCallsFilterBar
@@ -227,29 +184,3 @@ export default async function CampaignDetailPage({
   );
 }
 
-function TabLink({
-  href,
-  active,
-  icon,
-  label,
-}: {
-  href: string;
-  active: boolean;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <Link
-      href={href}
-      className={cn(
-        "-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-        active
-          ? "border-foreground text-foreground"
-          : "border-transparent text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {icon}
-      {label}
-    </Link>
-  );
-}

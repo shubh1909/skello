@@ -1,6 +1,5 @@
-import { SearchIcon } from "lucide-react";
-
-import { Input } from "@/components/ui/input";
+import { Breadcrumbs } from "@/components/app/breadcrumbs";
+import { CommandPalette } from "@/components/app/command-palette";
 import { NotificationsBell } from "@/components/app/notifications-bell";
 import { UserMenu } from "@/components/app/user-menu";
 import { listReminders } from "@/actions/reminders";
@@ -10,10 +9,12 @@ import type { Reminder } from "@/types/reminder";
 export async function Topbar({
   email,
   organisationId,
+  orgSlug,
   leftSlot,
 }: {
   email: string;
   organisationId: string;
+  orgSlug: string;
   leftSlot?: React.ReactNode;
 }) {
   const [reminders, isAdmin] = await Promise.all([
@@ -24,15 +25,14 @@ export async function Topbar({
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/60 bg-background/80 px-4 backdrop-blur-xl md:px-6">
       {leftSlot}
-      <div className="relative hidden w-full max-w-sm md:block">
-        <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          type="search"
-          placeholder="Search leads, reminders, interests…"
-          className="h-9 pl-8"
-        />
+      <Breadcrumbs />
+      {/* The dead `<Input>` that used to sit here promised "Search leads,
+          reminders, interests…" and had no handler, no state and no results.
+          It is now the ⌘K palette trigger. */}
+      <div className="ml-auto flex items-center md:ml-6 md:mr-auto md:w-full md:max-w-sm">
+        <CommandPalette orgSlug={orgSlug} />
       </div>
-      <div className="ml-auto flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5">
         <NotificationsBell
           reminders={reminders}
           organisationId={organisationId}

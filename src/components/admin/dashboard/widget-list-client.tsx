@@ -18,6 +18,14 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -197,25 +205,27 @@ export function WidgetListClient({
       </div>
 
       {widgets.length === 0 ? (
-        <Card className="items-center gap-3 py-16 text-center">
-          <span className="grid size-14 place-items-center rounded-full bg-muted">
-            <GaugeIcon className="size-6 text-muted-foreground" />
-          </span>
-          <p className="text-base font-medium">No custom widgets yet</p>
-          <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
-            Until you add a widget, this workspace sees the default Skelo
-            dashboard. Pick a data source — leads, calls, or campaigns — and
-            decide how it should be visualised.
-          </p>
-          <div className="mt-2 flex items-center gap-2">
+        <Empty className="border py-16">
+          <EmptyHeader>
+            <EmptyMedia variant="icon" className="size-12 rounded-full">
+              <GaugeIcon className="size-5" />
+            </EmptyMedia>
+            <EmptyTitle>No custom widgets yet</EmptyTitle>
+            <EmptyDescription>
+              Until you add a widget, this workspace sees the default Skelo
+              dashboard. Pick a data source — leads, calls, or campaigns — and
+              decide how it should be visualised.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent className="flex-row justify-center">
             <Button onClick={openCreate}>
               <PlusIcon /> Add the first widget
             </Button>
             <Button variant="outline" onClick={openCreateSql}>
               <Code2Icon /> Use SQL
             </Button>
-          </div>
-        </Card>
+          </EmptyContent>
+        </Empty>
       ) : (
         <ul className="flex flex-col gap-3">
           {widgets.map((widget, idx) => {

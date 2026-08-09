@@ -1,4 +1,4 @@
-import { Card } from "@/components/ui/card";
+import { ErrorCard } from "@/components/app/error-card";
 import { CallExportDialog } from "@/components/app/call-export-dialog";
 import {
   ConversationsFilterBar,
@@ -135,9 +135,9 @@ export default async function ConversationsPage({ searchParams }: PageProps) {
       <ConversationsFilterBar filters={filters} agents={agents} />
 
       {!callsResult.success ? (
-        <Card className="border-destructive/40 p-6 text-sm text-destructive">
+        <ErrorCard>
           {callsResult.error}
-        </Card>
+        </ErrorCard>
       ) : (
         <ConversationsTable
           key={tableKey}

@@ -1,0 +1,1311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ManyChat Teardown — Full Research Findings</title>
+<style>
+  :root {
+    --bg: #EBEEEF; --surface: #FFFFFF; --surface-2: #F4F7F7; --line: #DBE1E3;
+    --line-strong: #C4CDCF; --ink: #14201C; --muted: #56666A; --faint: #869599;
+    --accent: #0E877A; --accent-ink: #0B6E63; --accent-soft: #DCF1EE;
+    --rival: #6E7C88; --rival-soft: #E7EAED;
+    --good: #0E877A; --good-soft: #DCF1EE;
+    --warn: #B67413; --warn-soft: #F6EBD6;
+    --crit: #BB4936; --crit-soft: #F7E3DE;
+    --shadow: 0 1px 2px rgba(20,32,28,.05), 0 8px 24px rgba(20,32,28,.05);
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0E1417; --surface: #161D21; --surface-2: #1B242A; --line: #28333A;
+      --line-strong: #364550; --ink: #E7ECEE; --muted: #9EAAB0; --faint: #6C7A81;
+      --accent: #2ED3BE; --accent-ink: #57E0CE; --accent-soft: rgba(46,211,190,.12);
+      --rival: #8A9AA5; --rival-soft: rgba(138,154,165,.14);
+      --good: #2ED3BE; --good-soft: rgba(46,211,190,.12);
+      --warn: #E3AC4E; --warn-soft: rgba(227,172,78,.13);
+      --crit: #E7795F; --crit-soft: rgba(231,121,95,.14);
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.32);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #EBEEEF; --surface: #FFFFFF; --surface-2: #F4F7F7; --line: #DBE1E3;
+    --line-strong: #C4CDCF; --ink: #14201C; --muted: #56666A; --faint: #869599;
+    --accent: #0E877A; --accent-ink: #0B6E63; --accent-soft: #DCF1EE;
+    --rival: #6E7C88; --rival-soft: #E7EAED; --good: #0E877A; --good-soft: #DCF1EE;
+    --warn: #B67413; --warn-soft: #F6EBD6; --crit: #BB4936; --crit-soft: #F7E3DE;
+    --shadow: 0 1px 2px rgba(20,32,28,.05), 0 8px 24px rgba(20,32,28,.05);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0E1417; --surface: #161D21; --surface-2: #1B242A; --line: #28333A;
+    --line-strong: #364550; --ink: #E7ECEE; --muted: #9EAAB0; --faint: #6C7A81;
+    --accent: #2ED3BE; --accent-ink: #57E0CE; --accent-soft: rgba(46,211,190,.12);
+    --rival: #8A9AA5; --rival-soft: rgba(138,154,165,.14);
+    --good: #2ED3BE; --good-soft: rgba(46,211,190,.12);
+    --warn: #E3AC4E; --warn-soft: rgba(227,172,78,.13);
+    --crit: #E7795F; --crit-soft: rgba(231,121,95,.14);
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.32);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans);
+    font-size: 16px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: clamp(20px, 5vw, 52px) clamp(18px, 5vw, 40px) 90px; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--accent-ink); font-weight: 600;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .eyebrow::before { content: ""; width: 18px; height: 1.5px; background: var(--accent); display: inline-block; }
+  h1 { font-size: clamp(28px, 5vw, 46px); line-height: 1.04; letter-spacing: -.025em; font-weight: 800; margin: 16px 0 0; text-wrap: balance; }
+  h2 { font-size: clamp(20px, 2.8vw, 26px); line-height: 1.12; letter-spacing: -.02em; font-weight: 750; margin: 0; text-wrap: balance; }
+  h3 { font-size: 15.5px; letter-spacing: -.01em; font-weight: 700; margin: 0; }
+  p { margin: 0 0 14px; max-width: 74ch; }
+  a { color: var(--accent-ink); text-underline-offset: 2px; }
+  .lead { font-size: clamp(16px, 2vw, 18px); line-height: 1.55; color: var(--muted); max-width: 72ch; }
+
+  /* theme toggle */
+  .toolbar { position: sticky; top: 0; z-index: 20; display: flex; justify-content: flex-end; gap: 8px;
+    padding: 10px 0; background: linear-gradient(var(--bg), color-mix(in srgb, var(--bg) 80%, transparent)); backdrop-filter: blur(4px); }
+  .tbtn { font-family: var(--mono); font-size: 11px; letter-spacing: .05em; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+  .tbtn:hover { border-color: var(--line-strong); color: var(--ink); }
+
+  .mast { border-bottom: 1px solid var(--line); padding-bottom: 28px; margin-bottom: 8px; }
+  .flow { display: inline-flex; align-items: baseline; gap: 12px; font-family: var(--mono); font-weight: 700; font-size: 13px; }
+  .flow .rival { color: var(--rival); } .flow .arrow { color: var(--faint); } .flow .skelo { color: var(--accent-ink); }
+  .metastrip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+  .chip { font-family: var(--mono); font-size: 11px; letter-spacing: .04em; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--line); padding: 5px 10px; border-radius: 999px; display: inline-flex; gap: 6px; align-items: center; }
+  .chip b { color: var(--ink); font-weight: 700; }
+  .chip.good b { color: var(--good); } .chip.crit b { color: var(--crit); }
+
+  /* jump nav */
+  nav.jump { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 22px; }
+  nav.jump a { font-family: var(--mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); text-decoration: none; border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; }
+  nav.jump a:hover { color: var(--ink); border-color: var(--line-strong); background: var(--surface); }
+
+  section { margin-top: 50px; scroll-margin-top: 60px; }
+  .sec-head { margin-bottom: 20px; }
+  .sec-head .eyebrow { margin-bottom: 10px; }
+
+  .verdict { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 12px; padding: clamp(18px, 3vw, 26px); box-shadow: var(--shadow); margin-top: 28px; }
+  .verdict p:last-child { margin-bottom: 0; }
+
+  /* finding cards */
+  .finding { background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    padding: clamp(18px, 3vw, 24px); box-shadow: var(--shadow); margin-bottom: 16px; }
+  .finding.killed { border-left: 3px solid var(--crit); }
+  .finding.confirmed { border-left: 3px solid var(--good); }
+  .fhead { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+  .badge { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+    font-weight: 700; padding: 4px 9px; border-radius: 6px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .badge.ok { color: var(--good); background: var(--good-soft); }
+  .badge.no { color: var(--crit); background: var(--crit-soft); }
+  .badge.split { color: var(--warn); background: var(--warn-soft); }
+  .badge.conf { color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); }
+  .fclaim { font-size: 16px; line-height: 1.45; font-weight: 650; margin: 0 0 12px; letter-spacing: -.01em; }
+  .fclaim.dim { color: var(--muted); font-weight: 550; text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--crit) 40%, transparent); }
+  .evidence { font-size: 14px; line-height: 1.55; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; }
+  .evidence .lab { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); font-weight: 700; display: block; margin-bottom: 6px; }
+  .evidence b { color: var(--ink); font-weight: 650; }
+  .implication { margin-top: 12px; padding: 12px 14px; background: var(--accent-soft); border-radius: 9px;
+    font-size: 13.5px; line-height: 1.5; color: color-mix(in srgb, var(--accent-ink) 88%, var(--ink)); }
+  .implication .lab { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent-ink); font-weight: 700; margin-right: 6px; }
+  .srcline { margin-top: 12px; font-family: var(--mono); font-size: 11px; color: var(--faint); word-break: break-all; display: flex; flex-direction: column; gap: 3px; }
+  .srcline a { color: var(--muted); }
+
+  /* ledger table */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+  th, td { text-align: left; padding: 12px 15px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); font-weight: 600; background: var(--surface-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  td.dim { color: var(--muted); }
+  .num { font-variant-numeric: tabular-nums; font-family: var(--mono); }
+  .vote { font-family: var(--mono); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .vote.ok { color: var(--good); } .vote.no { color: var(--crit); } .vote.split { color: var(--warn); }
+  .res { font-family: var(--mono); font-size: 11px; font-weight: 700; }
+  .res.ok { color: var(--good); } .res.no { color: var(--crit); }
+
+  .note { border-radius: 10px; padding: 14px 16px; font-size: 14px; line-height: 1.55; display: flex; gap: 12px; margin-top: 14px; }
+  .note .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; flex: 0 0 auto; padding-top: 2px; }
+  .note.warn { background: var(--warn-soft); color: color-mix(in srgb, var(--warn) 82%, var(--ink)); }
+  .note.warn .k { color: var(--warn); }
+  .note.info { background: var(--accent-soft); color: color-mix(in srgb, var(--accent-ink) 88%, var(--ink)); }
+  .note.info .k { color: var(--accent-ink); }
+  .note b { color: var(--ink); }
+
+  .oq { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; counter-reset: q; }
+  .oq li { display: flex; gap: 14px; font-size: 14.5px; line-height: 1.5; color: var(--muted); }
+  .oq li::before { counter-increment: q; content: "Q" counter(q); font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--faint); flex: 0 0 auto; padding-top: 2px; }
+  .oq b { color: var(--ink); }
+
+  .quality { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; font-weight: 650; padding: 2px 7px; border-radius: 5px; }
+  .quality.primary { color: var(--good); background: var(--good-soft); }
+  .quality.secondary { color: var(--accent-ink); background: var(--accent-soft); }
+  .quality.blog { color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); }
+  .quality.forum { color: var(--warn); background: var(--warn-soft); }
+  .quality.unreliable { color: var(--crit); background: var(--crit-soft); }
+
+  .foot { margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--faint); font-size: 13px; }
+  .foot .eyebrow { color: var(--faint); margin-bottom: 12px; }
+  .foot .eyebrow::before { background: var(--faint); }
+  .subhd { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); font-weight: 600; margin: 0 0 12px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+  /* ===== Mockup section labels ===== */
+  .mock-label { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-top: 32px; }
+  .mock-label .n { font-family: var(--mono); font-size: 12px; color: var(--accent-ink); font-weight: 700; }
+  .mock-label .t { font-weight: 700; font-size: 15px; color: var(--ink); letter-spacing: -.01em; }
+  .mock-label .d { font-size: 13.5px; color: var(--muted); }
+
+  /* ===== Browser frame ===== */
+  .frame { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); margin-top: 12px; background: #fff; }
+  .frame-bar { display: flex; align-items: center; gap: 12px; padding: 9px 14px; background: #ECEBE8; border-bottom: 1px solid #E0DED9; }
+  .frame-dots { display: flex; gap: 6px; flex: 0 0 auto; }
+  .frame-dots i { width: 11px; height: 11px; border-radius: 50%; background: #CDCBC4; display: block; }
+  .frame-url { font-family: var(--mono); font-size: 11.5px; color: #847F76; background: #fff; border: 1px solid #E0DED9; border-radius: 7px; padding: 5px 11px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 430px; }
+  .frame-cap { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #A6A099; flex: 0 0 auto; }
+
+  /* ===== Skelo product surface (fixed light "Digital Showroom" look) ===== */
+  .skelo-app {
+    --s-bg: #F6F6F3; --s-panel: #FFFFFF; --s-panel-2: #FAFAF8; --s-border: #EAE8E3; --s-border-2: #DBD8D1;
+    --s-ink: #1B1917; --s-muted: #6E6962; --s-faint: #A6A099; --s-accent: #0E877A; --s-accent-ink: #0B6E63;
+    --s-accent-soft: #E4F3F0; --s-primary: #1B1917; --s-good: #15803D; --s-good-soft: #E3F5E8;
+    --s-warn: #B45309; --s-warn-soft: #FAEDD5; --s-hot: #C2410C; --s-hot-soft: #FAE6DB; --s-blue: #2563EB;
+    background: var(--s-bg); color: var(--s-ink); font-size: 14px; line-height: 1.5;
+  }
+  .skelo-app b { color: var(--s-ink); font-weight: 650; }
+  .sa-top { display: flex; align-items: center; gap: 14px; padding: 12px 18px; background: var(--s-panel); border-bottom: 1px solid var(--s-border); }
+  .sa-brand { display: flex; align-items: center; gap: 8px; font-weight: 750; letter-spacing: -.01em; font-size: 15px; }
+  .sa-logo { width: 22px; height: 22px; border-radius: 7px; background: var(--s-primary); color: #fff; display: grid; place-items: center; font-size: 13px; font-weight: 800; }
+  .sa-crumb { font-family: var(--mono); font-size: 11px; color: var(--s-faint); letter-spacing: .02em; }
+  .sa-org { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .sa-ava { width: 26px; height: 26px; border-radius: 50%; background: var(--s-accent-soft); color: var(--s-accent-ink); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+  .sa-pad { padding: 22px; }
+  .sa-card { background: var(--s-panel); border: 1px solid var(--s-border); border-radius: 14px; padding: 20px; }
+  .sa-h { font-size: 19px; font-weight: 750; letter-spacing: -.015em; margin: 0 0 4px; }
+  .sa-h.sm { font-size: 15px; }
+  .sa-sub { font-size: 13.5px; color: var(--s-muted); margin: 0; }
+  .sa-btn { font-family: var(--sans); font-size: 13px; font-weight: 600; border-radius: 9px; padding: 9px 15px; border: 1px solid transparent; cursor: default; display: inline-flex; align-items: center; gap: 7px; }
+  .sa-btn.primary { background: var(--s-primary); color: #fff; }
+  .sa-btn.accent { background: var(--s-accent); color: #fff; }
+  .sa-btn.ghost { background: var(--s-panel); color: var(--s-ink); border-color: var(--s-border-2); }
+  .sa-btn.lg { padding: 12px 18px; font-size: 14px; width: 100%; justify-content: center; }
+  .sa-pill { font-size: 11px; font-weight: 650; padding: 3px 9px; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .sa-pill.live { color: var(--s-good); background: var(--s-good-soft); }
+  .sa-pill.hot { color: var(--s-hot); background: var(--s-hot-soft); }
+  .sa-pill.win { color: var(--s-accent-ink); background: var(--s-accent-soft); }
+  .sa-pill.ai { color: var(--s-blue); background: #E7EEFD; }
+
+  /* Connect screen */
+  .sa-connect-grid { display: grid; gap: 16px; }
+  @media (min-width: 640px) { .sa-connect-grid { grid-template-columns: 1fr 1fr; align-items: start; } }
+  .sa-ig { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; font-size: 12px; color: #fff; background: linear-gradient(45deg, #F58529, #DD2A7B 45%, #8134AF 75%, #515BD4); padding: 5px 11px; border-radius: 999px; margin-bottom: 14px; }
+  .sa-req { display: flex; flex-direction: column; gap: 9px; margin: 16px 0; }
+  .sa-reqrow { font-size: 13px; color: var(--s-muted); }
+  .sa-reqrow.ok { color: var(--s-ink); }
+  .sa-fineprint { font-size: 11.5px; color: var(--s-faint); text-align: center; margin-top: 10px; }
+  .sa-connected { background: linear-gradient(180deg, var(--s-accent-soft), var(--s-panel) 62%); border-color: #CFE9E3; }
+  .sa-connected-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .sa-check { width: 30px; height: 30px; border-radius: 50%; background: var(--s-accent); color: #fff; display: grid; place-items: center; font-size: 15px; font-weight: 800; flex: 0 0 auto; }
+  .sa-setup { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  .sa-setup-row { font-size: 13px; color: var(--s-muted); display: flex; gap: 8px; align-items: center; }
+  .sa-tick { color: var(--s-accent); font-weight: 800; }
+  .sa-row-btns { display: flex; gap: 8px; }
+
+  /* Inbox */
+  .sa-inbox { display: grid; grid-template-columns: 1fr; }
+  @media (min-width: 840px) { .sa-inbox { grid-template-columns: 232px 1fr 252px; height: 540px; } }
+  .sa-threads { border-right: 1px solid var(--s-border); background: var(--s-panel); display: flex; flex-direction: column; min-height: 0; }
+  .sa-threads-h { padding: 14px 16px; border-bottom: 1px solid var(--s-border); }
+  .sa-threads-h .t { font-weight: 750; font-size: 15px; }
+  .sa-fchips { display: flex; gap: 6px; margin-top: 10px; }
+  .sa-fchip { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: var(--s-panel-2); border: 1px solid var(--s-border); color: var(--s-muted); }
+  .sa-fchip.on { background: var(--s-ink); color: #fff; border-color: var(--s-ink); }
+  .sa-thread { display: flex; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--s-border); align-items: flex-start; }
+  .sa-thread.on { background: var(--s-accent-soft); box-shadow: inset 2px 0 0 var(--s-accent); }
+  .sa-tava { width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .sa-tbody { min-width: 0; flex: 1; }
+  .sa-tname { font-size: 13px; font-weight: 650; }
+  .sa-tsnip { font-size: 12px; color: var(--s-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .sa-tmeta { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: 0 0 auto; }
+  .sa-ttime { font-size: 10.5px; color: var(--s-faint); font-family: var(--mono); }
+  .sa-unread { width: 8px; height: 8px; border-radius: 50%; background: var(--s-accent); }
+  .sa-chan { font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 6px; border-radius: 5px; }
+  .sa-chan.dm { background: #E7EEFD; color: var(--s-blue); }
+  .sa-chan.cm { background: var(--s-warn-soft); color: var(--s-warn); }
+  .sa-convo { display: flex; flex-direction: column; min-height: 0; background: var(--s-bg); }
+  .sa-convo-h { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--s-panel); border-bottom: 1px solid var(--s-border); }
+  .sa-convo-h .nm { font-weight: 700; font-size: 14px; }
+  .sa-convo-h .hd { font-size: 11.5px; color: var(--s-faint); font-family: var(--mono); }
+  .sa-msgs { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  .sa-msg { max-width: 80%; font-size: 13px; line-height: 1.45; padding: 9px 12px; border-radius: 13px; }
+  .sa-msg.inb { align-self: flex-start; background: var(--s-panel); border: 1px solid var(--s-border); border-bottom-left-radius: 4px; }
+  .sa-msg.out { align-self: flex-end; background: var(--s-ink); color: #fff; border-bottom-right-radius: 4px; }
+  .sa-msg .mt { font-size: 9.5px; font-family: var(--mono); opacity: .6; margin-top: 5px; }
+  .sa-draft { margin: 0 16px; border: 1px dashed var(--s-accent); background: var(--s-accent-soft); border-radius: 12px; padding: 12px 14px; }
+  .sa-draft-h { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--s-accent-ink); font-weight: 650; margin-bottom: 7px; }
+  .sa-draft-t { font-size: 13px; color: var(--s-ink); line-height: 1.45; }
+  .sa-draft-b { display: flex; gap: 8px; margin-top: 11px; }
+  .sa-composer { display: flex; gap: 8px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--s-border); background: var(--s-panel); }
+  .sa-input { flex: 1; font-size: 13px; color: var(--s-faint); background: var(--s-panel-2); border: 1px solid var(--s-border); border-radius: 9px; padding: 9px 12px; }
+  .sa-lead { border-left: 1px solid var(--s-border); background: var(--s-panel); padding: 16px; overflow: hidden; }
+  .sa-lead-top { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .sa-lead-nm { font-weight: 750; font-size: 14px; }
+  .sa-lead-fields { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+  .sa-field { display: flex; justify-content: space-between; font-size: 12.5px; gap: 10px; }
+  .sa-field .k { color: var(--s-faint); }
+  .sa-field .v { color: var(--s-ink); font-weight: 600; text-align: right; }
+  .sa-tl { border-top: 1px solid var(--s-border); padding-top: 13px; display: flex; flex-direction: column; gap: 12px; }
+  .sa-tl-lab { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--s-faint); }
+  .sa-tl-row { display: flex; gap: 9px; font-size: 12px; color: var(--s-muted); align-items: flex-start; }
+  .sa-tl-ic { width: 20px; height: 20px; border-radius: 6px; flex: 0 0 auto; display: grid; place-items: center; font-size: 9px; color: #fff; font-weight: 700; }
+  .sa-lead > .sa-btn { width: 100%; justify-content: center; margin-top: 14px; }
+
+  /* Automation */
+  .sa-rules { display: flex; flex-direction: column; gap: 14px; }
+  .sa-rule { background: var(--s-panel); border: 1px solid var(--s-border); border-radius: 13px; padding: 16px 18px; }
+  .sa-rule.on { border-color: #CFE9E3; box-shadow: 0 0 0 3px var(--s-accent-soft); }
+  .sa-rule-h { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .sa-rule-h .nm { font-weight: 700; font-size: 14px; }
+  .sa-toggle { width: 34px; height: 20px; border-radius: 999px; background: var(--s-accent); position: relative; margin-left: auto; flex: 0 0 auto; }
+  .sa-toggle::after { content: ""; position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+  .sa-toggle.off { background: var(--s-border-2); }
+  .sa-toggle.off::after { right: auto; left: 2px; }
+  .sa-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .sa-cnode { font-size: 12px; padding: 7px 11px; border-radius: 9px; background: var(--s-panel-2); border: 1px solid var(--s-border); display: inline-flex; flex-direction: column; gap: 2px; }
+  .sa-cnode .lab { font-family: var(--mono); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--s-faint); }
+  .sa-cnode.trig { background: var(--s-warn-soft); border-color: #EFD9AE; }
+  .sa-cnode.act { background: var(--s-accent-soft); border-color: #CFE9E3; }
+  .sa-carrow { color: var(--s-faint); font-size: 13px; }
+  .sa-know { display: flex; gap: 13px; align-items: center; background: var(--s-panel); border: 1px solid var(--s-border); border-radius: 13px; padding: 14px 16px; margin-top: 14px; }
+  .sa-know .ic { width: 38px; height: 38px; border-radius: 10px; background: var(--s-accent-soft); color: var(--s-accent-ink); display: grid; place-items: center; font-size: 17px; flex: 0 0 auto; }
+  .sa-know .kt { font-size: 13.5px; font-weight: 700; }
+  .sa-know .ks { font-size: 12px; color: var(--s-muted); margin-top: 2px; }
+  .sa-guard { display: flex; align-items: center; gap: 12px; background: var(--s-panel); border: 1px solid var(--s-border); border-radius: 13px; padding: 14px 16px; margin-top: 12px; font-size: 13px; color: var(--s-muted); }
+
+  /* Analytics */
+  .sa-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  @media (min-width: 720px) { .sa-tiles { grid-template-columns: repeat(4, 1fr); } }
+  .sa-tile { background: var(--s-panel); border: 1px solid var(--s-border); border-radius: 13px; padding: 15px 16px; }
+  .sa-tile .lab { font-size: 11px; color: var(--s-muted); }
+  .sa-tile .big { font-size: 24px; font-weight: 750; letter-spacing: -.02em; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .sa-tile .dl { font-size: 11px; font-weight: 650; margin-top: 4px; color: var(--s-good); }
+  .sa-charts { display: grid; gap: 12px; margin-top: 12px; }
+  @media (min-width: 720px) { .sa-charts { grid-template-columns: 3fr 2fr; } }
+  .sa-chart { background: var(--s-panel); border: 1px solid var(--s-border); border-radius: 13px; padding: 16px 18px; }
+  .sa-chart .ct { font-size: 13px; font-weight: 700; }
+  .sa-chart .cs { font-size: 11.5px; color: var(--s-faint); margin: 2px 0 22px; }
+  .sa-bars { display: flex; align-items: flex-end; gap: 10px; height: 118px; }
+  .sa-bar { flex: 1; background: var(--s-panel-2); border-radius: 6px 6px 0 0; position: relative; height: 100%; }
+  .sa-bar i { position: absolute; inset: auto 0 0 0; background: var(--s-accent); border-radius: 6px 6px 0 0; }
+  .sa-bar b { position: absolute; top: -16px; left: 0; right: 0; text-align: center; font-size: 9px; color: var(--s-faint); font-family: var(--mono); font-weight: 500; }
+  .sa-bar em { position: absolute; bottom: -18px; left: 0; right: 0; text-align: center; font-size: 9px; color: var(--s-faint); font-style: normal; font-family: var(--mono); }
+  .sa-split { display: flex; flex-direction: column; gap: 14px; justify-content: center; }
+  .sa-splitrow .top { display: flex; justify-content: space-between; font-size: 12px; }
+  .sa-splitbar { height: 8px; border-radius: 999px; background: var(--s-panel-2); margin-top: 6px; overflow: hidden; }
+  .sa-splitbar i { display: block; height: 100%; border-radius: 999px; }
+
+  /* ===== Architecture flow (theme-aware) ===== */
+  .arch { margin-top: 22px; display: flex; flex-direction: column; gap: 16px; }
+  .arch-flow { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 780px) { .arch-flow { grid-template-columns: 1fr auto 1.5fr auto 1fr; align-items: stretch; } }
+  .arch-node { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); }
+  .arch-node.brain { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: linear-gradient(180deg, var(--accent-soft), var(--surface) 72%); }
+  .arch-node.cross { border-left: 3px solid var(--accent); }
+  .arch-tag { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent-ink); font-weight: 650; margin-bottom: 8px; }
+  .arch-node.in .arch-tag, .arch-node.out .arch-tag { color: var(--faint); }
+  .arch-title { font-size: 16px; font-weight: 750; letter-spacing: -.01em; margin-bottom: 11px; }
+  .arch-node ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  .arch-node li { font-size: 13px; color: var(--muted); display: flex; gap: 8px; }
+  .arch-node li::before { content: "·"; color: var(--accent); font-weight: 700; }
+  .arch-steps { display: flex; flex-direction: column; gap: 9px; }
+  .arch-step { font-size: 13px; color: var(--muted); display: flex; gap: 10px; line-height: 1.4; align-items: flex-start; }
+  .arch-step > span { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px; background: var(--accent); color: #06231F; font-size: 11px; font-weight: 800; display: grid; place-items: center; margin-top: 1px; }
+  .arch-step em { color: var(--accent-ink); font-style: normal; font-weight: 600; }
+  .arch-arrow { display: grid; place-items: center; color: var(--faint); font-size: 20px; }
+  .arch-arrow .h { display: none; }
+  @media (min-width: 780px) { .arch-arrow .v { display: none; } .arch-arrow .h { display: inline; } }
+  .arch-branch { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+  .arch-branch-label { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 6px 13px; }
+  .arch-branch .arch-node.cross { max-width: 480px; text-align: left; }
+  .arch-node.cross .arch-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .arch-foundation { display: flex; gap: 14px; align-items: center; background: var(--surface-2); border: 1px dashed var(--line-strong); border-radius: 14px; padding: 16px 18px; font-size: 13.5px; color: var(--muted); }
+  .arch-foundation b { color: var(--ink); }
+
+  /* ===== Interactive prototype ===== */
+  .proto { margin-top: 14px; }
+  .proto-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .proto-tab { font-family: var(--mono); font-size: 12px; letter-spacing: .02em; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 8px 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
+  .proto-tab .pn { color: var(--faint); font-weight: 700; }
+  .proto-tab:hover { border-color: var(--line-strong); color: var(--ink); }
+  .proto-tab.is-active { background: var(--accent); border-color: var(--accent); color: #06231F; }
+  .proto-tab.is-active .pn { color: #06231F; opacity: .65; }
+  .screen { display: none; }
+  .screen.is-active { display: block; animation: fadein .28s ease; }
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .screen.is-active { animation: none; } }
+  .proto-hint { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-top: 10px; text-align: center; }
+  [hidden] { display: none !important; }
+
+  /* connect simulation */
+  .sa-connect-stage { max-width: 470px; margin: 0 auto; }
+  .sa-live-row { font-size: 13px; color: var(--s-faint); padding: 7px 0; display: flex; gap: 10px; align-items: center; transition: color .2s; }
+  .sa-live-row.done { color: var(--s-ink); }
+  .sa-live-row .ld { width: 14px; text-align: center; flex: 0 0 auto; }
+  .sa-live-row.done .ld { color: var(--s-accent); font-weight: 800; }
+  .sa-connect-working .sa-h { margin-bottom: 10px; }
+  .sa-resolved { margin: 0 16px; border: 1px solid #CFE9E3; background: var(--s-good-soft); border-radius: 12px; padding: 12px 14px; font-size: 13px; color: var(--s-good); font-weight: 650; display: flex; align-items: center; gap: 8px; }
+
+  /* interactive affordances */
+  .sa-toggle, .sa-thread, .sa-btn, .sa-fchip { cursor: pointer; }
+
+  /* toast */
+  .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(14px); background: var(--ink); color: var(--bg); font-size: 13px; font-weight: 600; padding: 11px 18px; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.28); opacity: 0; pointer-events: none; transition: opacity .22s, transform .22s; z-index: 50; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* results reveal animation */
+  .sa-bar i, .sa-splitbar i { transition: height .7s cubic-bezier(.2,.7,.2,1), width .7s cubic-bezier(.2,.7,.2,1); }
+
+  /* ===== Flow explorer ===== */
+  .flowx { margin-top: 22px; display: grid; gap: 18px; }
+  @media (min-width: 800px) { .flowx { grid-template-columns: 240px 1fr; align-items: start; } }
+  .flowx-rail { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+  @media (min-width: 800px) { .flowx-rail { flex-direction: column; overflow: visible; position: sticky; top: 60px; } }
+  .flowx-tab { text-align: left; font-size: 13px; font-weight: 600; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px; cursor: pointer; white-space: nowrap; flex: 0 0 auto; }
+  @media (min-width: 800px) { .flowx-tab { white-space: normal; } }
+  .flowx-tab:hover { border-color: var(--line-strong); color: var(--ink); }
+  .flowx-tab.is-active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink); box-shadow: inset 3px 0 0 var(--accent); }
+  .flowx-num { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-right: 8px; }
+  .flowx-tab.is-active .flowx-num { color: var(--accent-ink); }
+  .flowx-panel { display: none; }
+  .flowx-panel.is-active { display: block; animation: fadein .28s ease; }
+  @media (prefers-reduced-motion: reduce) { .flowx-panel.is-active { animation: none; } }
+  .flowx-head h3 { font-size: 18px; font-weight: 750; letter-spacing: -.015em; margin: 0 0 6px; }
+  .flowx-head p { font-size: 14px; color: var(--muted); margin: 0 0 18px; max-width: 62ch; }
+  .flowx-steps { display: flex; flex-direction: column; }
+  .flowx-step { display: flex; gap: 14px; align-items: flex-start; }
+  .fs-n { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #06231F; font-family: var(--mono); font-weight: 800; font-size: 13px; display: grid; place-items: center; }
+  .fs-b { padding-top: 2px; }
+  .fs-t { font-size: 14.5px; font-weight: 650; letter-spacing: -.01em; color: var(--ink); }
+  .fs-d { font-size: 13.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; max-width: 64ch; }
+  .flowx-conn { width: 28px; display: flex; justify-content: center; }
+  .flowx-conn::before { content: ""; width: 2px; height: 15px; background: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .flowx-note { margin-top: 16px; background: var(--accent-soft); border-radius: 10px; padding: 13px 15px; font-size: 13.5px; line-height: 1.5; color: color-mix(in srgb, var(--accent-ink) 88%, var(--ink)); }
+  .flowx-note .k { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent-ink); font-weight: 700; margin-right: 8px; }
+  .flowx-note.warn { background: var(--warn-soft); color: color-mix(in srgb, var(--warn) 82%, var(--ink)); }
+  .flowx-note.warn .k { color: var(--warn); }
+  .flowx-note b { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="toolbar">
+    <button class="tbtn" id="themeBtn" type="button" aria-label="Toggle colour theme">◐ Theme</button>
+  </div>
+
+  <header class="mast">
+    <div class="flow"><span class="rival">MANYCHAT</span><span class="arrow">▸▸▸</span><span class="skelo">SKELO</span></div>
+    <div class="eyebrow" style="margin-top:14px">Full research findings · Internal</div>
+    <h1>ManyChat teardown — the complete verified record</h1>
+    <p class="lead" style="margin-top:16px">
+      Every claim the research pass produced, with its adversarial-verification vote, evidence, and sources —
+      including the nine claims that were <strong>killed on review</strong>. This is the raw ledger behind the
+      strategy brief, kept honest about what's confirmed and what isn't.
+    </p>
+    <div class="metastrip">
+      <span class="chip">5 search angles</span>
+      <span class="chip"><b>20</b>&nbsp;sources fetched</span>
+      <span class="chip"><b>67</b>&nbsp;claims extracted</span>
+      <span class="chip"><b>25</b>&nbsp;verified</span>
+      <span class="chip good"><b>16</b>&nbsp;confirmed</span>
+      <span class="chip crit"><b>9</b>&nbsp;killed</span>
+      <span class="chip"><b>102</b>&nbsp;agents</span>
+    </div>
+    <nav class="jump">
+      <a href="#summary">Summary</a>
+      <a href="#confirmed">Confirmed findings</a>
+      <a href="#ledger">Verification ledger</a>
+      <a href="#killed">Killed claims</a>
+      <a href="#caveats">Caveats</a>
+      <a href="#questions">Open questions</a>
+      <a href="#sources">Sources</a>
+      <a href="#preview">Org preview</a>
+      <a href="#architecture">Architecture</a>
+    </nav>
+  </header>
+
+  <!-- SUMMARY -->
+  <section id="summary">
+    <div class="sec-head">
+      <div class="eyebrow">Executive summary</div>
+      <h2>The synthesis in one paragraph</h2>
+    </div>
+    <div class="verdict">
+      <p>ManyChat's ecommerce offering is a multi-channel (Instagram, Messenger, WhatsApp, SMS/email) chat-marketing
+      platform whose AI answers customer questions from a per-account Knowledge Base grounded on <strong>freeform text
+      and public links only</strong> — it does <strong>not</strong> ingest files, PDFs, or a structured product catalog,
+      and its "Intention Recognition" is AI intent-detection layered over flow triggers rather than deep RAG over documents.</p>
+      <p>Onboarding runs through Meta's official OAuth path: businesses need an Instagram Professional (Business/Creator)
+      account, Admin/Full-Control of the linked Facebook Page, and must toggle on "Allow Access to Messages," after which
+      all automation is bounded by Meta's platform rules — a <strong>24-hour messaging window</strong> from the user's last
+      interaction, extendable to 7 days only via the support-only HUMAN_AGENT tag.</p>
+      <p>ManyChat's principal weakness is pricing: a <strong>March 2, 2026</strong> restructure moved to contact-count tiers
+      (Free 25, Essential $14/250, Pro $29/2,500, Business $69/7,500, Advanced $139/25,000) with continuous per-contact
+      overages ($0.10 → $0.05 → $0.025 → $0.004), so cost scales directly with audience size — the widely-reported
+      <strong>"success tax."</strong> For Skelo this maps to concrete differentiators: the same compliant direct-Graph-API/OAuth
+      architecture with no BSP, plus per-org RAG grounded in the org's real catalog, CRM-native lead ownership,
+      cross-channel voice + WhatsApp, and flat pricing instead of per-contact lock-in.</p>
+    </div>
+  </section>
+
+  <!-- CONFIRMED FINDINGS -->
+  <section id="confirmed">
+    <div class="sec-head">
+      <div class="eyebrow">Confirmed findings</div>
+      <h2>The five that survived verification</h2>
+    </div>
+    <p style="color:var(--muted)">The 16 confirmed claims synthesise into these five load-bearing findings. Each carries its vote, evidence, and the implication for our build.</p>
+
+    <!-- F1 -->
+    <div class="finding confirmed">
+      <div class="fhead">
+        <span class="badge ok">✓ Confirmed</span>
+        <span class="badge conf">Confidence: High</span>
+        <span class="badge conf">Vote 3–0</span>
+      </div>
+      <p class="fclaim">ManyChat's AI grounding is a per-account Knowledge Base that accepts only freeform text and public links — not file uploads, PDFs, or a structured product catalog — and its Intention Recognition is intent-detection layered over triggers, not RAG over documents.</p>
+      <div class="evidence">
+        <span class="lab">Evidence</span>
+        ManyChat's own docs: <b>"The Knowledge Base currently supports two types of content: text and public links."</b>
+        The AI "processes only extracted readable text, it cannot interpret HTML structure, visual design, videos, audio,
+        embedded files, or images." An <b>open</b> community feature request to "add pdf's to LLM of manychat AI" confirms
+        file/catalog ingestion is not supported. Intention Recognition "uses AI to analyze message context and automatically
+        detect user intent, unlike traditional keyword triggers" — intent detection, not document RAG. A "new AI hub (beta)"
+        exists but published docs still state text + links only.
+      </div>
+      <div class="implication"><span class="lab">For Skelo</span> Per-org RAG auto-grounded in the org's product catalog and policies materially exceeds ManyChat's manually-typed text/links KB — our clearest differentiator today.</div>
+      <div class="srcline">
+        <a href="https://help.manychat.com/hc/en-us/articles/25626595060124-Manychat-AI-Knowledge">help.manychat.com — Manychat AI Knowledge</a>
+        <a href="https://help.manychat.com/hc/en-us/articles/14281187229468-Manychat-AI-Intention-Recognition">help.manychat.com — Intention Recognition</a>
+        <a href="https://community.manychat.com/ideas/add-pdf-s-to-llm-of-manychat-ai-3139">community.manychat.com — "add PDFs to LLM" (open request)</a>
+      </div>
+    </div>
+
+    <!-- F2 -->
+    <div class="finding confirmed">
+      <div class="fhead">
+        <span class="badge ok">✓ Confirmed</span>
+        <span class="badge conf">Confidence: High</span>
+        <span class="badge conf">Vote 3–0 / 2–1</span>
+      </div>
+      <p class="fclaim">Onboarding uses Meta's official OAuth path — the same compliant mechanism Skelo's direct-Graph-API plan uses (no BSP required). Requirements: an Instagram Professional account, Admin/Full-Control of the linked Facebook Page, and toggling on "Allow Access to Messages." Personal accounts cannot connect.</p>
+      <div class="evidence">
+        <span class="lab">Evidence</span>
+        ManyChat docs: "ManyChat requires an Instagram Professional account… Personal accounts cannot connect." "To connect… via Meta Business Suite, you must be an Admin with Full Control of the Facebook Page linked to that Instagram account." "toggle on Allow Access to Messages. This is a mandatory step for third-party tools to read your DMs." Compliant automation "Uses OAuth authentication… Meta issues a secure access token," while browser/password-based tools risk bans.
+        <b> Caveat:</b> verifiers flagged that OAuth compliance does <b>not</b> require Meta Business Partner status — any approved Meta app on the Graph API can use OAuth, which is exactly Skelo's no-BSP plan.
+      </div>
+      <div class="implication"><span class="lab">For Skelo</span> We face the same setup prerequisites as ManyChat with no middleman disadvantage — and Instagram Login lets us drop the Facebook-Page requirement for a lighter onboarding.</div>
+      <div class="srcline">
+        <a href="https://help.manychat.com/hc/en-us/articles/14281290924444-How-to-connect-Instagram-to-Manychat">help.manychat.com — How to connect Instagram</a>
+        <a href="https://sumgenius.ai/blog/instagram-dm-bot-ban-wave-2026/">sumgenius.ai — IG bot ban wave 2026</a>
+      </div>
+    </div>
+
+    <!-- F3 -->
+    <div class="finding confirmed">
+      <div class="fhead">
+        <span class="badge ok">✓ Confirmed</span>
+        <span class="badge conf">Confidence: High</span>
+        <span class="badge conf">Vote 3–0</span>
+      </div>
+      <p class="fclaim">All Instagram DM automation — ManyChat's or Skelo's — is bounded by Meta rules: a 24-hour messaging window from the user's last interaction, extendable to 7 days only via the HUMAN_AGENT tag, which is strictly for real human support and prohibited for automated/promotional messages.</p>
+      <div class="evidence">
+        <span class="lab">Evidence</span>
+        "you can only send a message to a user within 24 hours of their last interaction with your Instagram business or creator account." "Human Agent Tag (7-Day Extension): Allows real human support agents to respond… up to 7 days after the user's last message, strictly for support purposes only—not marketing." Corroborated by Meta's primary developer policy plus Chatwoot, CM.com, Postman, and ManyChat's own docs. Message tags "cannot be used for promotional content" (cart-abandonment reminders, event invites).
+        <b> Note:</b> verifiers refuted the specific "200 DMs/hour" rate-limit claims (0–3) — that figure is not reliably documented.
+      </div>
+      <div class="implication"><span class="lab">For Skelo</span> Promotional messaging outside 24h is off-limits on IG for everyone — which is exactly where our cross-channel WhatsApp + voice fallback becomes a genuine advantage.</div>
+      <div class="srcline">
+        <a href="https://developers.facebook.com/documentation/business-messaging/messenger-platform/policy">developers.facebook.com — Messenger Platform policy</a>
+        <a href="https://www.keyapi.ai/blog/instagram-messaging-api-policy/">keyapi.ai — IG Messaging API policy</a>
+        <a href="https://sumgenius.ai/blog/instagram-dm-bot-ban-wave-2026/">sumgenius.ai — IG bot ban wave 2026</a>
+      </div>
+    </div>
+
+    <!-- F4 -->
+    <div class="finding confirmed">
+      <div class="fhead">
+        <span class="badge ok">✓ Confirmed</span>
+        <span class="badge conf">Confidence: High</span>
+        <span class="badge conf">Vote 3–0 / 2–1</span>
+      </div>
+      <p class="fclaim">ManyChat's core competitive weakness is per-contact pricing lock-in. The March 2, 2026 restructure uses contact-count tiers — Free (25), Essential $14 (250), Pro $29 (2,500), Business $69 (7,500), Advanced $139 (25,000) — with continuous per-contact overages ($0.10 / $0.05 / $0.025 / $0.004) so total cost scales directly with audience size.</p>
+      <div class="evidence">
+        <span class="lab">Evidence</span>
+        Multiple independent 2026 sources converge on identical figures. Overage rates: Essential $0.10/contact, Pro $0.05, Business $0.025, Advanced $0.004 monthly (Business annual overage $0.018). Free plan cut from 1,000 to 25 active contacts.
+        <b> Caveats:</b> headline prices reflect <b>annual</b> billing (Essential is $17/mo monthly); AI features are a separate ~$29/mo add-on; a legacy Free/Pro/Premium model reportedly still runs for older accounts; ManyChat's official /pricing returned HTTP 403 so figures are strong-consensus <b>secondary</b>, not primary. The Advanced $0.004 rate is single-sourced.
+      </div>
+      <div class="implication"><span class="lab">For Skelo</span> Flat/seat- or org-based pricing avoids the audience-scaling cost trap entirely.</div>
+      <div class="srcline">
+        <a href="https://instantdm.com/blog/manychat-pricing-2026">instantdm.com — ManyChat pricing 2026</a>
+        <a href="https://flowgent.ai/blog/manychat-pricing">flowgent.ai — ManyChat pricing</a>
+        <a href="https://setsmart.io/blog/manychat-pricing">setsmart.io — ManyChat pricing</a>
+        <a href="https://creatorflow.so/blog/manychat-pricing-trap">creatorflow.so — the pricing trap</a>
+      </div>
+    </div>
+
+    <!-- F5 -->
+    <div class="finding confirmed">
+      <div class="fhead">
+        <span class="badge ok">✓ Confirmed</span>
+        <span class="badge conf">Confidence: High</span>
+        <span class="badge conf">Vote 3–0</span>
+      </div>
+      <p class="fclaim">Real user complaints center on "success tax" bill spikes — crossing a contact threshold sharply increases the bill even after engagement returns to baseline — plus forced ManyChat branding on the free tier and AI gated as a paid add-on.</p>
+      <div class="evidence">
+        <span class="lab">Evidence</span>
+        <b>"My monthly bill doubled overnight when I crossed a contact threshold."</b> Documented example: at 15,000 contacts the bill is $69 + (7,500 × $0.025) = <b>$256.50/month</b>. Free plan is capped at 25 active contacts/month, 4 active automations, 2 channels, 1 user seat, with forced "Powered by / Sent via ManyChat" branding (removable only on Pro+). Contacts stay billed until removed; overages trigger automatically when monthly active contacts exceed the ceiling.
+      </div>
+      <div class="implication"><span class="lab">For Skelo</span> Concrete pain to position against: lead ownership in the org's own DB, CRM-native attribution, no per-contact metering, no vendor branding on outbound messages.</div>
+      <div class="srcline">
+        <a href="https://flowgent.ai/blog/manychat-review">flowgent.ai — ManyChat review</a>
+        <a href="https://creatorflow.so/blog/manychat-pricing-trap">creatorflow.so — the pricing trap</a>
+        <a href="https://tryunlockdm.com/manychat-success-tax">tryunlockdm.com — the "success tax"</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- LEDGER -->
+  <section id="ledger">
+    <div class="sec-head">
+      <div class="eyebrow">Verification ledger</div>
+      <h2>All 25 claims, as voted</h2>
+    </div>
+    <p style="color:var(--muted)">Each claim was checked by three independent adversarial verifiers; a claim needed 2-of-3 refutes to be killed. Sorted confirmed first.</p>
+    <div class="tbl-wrap" style="margin-top:16px">
+      <table>
+        <thead><tr><th style="min-width:340px">Claim</th><th>Vote</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>ManyChat AI Knowledge is a per-account Knowledge Base (text + links only)</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Intention Recognition is intent-detection layered over triggers, not doc RAG</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>ManyChat requires an Instagram Professional account; personal can't connect</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Business must toggle on "Allow Access to Messages"</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Connecting requires Admin/Full-Control of the linked Facebook Page</td><td class="vote split">2–1</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>IG Messaging API restricts automated messaging to within 24h of last interaction</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>HUMAN_AGENT tag extends the window to 7 days (support only)</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>The 24h messaging window restricts businesses from freely messaging users</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Compliant/safe IG DM automation uses OAuth (not browser/password tools)</td><td class="vote split">2–1</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Paid plans are tiered by contact count (Free/Essential/Pro/Business/Advanced)</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Paid tiers are priced by active-contact volume</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>ManyChat charges overage fees above the 7,500-contact ceiling</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Free plan is capped at 25 active contacts</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>2026 pricing scales by contact count across tiers</td><td class="vote split">2–1</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Per-contact billing scales continuously beyond included quotas</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td>Customers report bills jumping sharply when crossing a threshold</td><td class="vote ok">3–0</td><td class="res ok">CONFIRMED</td></tr>
+          <tr><td class="dim">AI answers from a manually-curated KB acting as single source of truth</td><td class="vote no">1–2</td><td class="res no">KILLED</td></tr>
+          <tr><td class="dim">Setup requires authoring intents via a prescribed formula (USER + verb + ITEM)</td><td class="vote no">0–3</td><td class="res no">KILLED</td></tr>
+          <tr><td class="dim">IG official DM rate limit in 2026 is 200/hour (down from 5,000)</td><td class="vote no">0–3</td><td class="res no">KILLED</td></tr>
+          <tr><td class="dim">Graph API enforces a 200 automated-DM/hour limit independent of the window</td><td class="vote no">0–3</td><td class="res no">KILLED</td></tr>
+          <tr><td class="dim">AI Step add-on is $29/mo, a thin retrieval wrapper that fails on nuance</td><td class="vote no">1–2</td><td class="res no">KILLED</td></tr>
+          <tr><td class="dim">Pro starts at $15/mo for 500 contacts; overages $0.018–$0.038</td><td class="vote no">0–3</td><td class="res no">KILLED</td></tr>
+          <tr><td class="dim">Contact-based billing where cost scales with active contacts (generic)</td><td class="vote no">0–3</td><td class="res no">KILLED</td></tr>
+          <tr><td class="dim">Overages ~$0.018–$0.025/contact; 10k business pays ~$94–130/mo w/ AI</td><td class="vote no">0–3</td><td class="res no">KILLED</td></tr>
+          <tr><td class="dim">AI Step is keyword-only Q&amp;A, cannot be trained on sites/documents at all</td><td class="vote no">0–3</td><td class="res no">KILLED</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- KILLED -->
+  <section id="killed">
+    <div class="sec-head">
+      <div class="eyebrow">Killed claims</div>
+      <h2>Nine claims that did not survive — and why it matters</h2>
+    </div>
+    <p style="color:var(--muted)">These were plausible-sounding but refuted on review. Listing them protects us from building on numbers that aren't real — most importantly the "200 DMs/hour" rate limit.</p>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 0–3</span></div>
+      <p class="fclaim dim">Instagram's official API DM rate limit in 2026 is 200 DMs/hour, down from 5,000 before October 2024, with a per-user trigger limit of 1 message per 24 hours.</p>
+      <div class="evidence"><span class="lab">Why killed</span> Not reliably documented anywhere primary; all three verifiers refuted it. <b>Do not design throttling to this number</b> — the real per-app/per-user ceiling is an open question to confirm against live Graph API docs.</div>
+    </div>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 0–3</span></div>
+      <p class="fclaim dim">Graph API enforces a 200 automated-DM-per-hour rate limit, reduced from 5,000 in October 2024, operating independently of the 24-hour window.</p>
+      <div class="evidence"><span class="lab">Why killed</span> Same unsupported figure restated with a different framing; refuted 0–3.</div>
+    </div>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 1–2</span></div>
+      <p class="fclaim dim">ManyChat's AI answers from a manually-curated Knowledge Base acting as a single source of truth into which the business enters pricing, packages, FAQs and policies.</p>
+      <div class="evidence"><span class="lab">Why killed</span> Overstated the KB's role/curation model; the confirmed, narrower version (text + links only) is the one that stands. The "single source of truth" framing wasn't supported.</div>
+    </div>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 0–3</span></div>
+      <p class="fclaim dim">Setup requires authoring intents as short natural-language descriptions using a prescribed formula (USER + verb + ABOUT + ITEM).</p>
+      <div class="evidence"><span class="lab">Why killed</span> Too specific and prescriptive; not corroborated by the docs. Refuted unanimously.</div>
+    </div>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 1–2</span></div>
+      <p class="fclaim dim">The AI Step add-on costs $29/month and is a retrieval-based Q&amp;A with a thin LLM wrapper that handles basic queries but fails on nuanced comparisons.</p>
+      <div class="evidence"><span class="lab">Why killed</span> Single-source, opinionated review; the exact $29 add-on figure and the "fails on nuance" judgement couldn't be independently confirmed. Treat AI-add-on pricing as unconfirmed.</div>
+    </div>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 0–3</span></div>
+      <p class="fclaim dim">AI Step does only keyword-based Q&amp;A and cannot be trained on a business's own websites or documents (no RAG grounding at all).</p>
+      <div class="evidence"><span class="lab">Why killed</span> Contradicts the confirmed finding — it <b>can</b> be grounded on text + public links. This overstated the limitation, so it was refuted.</div>
+    </div>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 0–3</span></div>
+      <p class="fclaim dim">Pro starts at $15/month for 500 contacts and scales to $149/month for 25,000, with overages of $0.018–$0.038 per contact.</p>
+      <div class="evidence"><span class="lab">Why killed</span> Stale / legacy pricing figures inconsistent with the March 2026 restructure the confirmed finding uses. Refuted 0–3.</div>
+    </div>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 0–3</span></div>
+      <p class="fclaim dim">Contact-based billing where monthly cost scales with active contacts, which stay billed until manually removed regardless of engagement.</p>
+      <div class="evidence"><span class="lab">Why killed</span> The <em>substance</em> is captured by confirmed findings; this specific phrasing/source failed its own verification (likely over-generalised). Rely on the confirmed pricing findings instead.</div>
+    </div>
+
+    <div class="finding killed">
+      <div class="fhead"><span class="badge no">✗ Killed</span><span class="badge split">Vote 0–3</span></div>
+      <p class="fclaim dim">Exceeding the plan contact limit incurs overage charges of ~$0.018–$0.025 per extra contact/month, so a 10,000-contact business pays ~$94–130/mo with AI included.</p>
+      <div class="evidence"><span class="lab">Why killed</span> The specific blended-cost estimate and overage band couldn't be corroborated; refuted 0–3. Use the confirmed per-tier overage rates instead.</div>
+    </div>
+  </section>
+
+  <!-- CAVEATS -->
+  <section id="caveats">
+    <div class="sec-head">
+      <div class="eyebrow">Caveats</div>
+      <h2>How much to trust each part</h2>
+    </div>
+    <div class="note info"><span class="k">High</span><span><b>AI/RAG &amp; messaging-window findings</b> are anchored to primary sources — ManyChat help docs and Meta's developer policy. Rely on these.</span></div>
+    <div class="note warn"><span class="k">Medium</span><span><b>Pricing</b> is secondary-sourced: ManyChat's own pricing page returned HTTP 403, so figures come from multiple independent, mutually-consistent 2026 blogs referencing the March 2 restructure. Headline prices assume <b>annual</b> billing and exclude the AI add-on; a legacy plan reportedly still runs for older accounts. The Advanced $0.004 overage rate is single-sourced.</span></div>
+    <div class="note warn"><span class="k">Refuted</span><span>The widely-repeated <b>"200 DMs/hour"</b> Instagram rate limit was killed 0–3. Do not rely on it. And the "compliant OAuth requires Meta Business Partner status" framing is imprecise — OAuth needs only an <b>approved Meta app</b>, which validates our no-BSP approach.</span></div>
+    <div class="note warn"><span class="k">Moving</span><span>Pricing is time-sensitive (mid-2026), and a ManyChat <b>"AI hub (beta)"</b> exists that could change the text-and-links-only KB limitation — revisit before locking the roadmap.</span></div>
+  </section>
+
+  <!-- OPEN QUESTIONS -->
+  <section id="questions">
+    <div class="sec-head">
+      <div class="eyebrow">Open questions</div>
+      <h2>What to confirm next</h2>
+    </div>
+    <ul class="oq">
+      <li>Does ManyChat's <b>"AI hub (beta)"</b> add file/PDF/catalog ingestion or true RAG, which would narrow our per-org-RAG differentiation? Current published docs still say text + links only.</li>
+      <li>What is the <b>actual</b> current Instagram Graph API automated-messaging rate limit in 2026? The "200/hour" figure was refuted; the real per-app/per-user throughput we must engineer around is unconfirmed.</li>
+      <li>How does ManyChat technically handle abandoned-cart given the 24-hour window and the ban on promotional message tags — rely on re-engagement within 24h, or route to WhatsApp/email? This informs our cross-channel recovery design.</li>
+      <li>What is ManyChat's <b>data-ownership / export posture</b> — can businesses fully export contacts, conversations and attribution, or is there lock-in? Sharpens our "leads live in your own DB" positioning.</li>
+    </ul>
+  </section>
+
+  <!-- SOURCES -->
+  <section id="sources">
+    <div class="sec-head">
+      <div class="eyebrow">Sources</div>
+      <h2>All 20 fetched, with quality &amp; angle</h2>
+    </div>
+    <div class="tbl-wrap" style="margin-top:16px">
+      <table>
+        <thead><tr><th style="min-width:280px">URL</th><th>Quality</th><th>Angle</th><th>Claims</th></tr></thead>
+        <tbody>
+          <tr><td><a href="https://help.manychat.com/hc/en-us/articles/25626595060124-Manychat-AI-Knowledge">help.manychat.com — AI Knowledge</a></td><td><span class="quality primary">Primary</span></td><td class="dim">Feature surface</td><td class="num">5</td></tr>
+          <tr><td><a href="https://help.manychat.com/hc/en-us/articles/14281187229468-Manychat-AI-Intention-Recognition">help.manychat.com — Intention Recognition</a></td><td><span class="quality primary">Primary</span></td><td class="dim">Feature surface</td><td class="num">4</td></tr>
+          <tr><td><a href="https://help.manychat.com/hc/en-us/articles/14281290924444-How-to-connect-Instagram-to-Manychat">help.manychat.com — Connect Instagram</a></td><td><span class="quality secondary">Secondary</span></td><td class="dim">Setup &amp; Meta</td><td class="num">4</td></tr>
+          <tr><td><a href="https://www.keyapi.ai/blog/instagram-messaging-api-policy/">keyapi.ai — IG Messaging API policy</a></td><td><span class="quality blog">Blog</span></td><td class="dim">Setup &amp; Meta</td><td class="num">5</td></tr>
+          <tr><td><a href="https://sumgenius.ai/blog/instagram-dm-bot-ban-wave-2026/">sumgenius.ai — IG bot ban wave 2026</a></td><td><span class="quality blog">Blog</span></td><td class="dim">Setup &amp; Meta</td><td class="num">5</td></tr>
+          <tr><td><a href="https://www.roborhythms.com/manychat-review/">roborhythms.com — ManyChat review</a></td><td><span class="quality blog">Blog</span></td><td class="dim">Setup &amp; Meta</td><td class="num">5</td></tr>
+          <tr><td><a href="https://flowgent.ai/blog/manychat-pricing">flowgent.ai — ManyChat pricing</a></td><td><span class="quality blog">Blog</span></td><td class="dim">Pricing</td><td class="num">5</td></tr>
+          <tr><td><a href="https://setsmart.io/blog/manychat-pricing">setsmart.io — ManyChat pricing</a></td><td><span class="quality blog">Blog</span></td><td class="dim">Pricing</td><td class="num">5</td></tr>
+          <tr><td><a href="https://flowgent.ai/blog/manychat-review">flowgent.ai — ManyChat review</a></td><td><span class="quality blog">Blog</span></td><td class="dim">Pricing</td><td class="num">5</td></tr>
+          <tr><td><a href="https://instantdm.com/blog/manychat-pricing-2026">instantdm.com — ManyChat pricing 2026</a></td><td><span class="quality blog">Blog</span></td><td class="dim">Pricing</td><td class="num">5</td></tr>
+          <tr><td><a href="https://chatbotscape.com/reviews/manychat-review">chatbotscape.com — ManyChat review</a></td><td><span class="quality blog">Blog</span></td><td class="dim">AI / RAG</td><td class="num">5</td></tr>
+          <tr><td><a href="https://www.trustpilot.com/review/manychat.com">trustpilot.com — ManyChat reviews (2.6/5)</a></td><td><span class="quality forum">Forum</span></td><td class="dim">Complaints</td><td class="num">5</td></tr>
+          <tr><td><a href="https://community.manychat.com/general-q-a-43/instagram-business-account-disabled-due-to-automation-10161">community.manychat.com — account disabled by automation</a></td><td><span class="quality forum">Forum</span></td><td class="dim">Complaints</td><td class="num">4</td></tr>
+          <tr><td><a href="https://creatorflow.so/blog/is-instagram-automation-safe-2026/">creatorflow.so — is IG automation safe 2026</a></td><td><span class="quality blog">Blog</span></td><td class="dim">Complaints</td><td class="num">5</td></tr>
+          <tr><td>manychat.com — homepage</td><td><span class="quality unreliable">Unreliable</span></td><td class="dim">Feature surface</td><td class="num">0</td></tr>
+          <tr><td>manychat.com/pricing</td><td><span class="quality unreliable">Unreliable</span></td><td class="dim">Pricing (HTTP 403)</td><td class="num">0</td></tr>
+          <tr><td>manychat.com/blog — IG ecommerce</td><td><span class="quality unreliable">Unreliable</span></td><td class="dim">Feature surface</td><td class="num">0</td></tr>
+          <tr><td>help.manychat.com — Messaging windows</td><td><span class="quality unreliable">Unreliable</span></td><td class="dim">Setup &amp; Meta</td><td class="num">0</td></tr>
+          <tr><td>help.manychat.com — Send outside 24h/7d</td><td><span class="quality unreliable">Unreliable</span></td><td class="dim">Setup &amp; Meta</td><td class="num">0</td></tr>
+          <tr><td>help.manychat.com — Pro plan</td><td><span class="quality unreliable">Unreliable</span></td><td class="dim">Pricing</td><td class="num">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="color:var(--faint);font-size:12.5px;margin-top:12px;font-family:var(--mono)">"Unreliable" = fetch returned no usable claims (paywall, 403, JS-only, or nav-only page), not that the site is untrustworthy.</p>
+  </section>
+
+  <!-- ORG-SIDE PREVIEW -->
+  <section id="preview">
+    <div class="sec-head">
+      <div class="eyebrow">Org-side preview</div>
+      <h2>What an org sees inside Skelo</h2>
+    </div>
+    <p style="color:var(--muted)">
+      An interactive product mockup of the Instagram service from the business owner's seat. Switch screens with the tabs —
+      run the connect flow, open a conversation and hit Send, flip the automation toggles. Sample org:
+      <b style="color:var(--ink)">Glow Botanicals</b>, a skincare brand.
+    </p>
+
+    <div class="proto" id="proto">
+      <div class="proto-tabs" role="tablist" aria-label="Preview screens">
+        <button class="proto-tab is-active" data-screen="connect" role="tab" aria-selected="true"><span class="pn">01</span> Connect</button>
+        <button class="proto-tab" data-screen="convos" role="tab" aria-selected="false"><span class="pn">02</span> Conversations</button>
+        <button class="proto-tab" data-screen="auto" role="tab" aria-selected="false"><span class="pn">03</span> Automation</button>
+        <button class="proto-tab" data-screen="results" role="tab" aria-selected="false"><span class="pn">04</span> Results</button>
+      </div>
+      <div class="frame">
+        <div class="frame-bar">
+          <div class="frame-dots"><i></i><i></i><i></i></div>
+          <div class="frame-url" id="protoUrl">app.skelo.com/settings/integrations/instagram</div>
+          <div class="frame-cap" id="protoCap">Onboarding</div>
+        </div>
+        <div class="frame-body">
+
+          <!-- SCREEN: connect -->
+          <div class="screen is-active" data-screen="connect">
+            <div class="skelo-app">
+              <div class="sa-top">
+                <div class="sa-brand"><span class="sa-logo">S</span> Skelo</div>
+                <div class="sa-crumb">Settings › Integrations › Instagram</div>
+                <div class="sa-org"><span class="sa-ava">GB</span></div>
+              </div>
+              <div class="sa-pad">
+                <div class="sa-connect-stage" id="connectStage">
+                  <div class="sa-card sa-connect-card" data-state="idle">
+                    <div class="sa-ig">◎ Instagram</div>
+                    <div class="sa-h">Connect your Instagram</div>
+                    <div class="sa-sub">Automate DMs and comments — and turn every one into a lead, right inside Skelo.</div>
+                    <div class="sa-req">
+                      <div class="sa-reqrow ok">✓&nbsp; Professional account detected — <b>@glowbotanicals</b></div>
+                      <div class="sa-reqrow">•&nbsp; We'll ask permission to read &amp; send messages and manage comments</div>
+                      <div class="sa-reqrow">•&nbsp; Nothing is posted or sent without your rules</div>
+                    </div>
+                    <button class="sa-btn primary lg" id="connectBtn">Connect Instagram →</button>
+                    <div class="sa-fineprint">Secure sign-in with Instagram · about 20 seconds</div>
+                  </div>
+                  <div class="sa-card sa-connect-working" data-state="working" hidden>
+                    <div class="sa-h sm">Connecting…</div>
+                    <div id="connectSteps">
+                      <div class="sa-live-row" data-step="0"><span class="ld">◦</span> Opening Instagram sign-in</div>
+                      <div class="sa-live-row" data-step="1"><span class="ld">◦</span> Granting access (OAuth) &amp; issuing a 60-day token</div>
+                      <div class="sa-live-row" data-step="2"><span class="ld">◦</span> Subscribing to messages &amp; comments</div>
+                      <div class="sa-live-row" data-step="3"><span class="ld">◦</span> Syncing catalog for the AI</div>
+                    </div>
+                  </div>
+                  <div class="sa-card sa-connected" data-state="done" hidden>
+                    <div class="sa-connected-head">
+                      <span class="sa-check">✓</span>
+                      <div style="flex:1"><div class="sa-h sm">Connected</div><div class="sa-sub">@glowbotanicals · Professional</div></div>
+                      <span class="sa-pill live">● Live</span>
+                    </div>
+                    <div class="sa-setup">
+                      <div class="sa-setup-row"><span class="sa-tick">✓</span> Secure connection saved — encrypted, scoped to your org</div>
+                      <div class="sa-setup-row"><span class="sa-tick">✓</span> Listening for DMs &amp; comments</div>
+                      <div class="sa-setup-row"><span class="sa-tick">✓</span> Catalog synced — 1,240 products</div>
+                    </div>
+                    <div class="sa-row-btns">
+                      <button class="sa-btn accent" data-toast="Test DM sent to @glowbotanicals ✓">Send test DM</button>
+                      <button class="sa-btn ghost" id="resetConnect">Reset demo</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SCREEN: convos -->
+          <div class="screen" data-screen="convos">
+            <div class="skelo-app">
+              <div class="sa-inbox">
+                <div class="sa-threads">
+                  <div class="sa-threads-h">
+                    <div class="t">Inbox</div>
+                    <div class="sa-fchips"><span class="sa-fchip on">All</span><span class="sa-fchip">DMs</span><span class="sa-fchip">Comments</span></div>
+                  </div>
+                  <div class="sa-thread on" data-thread="aarti">
+                    <span class="sa-tava" style="background:#C2410C">AM</span>
+                    <div class="sa-tbody"><div class="sa-tname">Aarti Mehta</div><div class="sa-tsnip">Is the vitamin C serum in stock?</div></div>
+                    <div class="sa-tmeta"><span class="sa-ttime">now</span><span class="sa-chan dm">DM</span></div>
+                  </div>
+                  <div class="sa-thread" data-thread="rohit">
+                    <span class="sa-tava" style="background:#7C3AED">RK</span>
+                    <div class="sa-tbody"><div class="sa-tname">Rohit K.</div><div class="sa-tsnip">price? 👀</div></div>
+                    <div class="sa-tmeta"><span class="sa-unread"></span><span class="sa-chan cm">Comment</span></div>
+                  </div>
+                  <div class="sa-thread" data-thread="sneha">
+                    <span class="sa-tava" style="background:#0E877A">SN</span>
+                    <div class="sa-tbody"><div class="sa-tname">Sneha Nair</div><div class="sa-tsnip">Thanks, ordered! ❤️</div></div>
+                    <div class="sa-tmeta"><span class="sa-ttime">2h</span><span class="sa-chan dm">DM</span></div>
+                  </div>
+                  <div class="sa-thread" data-thread="dev">
+                    <span class="sa-tava" style="background:#2563EB">DV</span>
+                    <div class="sa-tbody"><div class="sa-tname">Dev Varma</div><div class="sa-tsnip">Do you ship to Pune?</div></div>
+                    <div class="sa-tmeta"><span class="sa-ttime">5h</span><span class="sa-chan dm">DM</span></div>
+                  </div>
+                </div>
+                <div class="sa-convo" id="convo"></div>
+                <div class="sa-lead" id="lead"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SCREEN: auto -->
+          <div class="screen" data-screen="auto">
+            <div class="skelo-app">
+              <div class="sa-top">
+                <div class="sa-brand"><span class="sa-logo">S</span> Skelo</div>
+                <div class="sa-crumb">Automations › Instagram</div>
+                <div class="sa-org"><button class="sa-btn primary" style="padding:7px 13px" data-toast="New rule builder — coming in the demo">+ New rule</button></div>
+              </div>
+              <div class="sa-pad">
+                <div class="sa-rules">
+                  <div class="sa-rule on">
+                    <div class="sa-rule-h"><span class="sa-pill ai">✦ AI</span><span class="nm">Comment "price" → reply &amp; DM the details</span><span class="sa-toggle"></span></div>
+                    <div class="sa-chain">
+                      <span class="sa-cnode trig"><span class="lab">When</span>Comment contains "price / cost / how much"</span>
+                      <span class="sa-carrow">→</span>
+                      <span class="sa-cnode">Reply publicly: "Just DM'd you the details 💬"</span>
+                      <span class="sa-carrow">→</span>
+                      <span class="sa-cnode act"><span class="lab">Then · AI</span>DM the answer from Catalog (RAG)</span>
+                      <span class="sa-carrow">→</span>
+                      <span class="sa-cnode act"><span class="lab">Then</span>Create lead · tag Hot</span>
+                    </div>
+                  </div>
+                  <div class="sa-rule">
+                    <div class="sa-rule-h"><span class="nm">Welcome DM for new followers who message</span><span class="sa-toggle off"></span></div>
+                    <div class="sa-chain">
+                      <span class="sa-cnode trig"><span class="lab">When</span>First DM from a new contact</span>
+                      <span class="sa-carrow">→</span>
+                      <span class="sa-cnode">Send welcome + top 3 bestsellers</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="sa-know">
+                  <span class="ic">✦</span>
+                  <div style="flex:1"><div class="kt">Knowledge source — where the AI's answers come from</div><div class="ks">Catalog (1,240 products) · FAQs · Shipping &amp; returns policy — synced 2h ago</div></div>
+                  <button class="sa-btn ghost" data-toast="Opens catalog &amp; knowledge settings">Manage</button>
+                </div>
+                <div class="sa-guard">
+                  <span class="sa-toggle"></span>
+                  <div style="flex:1">Never message outside Instagram's <b style="color:var(--s-ink)">24-hour window</b> — beyond it, fall back to WhatsApp or a voice callback.</div>
+                  <span class="sa-pill live">On</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SCREEN: results -->
+          <div class="screen" data-screen="results">
+            <div class="skelo-app">
+              <div class="sa-top">
+                <div class="sa-brand"><span class="sa-logo">S</span> Skelo</div>
+                <div class="sa-crumb">Analytics › Instagram</div>
+                <div class="sa-org"><span class="sa-ava">GB</span></div>
+              </div>
+              <div class="sa-pad">
+                <div class="sa-tiles">
+                  <div class="sa-tile"><div class="lab">DMs handled</div><div class="big">1,284</div><div class="dl">▲ 18% vs last month</div></div>
+                  <div class="sa-tile"><div class="lab">Comment → DM</div><div class="big">62%</div><div class="dl">▲ 9 pts</div></div>
+                  <div class="sa-tile"><div class="lab">Leads created</div><div class="big">318</div><div class="dl">▲ 24%</div></div>
+                  <div class="sa-tile"><div class="lab">Handled by AI</div><div class="big">74%</div><div class="dl">26% to humans</div></div>
+                </div>
+                <div class="sa-charts">
+                  <div class="sa-chart">
+                    <div class="ct">Leads created from Instagram</div>
+                    <div class="cs">Last 7 days</div>
+                    <div class="sa-bars">
+                      <div class="sa-bar"><b>31</b><i style="height:0" data-h="46%"></i><em>Mon</em></div>
+                      <div class="sa-bar"><b>44</b><i style="height:0" data-h="64%"></i><em>Tue</em></div>
+                      <div class="sa-bar"><b>38</b><i style="height:0" data-h="55%"></i><em>Wed</em></div>
+                      <div class="sa-bar"><b>52</b><i style="height:0" data-h="76%"></i><em>Thu</em></div>
+                      <div class="sa-bar"><b>69</b><i style="height:0" data-h="100%"></i><em>Fri</em></div>
+                      <div class="sa-bar"><b>47</b><i style="height:0" data-h="68%"></i><em>Sat</em></div>
+                      <div class="sa-bar"><b>37</b><i style="height:0" data-h="54%"></i><em>Sun</em></div>
+                    </div>
+                  </div>
+                  <div class="sa-chart">
+                    <div class="ct">Where leads came from</div>
+                    <div class="cs">Share of new leads</div>
+                    <div class="sa-split">
+                      <div class="sa-splitrow"><div class="top"><span>Instagram</span><b>48%</b></div><div class="sa-splitbar"><i style="width:0;background:#C2410C" data-w="48%"></i></div></div>
+                      <div class="sa-splitrow"><div class="top"><span>WhatsApp</span><b>31%</b></div><div class="sa-splitbar"><i style="width:0;background:#15803D" data-w="31%"></i></div></div>
+                      <div class="sa-splitrow"><div class="top"><span>Voice agent</span><b>21%</b></div><div class="sa-splitbar"><i style="width:0;background:#2563EB" data-w="21%"></i></div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      <div class="proto-hint">◦ Interactive prototype · illustrative data — try “Connect Instagram”, open a conversation, hit Send, flip a toggle</div>
+    </div>
+
+    <div class="note info" style="margin-top:18px">
+      <span class="k">Note</span>
+      <span>Mockup only — illustrative data. The point is the shape: Instagram lands in the <b>same lead record</b> as calls and WhatsApp, and the AI answers from the org's <b>own catalog</b> — the two things ManyChat structurally can't do.</span>
+    </div>
+  </section>
+
+  <!-- ARCHITECTURE -->
+  <section id="architecture">
+    <div class="sec-head">
+      <div class="eyebrow">System architecture</div>
+      <h2>The essential flows, explained</h2>
+    </div>
+    <p style="color:var(--muted)">
+      Five flows carry the whole system — pick one to walk it step by step. No jargon: this is how an org gets connected,
+      how a message becomes a lead, and how the AI and cross-channel pieces fit together on the machinery Skelo already runs.
+    </p>
+
+    <div class="flowx" id="flowx">
+      <div class="flowx-rail" role="tablist" aria-label="System flows">
+        <button class="flowx-tab is-active" data-flow="onboard" role="tab" aria-selected="true"><span class="flowx-num">A</span>Onboarding an org</button>
+        <button class="flowx-tab" data-flow="inbound" role="tab" aria-selected="false"><span class="flowx-num">B</span>Inbound message → lead</button>
+        <button class="flowx-tab" data-flow="comment" role="tab" aria-selected="false"><span class="flowx-num">C</span>Comment → DM funnel</button>
+        <button class="flowx-tab" data-flow="followup" role="tab" aria-selected="false"><span class="flowx-num">D</span>Follow-ups &amp; sequences</button>
+        <button class="flowx-tab" data-flow="recovery" role="tab" aria-selected="false"><span class="flowx-num">E</span>Cross-channel recovery</button>
+      </div>
+
+      <div class="flowx-stage">
+        <!-- A. ONBOARDING -->
+        <div class="flowx-panel is-active" data-flow="onboard">
+          <div class="flowx-head">
+            <h3>Onboarding — connecting an org, once</h3>
+            <p>How a business owner links their Instagram to Skelo. All the hard parts are ours and one-time; for the owner it's click → approve → confirm.</p>
+          </div>
+          <div class="flowx-steps">
+            <div class="flowx-step"><span class="fs-n">1</span><div class="fs-b"><div class="fs-t">Owner clicks “Connect Instagram”</div><div class="fs-d">In Settings. We first check it's a Professional account (Business/Creator) and guide the free conversion if it isn't.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">2</span><div class="fs-b"><div class="fs-t">Instagram consent (OAuth)</div><div class="fs-d">A popup on instagram.com; the owner approves reading &amp; sending messages and managing comments. We never see their password.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">3</span><div class="fs-b"><div class="fs-t">Token exchange</div><div class="fs-d">Instagram issues a 1-hour token; we immediately swap it for a 60-day one, stored encrypted and scoped to the org. This step needs no Meta approval — approval only governs <em>who</em> is allowed to connect.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">4</span><div class="fs-b"><div class="fs-t">Subscribe the webhook</div><div class="fs-d">We tell Instagram to send this account's DMs &amp; comments to Skelo's single listener.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">5</span><div class="fs-b"><div class="fs-t">Sync the catalog</div><div class="fs-d">We index the org's products, FAQs &amp; policies so the AI can answer from them — the per-org RAG knowledge base.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">6</span><div class="fs-b"><div class="fs-t">Live &amp; self-healing</div><div class="fs-d">A background job refreshes the token before it expires; if the owner ever disconnects, Settings shows “reconnect needed.”</div></div></div>
+          </div>
+          <div class="flowx-note warn"><span class="k">Note</span> In <b>development mode</b> this works for a handful of allow-listed accounts — enough to build and run a private beta. <b>App Review + Business Verification</b> flips it open to the public. The token step (3) is unrelated to approval.</div>
+        </div>
+
+        <!-- B. INBOUND -->
+        <div class="flowx-panel" data-flow="inbound">
+          <div class="flowx-head">
+            <h3>Inbound message → lead</h3>
+            <p>The core loop that runs on every DM, comment or story reply. It mirrors, step for step, how our voice calls are already ingested.</p>
+          </div>
+          <div class="flowx-steps">
+            <div class="flowx-step"><span class="fs-n">1</span><div class="fs-b"><div class="fs-t">Instagram notifies our webhook</div><div class="fs-d">One URL receives events for every connected org.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">2</span><div class="fs-b"><div class="fs-t">Verify it's really Instagram</div><div class="fs-d">A signature check on every event; forged payloads are dropped before anything happens.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">3</span><div class="fs-b"><div class="fs-t">Identify the org</div><div class="fs-d">From the trusted account ID in the payload — never from anything the message itself claims.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">4</span><div class="fs-b"><div class="fs-t">Ignore duplicates</div><div class="fs-d">Instagram sometimes redelivers; idempotency keys ensure it never creates two leads or two replies.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">5</span><div class="fs-b"><div class="fs-t">Find or create the lead</div><div class="fs-d">Matched on Instagram identity, filed under the right <em>organisation_id</em> — same logic our calls use.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">6</span><div class="fs-b"><div class="fs-t">Understand &amp; answer</div><div class="fs-d">AI reads intent and drafts a reply grounded in the org's catalog (RAG); rules auto-send or hand to a human.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">7</span><div class="fs-b"><div class="fs-t">Save everything</div><div class="fs-d">Message + reply attached to the lead, visible beside its calls &amp; WhatsApp history.</div></div></div>
+          </div>
+          <div class="flowx-note"><span class="k">Why</span> Steps <b>2–4</b> are the security &amp; reliability backbone — the exact posture we already run on our call webhooks.</div>
+        </div>
+
+        <!-- C. COMMENT -->
+        <div class="flowx-panel" data-flow="comment">
+          <div class="flowx-head">
+            <h3>Comment → DM funnel</h3>
+            <p>Turn a public commenter into a private conversation — the highest-intent moment on Instagram.</p>
+          </div>
+          <div class="flowx-steps">
+            <div class="flowx-step"><span class="fs-n">1</span><div class="fs-b"><div class="fs-t">Someone comments</div><div class="fs-d">e.g. “price?” on a post or reel.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">2</span><div class="fs-b"><div class="fs-t">Public reply</div><div class="fs-d">A short, friendly nudge: “Just DM'd you the details 💬”.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">3</span><div class="fs-b"><div class="fs-t">Private DM</div><div class="fs-d">The real answer — price, links — pulled from the catalog, sent within the 24-hour window.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">4</span><div class="fs-b"><div class="fs-t">Lead created &amp; tagged</div><div class="fs-d">The commenter becomes a Hot lead with the whole thread attached.</div></div></div>
+          </div>
+          <div class="flowx-note warn"><span class="k">Policy</span> This is Meta's <b>blessed</b> pattern — public comment automation is policy-sensitive, so moving to a DM is the safe funnel. We design toward it, not against it.</div>
+        </div>
+
+        <!-- D. FOLLOWUP -->
+        <div class="flowx-panel" data-flow="followup">
+          <div class="flowx-head">
+            <h3>Follow-ups &amp; sequences</h3>
+            <p>Timed outreach — welcomes, nudges, qualifying questions — without a new scheduling system and without breaking Instagram's rules.</p>
+          </div>
+          <div class="flowx-steps">
+            <div class="flowx-step"><span class="fs-n">1</span><div class="fs-b"><div class="fs-t">The every-minute scheduler wakes</div><div class="fs-d">The same one already dispatching our calls &amp; WhatsApp campaigns.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">2</span><div class="fs-b"><div class="fs-t">Pick what's due</div><div class="fs-d">Welcome DMs, gentle nudges when there's no reply, qualifying questions.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">3</span><div class="fs-b"><div class="fs-t">24-hour guard</div><div class="fs-d">Before each send, confirm we're still inside Instagram's window; if not, skip or reroute — never send something that would be blocked.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">4</span><div class="fs-b"><div class="fs-t">Send &amp; log</div><div class="fs-d">Deliver on Instagram and record it on the lead.</div></div></div>
+          </div>
+          <div class="flowx-note"><span class="k">Reuse</span> No new infrastructure — Instagram becomes a <b>5th outreach type</b> on the scheduler that already handles four.</div>
+        </div>
+
+        <!-- E. RECOVERY -->
+        <div class="flowx-panel" data-flow="recovery">
+          <div class="flowx-head">
+            <h3>Cross-channel recovery</h3>
+            <p>When Instagram's rules won't let us reach someone, use another door — on the same lead. This is the flow a single-channel tool structurally can't run.</p>
+          </div>
+          <div class="flowx-steps">
+            <div class="flowx-step"><span class="fs-n">1</span><div class="fs-b"><div class="fs-t">Trigger</div><div class="fs-d">The 24-hour window has closed, or the lead is hot enough to warrant a call.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">2</span><div class="fs-b"><div class="fs-t">Choose a channel</div><div class="fs-d">WhatsApp (a template send via our BSP) or a voice-agent callback.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">3</span><div class="fs-b"><div class="fs-t">Reach out</div><div class="fs-d">On the same lead, continuing the same conversation — not a cold restart.</div></div></div>
+            <div class="flowx-conn"></div>
+            <div class="flowx-step"><span class="fs-n">4</span><div class="fs-b"><div class="fs-t">Back to one record</div><div class="fs-d">The reply loops into the lead's unified timeline, beside its Instagram, WhatsApp and call history.</div></div></div>
+          </div>
+          <div class="flowx-note warn"><span class="k">Edge</span> This is precisely where ManyChat's per-channel model leaves money on the table — <b>abandoned-cart re-engagement outside the 24h window</b> can't be done on IG DM alone, but our WhatsApp + voice fallback picks it up.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arch-foundation" style="margin-top:22px">
+      <span class="arch-tag" style="margin:0">Foundation · under every flow</span>
+      <div><b>Your CRM database</b> — every message, lead and conversion, scoped to your organisation. No middleman holds your data; nothing is metered per contact.</div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <div class="eyebrow">Method</div>
+    <p style="color:var(--muted);max-width:76ch">
+      Generated by a 5-angle deep-research harness: decompose → 5 parallel web searches → URL-dedup and fetch top 20 sources →
+      extract 67 falsifiable claims → 3-vote adversarial verification (2-of-3 refutes to kill) → synthesize. 102 agents, 0 errors.
+      Confirmed 16, killed 9, 0 left unverified; 5 synthesised findings after semantic merge.
+    </p>
+    <p style="margin-top:18px;font-family:var(--mono);font-size:11px;color:var(--faint)">
+      SKELO · INTERNAL · MANYCHAT TEARDOWN — FULL FINDINGS · pairs with docs/instagram-automation.md
+    </p>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+
+    // ---- theme toggle ----
+    var tbtn = document.getElementById('themeBtn');
+    if (tbtn) tbtn.addEventListener('click', function () {
+      var cur = root.getAttribute('data-theme');
+      if (!cur) cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+    });
+
+    // ---- toast ----
+    var toastEl;
+    function toast(msg) {
+      if (!toastEl) { toastEl = document.createElement('div'); toastEl.className = 'toast'; document.body.appendChild(toastEl); }
+      toastEl.textContent = msg;
+      toastEl.classList.add('show');
+      clearTimeout(toast._t);
+      toast._t = setTimeout(function () { toastEl.classList.remove('show'); }, 2200);
+    }
+    document.addEventListener('click', function (e) {
+      var t = e.target.closest ? e.target.closest('[data-toast]') : null;
+      if (t) toast(t.getAttribute('data-toast'));
+    });
+    function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+    // ========== Preview prototype ==========
+    var proto = document.getElementById('proto');
+    if (proto) {
+      var tabs = proto.querySelectorAll('.proto-tab');
+      var screens = proto.querySelectorAll('.screen');
+      var urlEl = document.getElementById('protoUrl');
+      var capEl = document.getElementById('protoCap');
+      var META = {
+        connect: ['app.skelo.com/settings/integrations/instagram', 'Onboarding'],
+        convos: ['app.skelo.com/conversations', 'Unified inbox'],
+        auto: ['app.skelo.com/automations/instagram', 'Rules'],
+        results: ['app.skelo.com/analytics/instagram', 'Last 30 days']
+      };
+      function show(name) {
+        tabs.forEach(function (b) { var on = b.dataset.screen === name; b.classList.toggle('is-active', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
+        screens.forEach(function (s) { s.classList.toggle('is-active', s.dataset.screen === name); });
+        if (META[name]) { urlEl.textContent = META[name][0]; capEl.textContent = META[name][1]; }
+        if (name === 'results') revealResults();
+      }
+      tabs.forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.screen); }); });
+
+      // ---- connect simulation ----
+      var stage = document.getElementById('connectStage');
+      function stateEl(s) { return stage.querySelector('[data-state="' + s + '"]'); }
+      var connectBtn = document.getElementById('connectBtn');
+      if (connectBtn) connectBtn.addEventListener('click', function () {
+        stateEl('idle').hidden = true;
+        var work = stateEl('working'); work.hidden = false;
+        var rows = work.querySelectorAll('.sa-live-row');
+        rows.forEach(function (r) { r.classList.remove('done'); r.querySelector('.ld').textContent = '◦'; });
+        var i = 0;
+        (function next() {
+          if (i < rows.length) {
+            rows[i].classList.add('done'); rows[i].querySelector('.ld').textContent = '✓';
+            i++; setTimeout(next, 620);
+          } else {
+            setTimeout(function () { work.hidden = true; stateEl('done').hidden = false; }, 460);
+          }
+        })();
+      });
+      var resetBtn = document.getElementById('resetConnect');
+      if (resetBtn) resetBtn.addEventListener('click', function () {
+        stateEl('done').hidden = true; stateEl('working').hidden = true; stateEl('idle').hidden = false;
+      });
+
+      // ---- conversations ----
+      var THREADS = {
+        aarti: {
+          name: "Aarti Mehta", handle: "@aarti.m · Instagram DM", initials: "AM", color: "#C2410C",
+          win: "◷ 23h left", winClass: "win",
+          msgs: [{ w: "inb", t: "Hi! Is the vitamin C serum back in stock?", time: "10:14" }, { w: "inb", t: "And do you have a combo with the moisturiser?", time: "10:14" }],
+          draft: "Yes — our Vitamin C Serum (30ml) is back in stock at ₹899. The Glow Duo combo pairs it with the Hydra Moisturiser for ₹1,499 (save ₹300). Want me to send the links? 🌿",
+          lead: { nm: "Aarti Mehta", pill: ["hot", "● Hot"], sub: "Lead · created from Instagram",
+            fields: [["Source", "Instagram DM"], ["Phone", "+91 98••• ••210"], ["City", "Mumbai"], ["Intent", "Product enquiry"]],
+            tl: [["IG", "#C2410C", "Instagram DM — vitamin C serum", "now"], ["WA", "#15803D", "WhatsApp — catalog sent", "1d ago"], ["☎", "#2563EB", "Voice call — 2m, interested", "3d ago"]],
+            btn: "Start voice callback" }
+        },
+        rohit: {
+          name: "Rohit K.", handle: "comment on Vitamin C reel", initials: "RK", color: "#7C3AED",
+          win: "◷ 23h left", winClass: "win",
+          msgs: [{ w: "inb", t: "price? 👀", time: "11:02" }, { w: "out", t: "Just DM'd you the details 💬", time: "11:02" }],
+          draft: "The Vitamin C Serum (30ml) is ₹899 with free shipping over ₹799. Here's the link 🌿 — want the Glow Duo combo instead?",
+          lead: { nm: "Rohit K.", pill: ["warm", "● Warm"], sub: "Lead · from Instagram comment",
+            fields: [["Source", "Instagram comment"], ["Post", "Vitamin C reel"], ["City", "—"], ["Intent", "Price enquiry"]],
+            tl: [["IG", "#C2410C", "Commented “price?”", "now"], ["IG", "#C2410C", "Public reply sent", "now"]],
+            btn: "Start voice callback" }
+        },
+        sneha: {
+          name: "Sneha Nair", handle: "@sneha.nair · Instagram DM", initials: "SN", color: "#0E877A",
+          win: "✓ Won", winClass: "live",
+          msgs: [{ w: "out", t: "Your order is confirmed — thank you! 💚", time: "Yst" }, { w: "inb", t: "Thanks, ordered! ❤️", time: "Yst" }],
+          draft: null, resolved: "Marked as Won · order ₹1,499",
+          lead: { nm: "Sneha Nair", pill: ["live", "✓ Won"], sub: "Lead · converted",
+            fields: [["Source", "Instagram DM"], ["Order", "₹1,499"], ["City", "Bengaluru"], ["Intent", "Purchased"]],
+            tl: [["IG", "#C2410C", "Instagram DM — ordered", "yesterday"], ["WA", "#15803D", "WhatsApp — order confirmation", "yesterday"]],
+            btn: "View order" }
+        },
+        dev: {
+          name: "Dev Varma", handle: "@dev.varma · Instagram DM", initials: "DV", color: "#2563EB",
+          win: "◷ 19h left", winClass: "win",
+          msgs: [{ w: "inb", t: "Do you ship to Pune?", time: "06:30" }],
+          draft: "Yes! We ship across India 🚚 — Pune usually takes 2–3 days, free over ₹799. Anything you'd like to order?",
+          lead: { nm: "Dev Varma", pill: ["warm", "● Warm"], sub: "Lead · created from Instagram",
+            fields: [["Source", "Instagram DM"], ["Phone", "+91 90••• ••887"], ["City", "Pune"], ["Intent", "Shipping question"]],
+            tl: [["IG", "#C2410C", "Instagram DM — shipping", "now"]],
+            btn: "Start voice callback" }
+        }
+      };
+      var current = "aarti";
+      var convo = document.getElementById('convo');
+      var lead = document.getElementById('lead');
+      function renderConvo(id) {
+        var d = THREADS[id];
+        var msgs = d.msgs.map(function (m) { return '<div class="sa-msg ' + m.w + '">' + esc(m.t) + '<div class="mt">' + m.time + '</div></div>'; }).join('');
+        var mid = '';
+        if (d.resolved) mid = '<div class="sa-resolved">✓ ' + esc(d.resolved) + '</div>';
+        else if (d.draft) mid = '<div class="sa-draft"><div class="sa-draft-h"><span class="sa-pill ai">✦ AI draft</span> grounded in your catalog</div><div class="sa-draft-t">' + esc(d.draft) + '</div><div class="sa-draft-b"><button class="sa-btn accent" data-act="send">Send</button><button class="sa-btn ghost">Edit</button><button class="sa-btn ghost" data-act="human">Hand to human</button></div></div>';
+        convo.innerHTML =
+          '<div class="sa-convo-h"><span class="sa-tava" style="background:' + d.color + ';width:30px;height:30px;font-size:11px">' + d.initials + '</span><div style="flex:1"><div class="nm">' + esc(d.name) + '</div><div class="hd">' + esc(d.handle) + '</div></div><span class="sa-pill ' + d.winClass + '">' + d.win + '</span></div>'
+          + '<div class="sa-msgs">' + msgs + '</div>'
+          + mid
+          + '<div class="sa-composer"><div class="sa-input">Write a reply…</div><button class="sa-btn primary">Send</button></div>';
+      }
+      function renderLead(id) {
+        var L = THREADS[id].lead;
+        var fields = L.fields.map(function (f) { return '<div class="sa-field"><span class="k">' + f[0] + '</span><span class="v">' + esc(f[1]) + '</span></div>'; }).join('');
+        var tl = L.tl.map(function (r) { return '<div class="sa-tl-row"><span class="sa-tl-ic" style="background:' + r[1] + '">' + r[0] + '</span><div><b>' + esc(r[2]) + '</b><div style="color:var(--s-faint)">' + r[3] + '</div></div></div>'; }).join('');
+        lead.innerHTML =
+          '<div class="sa-lead-top"><span class="sa-lead-nm">' + esc(L.nm) + '</span><span class="sa-pill ' + L.pill[0] + '">' + L.pill[1] + '</span></div>'
+          + '<div class="sa-sub">' + esc(L.sub) + '</div>'
+          + '<div class="sa-lead-fields">' + fields + '</div>'
+          + '<div class="sa-tl"><div class="sa-tl-lab">Activity · all channels</div>' + tl + '</div>'
+          + '<button class="sa-btn ghost">' + esc(L.btn) + '</button>';
+      }
+      function openThread(id) {
+        current = id;
+        proto.querySelectorAll('.sa-thread').forEach(function (el) { el.classList.toggle('on', el.dataset.thread === id); });
+        renderConvo(id); renderLead(id);
+      }
+      proto.querySelectorAll('.sa-thread').forEach(function (el) { el.addEventListener('click', function () { openThread(el.dataset.thread); }); });
+      if (convo) {
+        convo.addEventListener('click', function (e) {
+          var b = e.target.closest ? e.target.closest('[data-act]') : null; if (!b) return;
+          var d = THREADS[current];
+          if (b.dataset.act === 'send' && d.draft) {
+            d.msgs.push({ w: 'out', t: d.draft, time: 'now' }); d.draft = null; renderConvo(current); toast('Reply sent on Instagram ✓');
+          } else if (b.dataset.act === 'human') {
+            d.draft = null; d.resolved = 'Handed to a human · AI paused'; renderConvo(current); toast('Handed to a human ✓');
+          }
+        });
+        renderConvo(current); renderLead(current);
+      }
+
+      // ---- toggles ----
+      proto.querySelectorAll('.sa-toggle').forEach(function (tg) {
+        tg.addEventListener('click', function () {
+          tg.classList.toggle('off');
+          var guard = tg.closest('.sa-guard');
+          if (guard) {
+            var pill = guard.querySelector('.sa-pill'); var on = !tg.classList.contains('off');
+            pill.textContent = on ? 'On' : 'Off';
+            pill.classList.toggle('live', on); pill.classList.toggle('warm', !on);
+          }
+        });
+      });
+
+      // ---- results reveal ----
+      var revealed = false;
+      function revealResults() {
+        if (revealed) return; revealed = true;
+        setTimeout(function () {
+          proto.querySelectorAll('.screen[data-screen="results"] .sa-bar i').forEach(function (i) { i.style.height = i.getAttribute('data-h'); });
+          proto.querySelectorAll('.screen[data-screen="results"] .sa-splitbar i').forEach(function (i) { i.style.width = i.getAttribute('data-w'); });
+        }, 60);
+      }
+    }
+
+    // ========== Flow explorer ==========
+    var flowx = document.getElementById('flowx');
+    if (flowx) {
+      var ftabs = flowx.querySelectorAll('.flowx-tab');
+      var fpanels = flowx.querySelectorAll('.flowx-panel');
+      ftabs.forEach(function (b) {
+        b.addEventListener('click', function () {
+          ftabs.forEach(function (x) { var on = x === b; x.classList.toggle('is-active', on); x.setAttribute('aria-selected', on ? 'true' : 'false'); });
+          fpanels.forEach(function (p) { p.classList.toggle('is-active', p.dataset.flow === b.dataset.flow); });
+        });
+      });
+    }
+  })();
+</script>
+</body>
+</html>
