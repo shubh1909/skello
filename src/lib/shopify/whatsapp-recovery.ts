@@ -9,6 +9,8 @@ import {
   buildRecoveryVariables,
   type RecoveryVariableSource,
 } from "@/lib/shopify/recovery";
+import { isDialable } from "@/lib/phone";
+import { dialCodeForCountry } from "@/lib/phone-countries";
 import { recoveryTemplateVariableOrder } from "@/lib/shopify/recovery-templates";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { APP_TIMEZONE } from "@/lib/time";
@@ -30,13 +32,16 @@ const STUCK_IN_FLIGHT_MS = 30 * 60 * 1000;
 // own counters. Extends the shared source so buildRecoveryVariables accepts it.
 interface DueWhatsApp extends RecoveryVariableSource {
   phone: string | null;
+  // Market of the phone, captured at schedule time. Null on rows created
+  // before 20260810000000 and on payloads that carried no address country.
+  phone_country: string | null;
   whatsapp_attempt: number;
   whatsapp_max_attempts: number;
   retry_interval_seconds: number;
 }
 
 const DUE_COLUMNS =
-  "id, organisation_id, lead_id, phone, whatsapp_attempt, whatsapp_max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, short_token, cart_items, offer_label, offer_code, offer_code_spoken, offer_discount_value, offer_discount_kind";
+  "id, organisation_id, lead_id, phone, phone_country, whatsapp_attempt, whatsapp_max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, short_token, cart_items, offer_label, offer_code, offer_code_spoken, offer_discount_value, offer_discount_kind";
 
 interface WhatsAppIntegrationRow {
   organisation_id: string;
@@ -170,6 +175,29 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
       return { id: r.id, ok: false };
     }
 
+    // Pre-flight the number. `coerceToE164` returns null when it cannot render
+    // a number it is confident about — a 9-digit national number from a market
+    // we don't have a dial code for, say.
+    //
+    // Doing this BEFORE the claim is the point. Previously such a number went
+    // to the provider, came back a 400, and was handled as a send failure —
+    // which advances `whatsapp_attempt` against a cap that **defaults to 1**.
+    // The cart then had no attempts left and was never messaged, having never
+    // actually been messageable. Skipping costs nothing and names the reason,
+    // so fixing the data makes the cart eligible again.
+    const dialCode = dialCodeForCountry(r.phone_country);
+    if (!isDialable(r.phone, dialCode)) {
+      await admin
+        .from("shopify_recovery_attempts")
+        .update({
+          whatsapp_status: "skipped",
+          whatsapp_skip_reason: "invalid_phone",
+        })
+        .eq("id", r.id)
+        .eq("whatsapp_status", "pending");
+      return { id: r.id, ok: false };
+    }
+
     // CAS claim — only proceed if still pending AND not yet converted. The
     // converted_at guard closes the race where an order lands between the batch
     // fetch and this claim: a recovered cart must never be messaged.
@@ -198,6 +226,7 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
         templateName,
         language: integration.template_language,
         toPhone: r.phone!,
+        dialCode,
         variables,
         // Positional order per the org's chosen template layout (classic vs
         // coupon_link). Defaults to coupon_link when unset.
@@ -207,7 +236,7 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
       });
 
       const sentAt = new Date().toISOString();
-      const { data: msgRow } = await admin
+      const { data: msgRow, error: insertError } = await admin
         .from("shopify_recovery_messages")
         .insert({
           organisation_id: r.organisation_id,
@@ -221,6 +250,31 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
         })
         .select("id")
         .single<{ id: string }>();
+
+      // The error used to be discarded — only `data` was destructured. That is
+      // the same fault `applyWhatsAppDeliveryUpdate` was fixed for, on the other
+      // side of the same correlation.
+      //
+      // It matters more here, because the failure is SILENT AND ASYMMETRIC: the
+      // message has already gone out, so the shopper receives it, but with no
+      // ledger row every subsequent delivery webhook for it logs "no message
+      // matches this id". The operator sees an id-shape mismatch and goes
+      // looking at the provider — when the real cause is a write that failed on
+      // our side seconds earlier.
+      //
+      // We deliberately do NOT rethrow: the send succeeded, and treating it as
+      // a failure would advance the attempt and re-send to the same shopper.
+      if (insertError) {
+        console.error(
+          "[whatsapp] message sent but the ledger row could not be written — delivery updates for this id will not match",
+          {
+            organisationId: r.organisation_id,
+            attemptId: r.id,
+            providerMessageId: result.providerMessageId,
+            cause: insertError,
+          },
+        );
+      }
 
       await admin
         .from("shopify_recovery_attempts")

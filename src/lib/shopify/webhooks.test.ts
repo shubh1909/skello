@@ -207,4 +207,51 @@ describe("normalizeAbandonedCheckout — completed checkouts", () => {
       }),
     ).not.toBeNull();
   });
+
+  /**
+   * The phone and the country MUST come from the same source. A checkout can
+   * carry a top-level phone with a shipping address in another country;
+   * pairing one with the other yields a number that is confidently wrong
+   * rather than merely unusable.
+   */
+  describe("phoneCountry", () => {
+    it("takes the country from the address the phone came from", () => {
+      const result = normalizeAbandonedCheckout({
+        token: "chk_country",
+        shipping_address: { phone: "0563836325", country_code: "AE" },
+        billing_address: { phone: "9876543210", country_code: "IN" },
+      });
+      // Shipping wins on the phone, so shipping must win on the country too.
+      expect(result?.phone).toBe("0563836325");
+      expect(result?.phoneCountry).toBe("AE");
+    });
+
+    it("lends the address country to a top-level phone", () => {
+      const result = normalizeAbandonedCheckout({
+        token: "chk_toplevel",
+        phone: "0563836325",
+        shipping_address: { country_code: "AE" },
+      });
+      expect(result?.phone).toBe("0563836325");
+      expect(result?.phoneCountry).toBe("AE");
+    });
+
+    it("falls back to the country name when no country_code is sent", () => {
+      const result = normalizeAbandonedCheckout({
+        token: "chk_name",
+        shipping_address: { phone: "0563836325", country: "971" },
+      });
+      expect(result?.phoneCountry).toBe("971");
+    });
+
+    it("is null when the payload carries no country at all", () => {
+      const result = normalizeAbandonedCheckout({
+        token: "chk_nocountry",
+        phone: "9876543210",
+      });
+      expect(result?.phone).toBe("9876543210");
+      // Null means "unknown market" — the dispatchers skip rather than assume.
+      expect(result?.phoneCountry).toBeNull();
+    });
+  });
 });

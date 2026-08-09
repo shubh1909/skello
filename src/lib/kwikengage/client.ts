@@ -174,7 +174,7 @@ function extractProviderError(body: unknown): string | null {
 export async function sendWhatsAppTemplate(
   input: WhatsAppSendInput,
 ): Promise<WhatsAppSendResult> {
-  const recipient = coerceToE164(input.toPhone);
+  const recipient = coerceToE164(input.toPhone, input.dialCode);
   if (!recipient) {
     throw new WhatsAppSendError(
       400,
