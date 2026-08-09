@@ -16,6 +16,8 @@ import {
   isWithinCallWindow,
   nextCallWindowOpen,
 } from "@/lib/shopify/call-window";
+import { isDialable } from "@/lib/phone";
+import { dialCodeForCountry } from "@/lib/phone-countries";
 import { findOrCreateShopifyLead } from "@/lib/shopify/lead";
 // Offer arithmetic lives in the pure template module so the settings preview
 // runs the SAME maths this dispatcher does — see recovery-templates.ts.
@@ -211,6 +213,10 @@ export async function scheduleRecoveryFromCheckout(input: {
     customer_name: checkout.customerName,
     email: checkout.email,
     phone: checkout.phone,
+    // The market the phone belongs to, from the SAME address the phone came
+    // from. Without it a local-format number outside the default market can't
+    // be rendered as E.164 at dial time.
+    phone_country: checkout.phoneCountry,
     marketing_consent: checkout.marketingConsent,
     abandoned_at: checkout.abandonedAt,
     cart_total: checkout.cartTotal,
@@ -933,6 +939,9 @@ interface DueRecovery {
   organisation_id: string;
   lead_id: string | null;
   phone: string | null;
+  // Market of the phone, captured at schedule time. Null on rows created before
+  // 20260810000000 and on payloads that carried no address country.
+  phone_country: string | null;
   agent_id: string | null;
   from_phone: string | null;
   attempt: number;
@@ -1160,7 +1169,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
   const { data, error } = await admin
     .from("shopify_recovery_attempts")
     .select(
-      "id, organisation_id, lead_id, phone, agent_id, from_phone, attempt, max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, short_token, cart_items, offer_label, offer_code, offer_code_spoken, offer_discount_value, offer_discount_kind",
+      "id, organisation_id, lead_id, phone, phone_country, agent_id, from_phone, attempt, max_attempts, retry_interval_seconds, customer_name, cart_total, currency, recovery_url, short_token, cart_items, offer_label, offer_code, offer_code_spoken, offer_discount_value, offer_discount_kind",
     )
     .eq("status", "pending")
     // Never dial a cart that already converted. settleRecoveryForOrder normally
@@ -1315,6 +1324,24 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
       return { id: r.id, ok: false };
     }
 
+    // Pre-flight the number before claiming, same as the WhatsApp track.
+    //
+    // This one is worse than WhatsApp's if left alone. `initiateBolnaCall`
+    // throws on an uncoercible number, the catch below advances `attempt` and
+    // re-arms `next_attempt_at` — so a number that can NEVER be dialled is
+    // retried all the way to `max_attempts`, spending a `calls` row and a
+    // retry interval on each pass. WhatsApp's cap of 1 hid the same bug behind
+    // a single wasted send; here it repeats.
+    const dialCode = dialCodeForCountry(r.phone_country);
+    if (!isDialable(r.phone, dialCode)) {
+      await admin
+        .from("shopify_recovery_attempts")
+        .update({ status: "skipped", skip_reason: "invalid_phone" })
+        .eq("id", r.id)
+        .eq("status", "pending");
+      return { id: r.id, ok: false };
+    }
+
     // CAS claim — only proceed if still pending.
     const { data: claim } = await admin
       .from("shopify_recovery_attempts")
@@ -1333,6 +1360,7 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
         apiKey: integration.api_key,
         agentId: r.agent_id!,
         recipientPhone: r.phone!,
+        recipientDialCode: dialCode,
         fromPhone: fromPhoneForDial,
         metadata: buildRecoveryVariables(r),
       });

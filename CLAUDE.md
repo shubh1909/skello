@@ -79,6 +79,56 @@ Maintain this hierarchy to ensure a strict Separation of Concerns:
 - **Type Safety:** `tsc --noEmit`
 - **Commit Check:** Before committing, verify Law #1 (Multi-tenancy) and Law #4 (Error Handling).
 
+## The Change Ledger (`LEDGER.md`) — update it every time
+
+**After any substantive change, append an entry to `LEDGER.md` at the repo root.**
+
+It is **gitignored on purpose** — a local working log, not a release artefact, so it never
+causes a merge conflict. If it doesn't exist in your checkout, create it; don't skip the
+step because the file is missing.
+
+Each entry carries four things:
+
+| | |
+|---|---|
+| **Heading** | one line naming the change, under a `## YYYY-MM-DD` date heading |
+| **Files** | what the change is *about* — not every file it touched. For a wide mechanical sweep, give the count instead |
+| **Why** | the reasoning a diff cannot carry |
+| **⚠️ Outstanding** | anything left unresolved — an unpushed migration, an approval pending, a known bug deliberately not fixed |
+
+Newest first, both between days and within a day.
+
+### What makes an entry worth writing
+
+**The "why" is the whole point.** A diff already shows what changed; a commit message
+compresses it. This file exists for the reasoning that would otherwise be lost — and this
+codebase has repeatedly needed it (see *"Where this document is wrong"* above).
+
+Write the why when:
+
+- the change fixes a bug whose **symptom didn't look like its cause** (a font error caused
+  by a stray lockfile; a Summary tab that changed when you scrolled a different tab);
+- you **deliberately did not** do the obvious thing, and the next person will wonder why;
+- the change **corrects a number, a write, or a security boundary** — those must be
+  traceable even when the commit that carried them says something else;
+- you **left something outstanding**, so it doesn't get lost.
+
+Skip it for renames, formatting, and dependency bumps that changed no behaviour. An entry
+whose only reason is "it looked better" is noise; fold it into a neighbouring one.
+
+### Two habits that keep it honest
+
+- **Timestamps must be real.** Use dates you can verify. Don't invent clock times — a
+  precise-looking ledger nobody can trust is worse than an approximate one.
+- **Correct entries in place** when facts change (a migration gets pushed, a workaround
+  becomes a fix) rather than appending a contradiction. The ledger should describe the
+  world as it is now, with a dated entry recording the change.
+
+A **Standing notes** section at the bottom holds facts true across the repo rather than tied
+to one change — the current lint baseline, which build tooling is and isn't enabled, known
+issues deliberately left alone. Keep it current; it is the first thing to read before
+concluding "this is broken".
+
 ### Current domain model (headline tables)
 
 - `organisations` — one per workspace; `owner_id = auth.uid()`.

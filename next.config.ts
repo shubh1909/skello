@@ -8,6 +8,31 @@ import { withSentryConfig } from "@sentry/nextjs";
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
+  /**
+   * Version-skew protection for rolling restarts.
+   *
+   * Every `next build` mints fresh Server Action ids. A browser tab still
+   * holding the previous build's JS keeps posting the OLD id, and the new
+   * server answers `Failed to find Server Action "wr"` — once per interaction,
+   * so a polling or realtime-driven page produces a burst of them.
+   *
+   * With a deployment id set, assets carry `?dpl=`, client navigations send
+   * `x-deployment-id`, and a mismatch makes Next do a **hard navigation**
+   * instead of failing: the stale tab reloads itself onto the new build.
+   *
+   * ⚠️ The value MUST be identical for `next build` and `next start`. It is
+   * baked into the client bundle at build time and compared at runtime, so a
+   * value that differs between the two (a timestamp, a random id, an env var
+   * exported in only one of the two shells) makes EVERY request look like a
+   * skew. Set it once in the deploy — e.g. `DEPLOYMENT_VERSION=$(git rev-parse
+   * --short HEAD)` exported before both commands, or in the pm2 ecosystem env
+   * alongside the build script.
+   *
+   * Left undefined when the variable is unset, which is exactly today's
+   * behaviour — no protection, but nothing broken either.
+   */
+  deploymentId: process.env.DEPLOYMENT_VERSION,
+
   turbopack: {
     /**
      * Pin the workspace root to this directory.

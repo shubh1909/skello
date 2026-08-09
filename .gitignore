@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# working log — the reasoning behind each change, kept local on purpose.
+# Not a release artifact and not something to resolve merge conflicts over.
+/LEDGER.md

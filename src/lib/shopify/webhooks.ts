@@ -72,12 +72,38 @@ function numeric(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * The first usable phone, **together with the country of the source it came
+ * from**.
+ *
+ * Pairing them matters. A checkout can carry a top-level phone, a customer
+ * phone, and shipping/billing addresses in different countries; taking the
+ * phone from one and the country from another produces a number that is
+ * confidently wrong rather than merely unusable. A source with a phone but no
+ * country yields `country: null`, which downstream treats as "unknown market"
+ * and skips — never as "assume the default".
+ */
+/**
+ * Phone only — for the order paths, which use it to *match* an existing attempt
+ * rather than to dial. Matching goes through `phoneKey` (last 10 digits), so a
+ * country adds nothing there.
+ */
 function firstPhone(...candidates: Array<unknown>): string | null {
   for (const c of candidates) {
     const s = asString(c);
     if (s) return s;
   }
   return null;
+}
+
+function firstPhoneWithCountry(
+  ...candidates: Array<{ phone: unknown; country?: unknown }>
+): { phone: string | null; country: string | null } {
+  for (const c of candidates) {
+    const phone = asString(c.phone);
+    if (phone) return { phone, country: asString(c.country) };
+  }
+  return { phone: null, country: null };
 }
 
 export interface NormalizedCheckout {
@@ -87,6 +113,10 @@ export interface NormalizedCheckout {
   // checkout_token diverges (Shop Pay / express / new checkout).
   cartToken: string | null;
   phone: string | null;
+  // ISO-2 (or a raw dial code) for the address the phone came from. Null when
+  // the payload carried none — which downstream reads as "unknown market", not
+  // "assume the default one".
+  phoneCountry: string | null;
   email: string | null;
   customerName: string | null;
   cartTotal: number | null;
@@ -120,11 +150,25 @@ export function normalizeAbandonedCheckout(
   const shipping = (p.shipping_address as Json | undefined) ?? {};
   const billing = (p.billing_address as Json | undefined) ?? {};
 
-  const phone = firstPhone(
-    p.phone,
-    customer.phone,
-    shipping.phone,
-    billing.phone,
+  // Order is unchanged; each source now carries its own country. The top-level
+  // and customer phones have no address attached, so they borrow the
+  // shipping/billing country — a customer's phone and their shipping address
+  // are the same market often enough to be worth trying, and an absent country
+  // still skips rather than guesses.
+  const addressCountry =
+    asString(shipping.country_code) ??
+    asString(billing.country_code) ??
+    asString(shipping.country) ??
+    asString(billing.country);
+
+  const { phone, country: phoneCountry } = firstPhoneWithCountry(
+    { phone: p.phone, country: addressCountry },
+    { phone: customer.phone, country: addressCountry },
+    {
+      phone: shipping.phone,
+      country: shipping.country_code ?? shipping.country,
+    },
+    { phone: billing.phone, country: billing.country_code ?? billing.country },
   );
 
   const nameParts = [
@@ -169,6 +213,7 @@ export function normalizeAbandonedCheckout(
     checkoutToken,
     cartToken: asString(p.cart_token),
     phone,
+    phoneCountry,
     email: asString(p.email),
     customerName,
     cartTotal: cartTotal !== null && Number.isFinite(cartTotal) ? cartTotal : null,

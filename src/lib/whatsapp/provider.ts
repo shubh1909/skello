@@ -24,6 +24,10 @@ export interface WhatsAppSendInput {
   // template was approved under, else the BSP 400s. Null/empty → adapter default.
   language?: string | null;
   toPhone: string;
+  // E.164 calling code for the recipient's market, when known. Same reason as
+  // the voice path: a local-format number outside the default market is
+  // otherwise unrenderable.
+  dialCode?: string | null;
   // Keys from buildRecoveryVariables; the adapter maps them into the template's
   // positional parameters.
   variables: Record<string, string>;

@@ -18,6 +18,10 @@ export interface InitiateCallInput {
   apiKey: string;
   agentId: string;
   recipientPhone: string;
+  // E.164 calling code for the recipient's market, when the caller knows it.
+  // Without it a local-format number outside the default market can't be
+  // rendered — see lib/phone.ts.
+  recipientDialCode?: string | null;
   fromPhone?: string | null;
   metadata?: Record<string, unknown>;
 }
@@ -117,11 +121,15 @@ export async function initiateBolnaCall(
 ): Promise<InitiateCallResult> {
   // Coerce to E.164 with a default country code — Bolna rejects bare local
   // numbers (common in Shopify checkout phones). See lib/phone.ts.
-  const recipient = coerceToE164(input.recipientPhone);
+  const recipient = coerceToE164(input.recipientPhone, input.recipientDialCode);
   if (!recipient) {
+    // Not only "empty" any more: coerceToE164 also refuses a number it cannot
+    // render as E.164 — a 9-digit national number from a market we have no dial
+    // code for, or one outside E.164's 8-15 digit bounds. Saying "empty" sent
+    // people looking for a blank field when the value was right there.
     throw new BolnaApiError(
       400,
-      "Recipient phone is empty or contains no digits",
+      "Recipient phone is missing or not a dialable E.164 number",
     );
   }
   const fromPhone = coerceToE164(input.fromPhone);
