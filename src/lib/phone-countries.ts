@@ -186,8 +186,11 @@ export function dialCodeForCountry(
   const raw = country.trim();
   if (raw.length === 0) return null;
 
-  // Already a dial code rather than a country code.
-  if (/^\+?\d{1,4}$/.test(raw)) return raw.replace(/\D/g, "") || null;
+  // Already a dial code rather than a country code. Bounded to what E.164
+  // actually assigns — one to three digits, never starting with zero. The
+  // looser `\d{1,4}` this replaced would accept "0" as a country code, and
+  // prepending that yields `+0…`, which every provider rejects.
+  if (/^\+?[1-9]\d{0,2}$/.test(raw)) return raw.replace(/\D/g, "");
 
   const iso = raw.toUpperCase();
   if (iso.length !== 2) return null;

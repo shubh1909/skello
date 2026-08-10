@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { coerceToE164, isDialable } from "@/lib/phone";
+import { coerceToE164, isDialable, resolveE164 } from "@/lib/phone";
 
 describe("coerceToE164", () => {
   it("prepends the default country code to a bare national number", () => {
@@ -83,6 +83,73 @@ describe("coerceToE164", () => {
     // "91" + 8 digits is not a valid Indian number (needs 10 subscriber
     // digits), so it must not pass the already-has-country-code branch.
     expect(coerceToE164("9112345678")).toBe("+919112345678");
+    // …and the same must hold when the dial code is handed to us explicitly.
+    // Trusting a `startsWith` here truncated real Indian mobiles to 10 digits.
+    expect(coerceToE164("9112345678", "91")).toBe("+919112345678");
+  });
+
+  /**
+   * The second production bug, and the reason the country hint is a fallback
+   * rather than an authority.
+   *
+   * `07348061482` is an ordinary Indian mobile. Once the Shopify address's
+   * `country_code` was threaded in and treated as authoritative, a cart whose
+   * address named another market rendered it under that market's dial code —
+   * and the voice provider answered "Only +1 and +91 numbers are allowed". The
+   * call was never placed and the WhatsApp never sent.
+   */
+  describe("a country hint that disagrees with the default market", () => {
+    it("keeps a home-market number on the home market", () => {
+      expect(coerceToE164("07348061482", "971")).toBe("+917348061482");
+      expect(coerceToE164("7348061482", "44")).toBe("+917348061482");
+    });
+
+    it("reports the override so the cart can be flagged", () => {
+      const r = resolveE164("07348061482", "971");
+      expect(r.e164).toBe("+917348061482");
+      expect(r.source).toBe("default_market");
+      expect(r.hintOverridden).toBe(true);
+      expect(r.hint).toBe("971");
+    });
+
+    it("is not an override when the hint agrees, or when there is none", () => {
+      expect(resolveE164("07348061482", "91").hintOverridden).toBe(false);
+      expect(resolveE164("07348061482").hintOverridden).toBe(false);
+    });
+
+    // The hint still earns its keep: 9 digits is a length India cannot explain.
+    it("still rescues a market the default cannot account for", () => {
+      const r = resolveE164("0563836325", "971");
+      expect(r.e164).toBe("+971563836325");
+      expect(r.source).toBe("hint");
+      expect(r.hintOverridden).toBe(false);
+    });
+  });
+
+  /**
+   * E.164 assigns no country code beginning with zero, so a leading zero after
+   * a `+` is a trunk prefix somebody typed a plus in front of — not an
+   * international number. Honouring the plus emitted a literal `+0…`, which
+   * every provider rejects.
+   */
+  describe("a leading zero is never a country code", () => {
+    it("treats +0… as a national number, not an international one", () => {
+      expect(coerceToE164("+07348061482")).toBe("+917348061482");
+      expect(coerceToE164("+0563836325", "971")).toBe("+971563836325");
+    });
+
+    it("never emits a number starting +0", () => {
+      for (const raw of ["+07348061482", "07348061482", "0007348061482"]) {
+        expect(coerceToE164(raw)?.startsWith("+0")).toBe(false);
+      }
+    });
+
+    it("refuses a bogus dial code rather than prepending it", () => {
+      // "0" is not a calling code. Prepending it produced "+07348061482".
+      expect(coerceToE164("7348061482", "0")).toBe("+917348061482");
+      // Nor is a four-digit one.
+      expect(coerceToE164("563836325", "9710")).toBeNull();
+    });
   });
 });
 

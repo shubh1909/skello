@@ -21,6 +21,7 @@ import {
   WhatsAppClickStep,
   WhatsAppMessageTimeline,
 } from "@/components/app/whatsapp-timeline";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Empty,
   EmptyDescription,
@@ -32,6 +33,8 @@ import {
   getRecoveryMessagesForAttempt,
 } from "@/actions/shopify-recovery";
 import { useClientNow } from "@/hooks/use-client-now";
+import { resolveE164 } from "@/lib/phone";
+import { dialCodeForCountry } from "@/lib/phone-countries";
 import {
   formatDateTime,
   formatMoney,
@@ -106,6 +109,11 @@ export function RecoveryCartDetail({
 
   const shopper = cart.customer_name ?? cart.email ?? "Unknown shopper";
   const products = productsSummary(cart.cart_items);
+
+  // How this cart's number actually resolves — the same pure function the
+  // dispatchers run, so what's shown here is what was dialled and messaged, not
+  // a second guess at it.
+  const dialled = resolveE164(cart.phone, dialCodeForCountry(cart.phone_country));
 
   // The lifecycle, in order. Labels are rewritten to say WHOSE clock each one
   // is on — that ambiguity is why the old grid needed a tooltip per row.
@@ -214,9 +222,33 @@ export function RecoveryCartDetail({
                 label: "Attempts",
                 value: `${cart.attempt}/${cart.max_attempts}`,
               },
+              // Only shown when the payload carried an address country, and
+              // only interesting next to the number we actually used.
+              { label: "Address country", value: cart.phone_country },
+              { label: "Dialled as", value: dialled.e164, mono: true },
               { label: "Products", value: products.full, span: "full" },
             ]}
           />
+
+          {/* The one case where we knowingly ignore data the payload gave us.
+              A 10-digit number is a valid Indian mobile AND a valid national
+              number in several other markets, so the shape cannot settle it —
+              we prefer the home market and say so, rather than dial a country
+              the voice provider would reject outright. */}
+          {dialled.hintOverridden ? (
+            <Alert variant="warning" className="mt-3">
+              <AlertTitle>Address country not used</AlertTitle>
+              <AlertDescription>
+                The checkout address said{" "}
+                <span className="font-medium">{cart.phone_country}</span> (+
+                {dialled.hint}), but the number is a valid home-market number,
+                so it was contacted as{" "}
+                <span className="font-mono">{dialled.e164}</span>. If this
+                shopper really is abroad, that call and message went to the
+                wrong number.
+              </AlertDescription>
+            </Alert>
+          ) : null}
         </DetailPanel>
 
         <DetailPanel title="Lifecycle">

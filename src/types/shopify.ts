@@ -167,6 +167,11 @@ export interface RecoveryAttemptRow {
   customer_name: string | null;
   email: string | null;
   phone: string | null;
+  // ISO-2 (or a raw dial code) of the address the phone came from. Null on rows
+  // created before 20260810000000 and on payloads that carried no address
+  // country. Surfaced because it can disagree with how we actually dialled —
+  // see resolveE164's hintOverridden.
+  phone_country: string | null;
   marketing_consent: boolean | null;
   cart_total: number | null;
   currency: string | null;

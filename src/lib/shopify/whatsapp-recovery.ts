@@ -9,7 +9,7 @@ import {
   buildRecoveryVariables,
   type RecoveryVariableSource,
 } from "@/lib/shopify/recovery";
-import { isDialable } from "@/lib/phone";
+import { DEFAULT_DIAL_CODE, resolveE164 } from "@/lib/phone";
 import { dialCodeForCountry } from "@/lib/phone-countries";
 import { recoveryTemplateVariableOrder } from "@/lib/shopify/recovery-templates";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -158,10 +158,12 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
   const results = await pooledMap(sendable, CONCURRENCY, async (r) => {
     const integration = integrationByOrg.get(r.organisation_id);
     const settings = settingsByOrg.get(r.organisation_id);
+    // The template NAME may come from either config row; the LAYOUT — which
+    // decides how many positional parameters we send — only ever comes from
+    // recovery settings.
+    const templateFromSettings = settings?.whatsapp_template_name?.trim() || null;
     const templateName =
-      settings?.whatsapp_template_name?.trim() ||
-      integration?.template_name?.trim() ||
-      null;
+      templateFromSettings || integration?.template_name?.trim() || null;
 
     if (!integration || !integration.enabled || !templateName) {
       await admin
@@ -169,6 +171,32 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
         .update({
           whatsapp_status: "skipped",
           whatsapp_skip_reason: !integration || !integration.enabled ? "no_whatsapp" : "no_template",
+        })
+        .eq("id", r.id)
+        .eq("whatsapp_status", "pending");
+      return { id: r.id, ok: false };
+    }
+
+    // Template/layout drift guard.
+    //
+    // `whatsapp_template_layout` is NOT NULL DEFAULT 'coupon_link', so an org
+    // that never opened recovery settings still reads as "coupon_link" — four
+    // parameters — while its template name comes from the integration and may
+    // point at the six-variable classic body. Nobody ever linked the two, and
+    // Meta answers 132000 (parameter count mismatch), which costs the attempt
+    // against a cap that defaults to 1.
+    //
+    // The name and the layout sit on the SAME recovery-settings form, so a name
+    // set there is the only evidence we have that someone saw the layout picker
+    // and chose deliberately. Without it, refuse rather than guess a count.
+    // Migration 20260716000000 flipped every pre-existing org into exactly this
+    // state; this is the guard that should have come with it.
+    if (!templateFromSettings) {
+      await admin
+        .from("shopify_recovery_attempts")
+        .update({
+          whatsapp_status: "skipped",
+          whatsapp_skip_reason: "template_layout_unset",
         })
         .eq("id", r.id)
         .eq("whatsapp_status", "pending");
@@ -186,7 +214,8 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
     // actually been messageable. Skipping costs nothing and names the reason,
     // so fixing the data makes the cart eligible again.
     const dialCode = dialCodeForCountry(r.phone_country);
-    if (!isDialable(r.phone, dialCode)) {
+    const resolved = resolveE164(r.phone, dialCode);
+    if (!resolved.e164) {
       await admin
         .from("shopify_recovery_attempts")
         .update({
@@ -196,6 +225,16 @@ export async function dispatchDueWhatsAppRecoveries(): Promise<WhatsAppDispatchR
         .eq("id", r.id)
         .eq("whatsapp_status", "pending");
       return { id: r.id, ok: false };
+    }
+    // See the voice track: the address country lost the tie to the default
+    // market. Logged, not failed — the cart is flagged in the detail sheet.
+    if (resolved.hintOverridden) {
+      console.warn("[whatsapp] address country overridden", {
+        attempt: r.id,
+        phoneCountry: r.phone_country,
+        addressDialCode: resolved.hint,
+        sentAs: DEFAULT_DIAL_CODE,
+      });
     }
 
     // CAS claim — only proceed if still pending AND not yet converted. The

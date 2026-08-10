@@ -110,10 +110,13 @@ export const RECOVERY_TEMPLATE_LAYOUTS: Record<
       "cart_total",
       "discount_link",
     ],
+    // Transcribed from the body Meta approved as `skelo_cartrecovery_rakhi_edition`
+    // on 2026-08-10 — kept verbatim (trailing sign-off, plain hyphen) so the
+    // settings preview shows operators the copy shoppers actually receive.
     previewBody: [
       "Hi {{1}} 👋",
       "",
-      "You left {{2}} in your cart — ₹{{3}} worth of goodies still waiting for you.",
+      "You left {{2}} in your cart - ₹{{3}} worth of goodies still waiting for you.",
       "",
       "🎁 Our special Rakhi offer is live:",
       "Buy 1 – Get 15% Off",
@@ -123,6 +126,8 @@ export const RECOVERY_TEMPLATE_LAYOUTS: Record<
       "Add one more to your cart and save even more.",
       "",
       "Complete your order here 👉 {{4}}",
+      "",
+      "Happy Shopping!",
     ].join("\n"),
   },
 };
