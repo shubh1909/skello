@@ -210,13 +210,20 @@ export async function sendWhatsAppTemplate(
       status: response.status,
       template: input.templateName,
       language: templateLanguage(input),
+      // The count is the first thing to check on a Meta 132000 — it says what
+      // WE sent, which is the half of the mismatch we control.
+      parameters: order.length,
+      parameterKeys: order,
       blankParams: blankKeys,
       response: text.slice(0, 300),
     });
-    // Surface the likely cause to the operator via the stored whatsapp_error —
-    // the blank source fields are the usual reason a template 400s.
+    // Surface the likely cause to the operator via the stored whatsapp_error.
+    // The parameter count first: a 132000 is unreadable without knowing how
+    // many we sent. Blank source fields are the other usual reason.
     const hint =
-      blankKeys.length > 0 ? ` (blank fields: ${blankKeys.join(", ")})` : "";
+      ` (sent ${order.length} parameters` +
+      (blankKeys.length > 0 ? `; blank: ${blankKeys.join(", ")}` : "") +
+      ")";
     throw new WhatsAppSendError(
       response.status,
       `${text || `WhatsApp provider returned ${response.status}`}${hint}`,

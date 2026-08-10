@@ -16,7 +16,7 @@ import {
   isWithinCallWindow,
   nextCallWindowOpen,
 } from "@/lib/shopify/call-window";
-import { isDialable } from "@/lib/phone";
+import { DEFAULT_DIAL_CODE, resolveE164 } from "@/lib/phone";
 import { dialCodeForCountry } from "@/lib/phone-countries";
 import { findOrCreateShopifyLead } from "@/lib/shopify/lead";
 // Offer arithmetic lives in the pure template module so the settings preview
@@ -1333,13 +1333,26 @@ export async function dispatchDueRecoveries(): Promise<RecoveryDispatchResult> {
     // retry interval on each pass. WhatsApp's cap of 1 hid the same bug behind
     // a single wasted send; here it repeats.
     const dialCode = dialCodeForCountry(r.phone_country);
-    if (!isDialable(r.phone, dialCode)) {
+    const resolved = resolveE164(r.phone, dialCode);
+    if (!resolved.e164) {
       await admin
         .from("shopify_recovery_attempts")
         .update({ status: "skipped", skip_reason: "invalid_phone" })
         .eq("id", r.id)
         .eq("status", "pending");
       return { id: r.id, ok: false };
+    }
+    // The address country said one market, the number's shape said the default
+    // one, and the default won. Not an error — but it is the one place we
+    // knowingly discard payload data, so leave a trace. The cart is flagged in
+    // the detail sheet too; this is for when someone is reading the tick log.
+    if (resolved.hintOverridden) {
+      console.warn("[recovery dial] address country overridden", {
+        attempt: r.id,
+        phoneCountry: r.phone_country,
+        addressDialCode: resolved.hint,
+        dialledAs: DEFAULT_DIAL_CODE,
+      });
     }
 
     // CAS claim — only proceed if still pending.

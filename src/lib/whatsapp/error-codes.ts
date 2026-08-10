@@ -159,6 +159,13 @@ export function whatsappReasonLabel(reason: string | null | undefined): string |
     case "cannot_receive":
     case "invalid_recipient":
       return "Undeliverable";
+    case "invalid_phone":
+      return "Unusable number";
+    case "param_count_mismatch":
+    case "template_layout_unset":
+      // Both mean the same thing to an operator: the approved template and the
+      // configured layout disagree on how many variables the body has.
+      return "Template mismatch";
     default:
       return reason.replace(/_/g, " ");
   }

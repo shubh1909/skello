@@ -452,20 +452,40 @@ export function CartRecoverySettingsForm({ settings, connected }: Props) {
 
             {whatsappEnabled ? (
               <div className="grid gap-1.5">
-                <Label htmlFor="wa-template-override">
-                  WhatsApp template (optional override)
-                </Label>
+                <Label htmlFor="wa-template-override">WhatsApp template</Label>
                 <Input
                   id="wa-template-override"
-                  placeholder="Leave blank to use the connected default"
+                  placeholder="your_approved_template_name"
                   value={whatsappTemplate}
                   onChange={(e) => setWhatsappTemplate(e.target.value)}
                   disabled={pending}
                 />
-                <p className="text-xs text-muted-foreground">
-                  The Meta-approved template name. Blank uses the one set on the
-                  WhatsApp connection in Settings.
-                </p>
+                {/* This used to be an optional override that fell back to the
+                    WhatsApp connection's template. That fallback is what caused
+                    Meta 132000: the NAME came from the connection while the
+                    message style above — which decides how many variables we
+                    send — stayed on its default. Nothing linked the two, so a
+                    six-variable body was sent four parameters. Sends now stop
+                    rather than guess, which makes this field required. */}
+                {whatsappTemplate.trim() ? (
+                  <p className="text-xs text-muted-foreground">
+                    The Meta-approved template name. It must have exactly{" "}
+                    <span className="font-medium">
+                      {preview.params.length} variables
+                    </span>{" "}
+                    to match the message style above.
+                  </p>
+                ) : (
+                  <p className="rounded-md border border-warning/40 bg-warning-muted px-3 py-2 text-xs text-warning">
+                    Required — WhatsApp recovery is paused until this is set.
+                    Name the Meta-approved template here so it is pinned to the
+                    message style above; the two have to agree on the variable
+                    count ({preview.params.length} for this style) or Meta
+                    rejects every send with a parameter-count error. Carts
+                    skipped for this reason show{" "}
+                    <span className="font-medium">Template mismatch</span>.
+                  </p>
+                )}
               </div>
             ) : null}
 
