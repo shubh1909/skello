@@ -79,16 +79,33 @@ function Gridlines({ yMax }: { yMax: number }) {
   );
 }
 
-export function formatLabel(isoDate: string): string {
-  // isoDate is YYYY-MM-DD. Parse as UTC to avoid TZ drift on the server.
-  const [y, m, d] = isoDate.split("-").map(Number);
-  if (!y || !m || !d) return isoDate;
-  const date = new Date(Date.UTC(y, m - 1, d));
+/**
+ * A bucket key to a human label.
+ *
+ * Accepts both granularities the dashboard produces: `YYYY-MM-DD` for a day
+ * and `YYYY-MM` for a month. All-time views over a long history roll up to
+ * months, and without this a bar row reads `2026-08` in raw ISO.
+ *
+ * Parsed as UTC throughout — the keys are built from UTC slices, so parsing
+ * them locally shifts every label by a day west of Greenwich.
+ */
+export function formatLabel(bucketKey: string): string {
+  const [y, m, d] = bucketKey.split("-").map(Number);
+  if (!y || !m) return bucketKey;
+
+  if (d === undefined || Number.isNaN(d)) {
+    return new Intl.DateTimeFormat("en", {
+      month: "short",
+      year: "2-digit",
+      timeZone: "UTC",
+    }).format(new Date(Date.UTC(y, m - 1, 1)));
+  }
+
   return new Intl.DateTimeFormat("en", {
     month: "short",
     day: "numeric",
     timeZone: "UTC",
-  }).format(date);
+  }).format(new Date(Date.UTC(y, m - 1, d)));
 }
 
 export function niceMax(n: number): number {

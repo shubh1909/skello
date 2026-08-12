@@ -1,6 +1,11 @@
 "use client";
 
-import { ArrowLeftIcon, XIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  XIcon,
+} from "lucide-react";
 import { cva, type VariantProps } from "class-variance-authority";
 
 import { Button } from "@/components/ui/button";
@@ -84,6 +89,24 @@ export interface DetailSheetShellProps
   /** Chrome row: overflow menu content (destructive actions live here). */
   menu?: React.ReactNode;
 
+  /**
+   * Chrome row: step to the adjacent record without closing the sheet.
+   *
+   * Up / down rather than left / right, because they walk the LIST BEHIND the
+   * sheet — the same direction the rows run. Left-pointing chevrons here would
+   * compete with `onBack`, which means something else entirely.
+   *
+   * Omit both to hide the control. Pass the handler with `*Disabled` at the
+   * ends of the list rather than dropping the buttons: a control that vanishes
+   * on the first row shifts every other button one place left.
+   */
+  onPrev?: () => void;
+  onNext?: () => void;
+  prevDisabled?: boolean;
+  nextDisabled?: boolean;
+  /** Names the thing being stepped through, for screen readers. */
+  navLabel?: string;
+
   /** Identity block. */
   avatar?: React.ReactNode;
   title: React.ReactNode;
@@ -113,6 +136,11 @@ export function DetailSheetShell({
   backLabel = "Back",
   dismiss = "close",
   menu,
+  onPrev,
+  onNext,
+  prevDisabled = false,
+  nextDisabled = false,
+  navLabel = "record",
   avatar,
   title,
   subtitle,
@@ -126,7 +154,10 @@ export function DetailSheetShell({
   children,
 }: DetailSheetShellProps) {
   const header = (
-    <SheetHeader className="shrink-0 gap-3 border-b border-border/60 bg-primary/3 p-4 pb-0">
+    // A soft top-down wash rather than a flat tint: the header reads as a
+    // raised surface the body scrolls under, and the fade means the border is
+    // the only hard edge in the chrome.
+    <SheetHeader className="shrink-0 gap-3 border-b border-border/60 bg-linear-to-b from-primary/6 to-primary/2 p-4 pb-0">
       {/* Chrome row. The sheet's own close button is disabled and rendered here
           instead — as a flow child it can't overlap the badge row, which is why
           callers used to need manual `pr-12` clearance. */}
@@ -135,6 +166,28 @@ export function DetailSheetShell({
           <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2">
             ‹ {backLabel}
           </Button>
+        ) : null}
+        {onPrev || onNext ? (
+          <div className="flex items-center gap-0.5 rounded-md border border-border/60 bg-card/70 p-0.5">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={onPrev}
+              disabled={prevDisabled || !onPrev}
+            >
+              <ChevronUpIcon />
+              <span className="sr-only">Previous {navLabel}</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={onNext}
+              disabled={nextDisabled || !onNext}
+            >
+              <ChevronDownIcon />
+              <span className="sr-only">Next {navLabel}</span>
+            </Button>
+          </div>
         ) : null}
         <div className="ml-auto flex items-center gap-1">
           {menu}
@@ -149,7 +202,11 @@ export function DetailSheetShell({
         </div>
       </div>
 
-      <div className="flex items-start gap-3">
+      {/* Identity and actions share a row, so the primary actions sit at the
+          eye line of the name rather than a band below it. `flex-wrap` with
+          `ml-auto` on the actions means they drop to their own line when the
+          sheet is too narrow to hold both, instead of crushing the title. */}
+      <div className="flex flex-wrap items-start gap-3">
         {avatar}
         <div className="min-w-0 flex-1 space-y-1.5">
           <SheetTitle className="truncate text-lg">{title}</SheetTitle>
@@ -163,11 +220,12 @@ export function DetailSheetShell({
             <div className="flex flex-wrap items-center gap-1.5">{pills}</div>
           ) : null}
         </div>
+        {actions ? (
+          <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+            {actions}
+          </div>
+        ) : null}
       </div>
-
-      {actions ? (
-        <div className="flex flex-wrap items-center gap-2">{actions}</div>
-      ) : null}
 
       {tabs && tabs.length > 0 ? (
         <TabsList variant="line" className="w-full justify-start">

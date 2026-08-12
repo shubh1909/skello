@@ -2,8 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 
+import { requireUser, userCanManageOrg } from "@/lib/auth/org-access";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
 import {
   deleteLeadFieldDefinitionSchema,
   listLeadFieldDefinitionsSchema,
@@ -12,41 +12,10 @@ import {
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { LeadFieldDefinition } from "@/types/lead-field-definition";
 
-type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
-
 const COLUMNS =
   "id, organisation_id, source_column, category, key_path, label, data_type, " +
   "visible_in_table, filterable, sortable, searchable, display_order, " +
   "sample_value, enum_options, last_seen_at, created_at, updated_at";
-
-async function requireUser() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return { supabase, user };
-}
-
-async function userCanManageOrg(
-  supabase: SupabaseServerClient,
-  userId: string,
-  organisationId: string,
-): Promise<boolean> {
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", userId)
-    .maybeSingle<{ is_admin: boolean }>();
-  if (profile?.is_admin) return true;
-
-  const { data } = await supabase
-    .from("organisations")
-    .select("id")
-    .eq("id", organisationId)
-    .eq("owner_id", userId)
-    .maybeSingle<{ id: string }>();
-  return !!data;
-}
 
 export async function listLeadFieldDefinitions(
   input: unknown,

@@ -187,6 +187,7 @@ export async function processRow(
           name_extracted: snapshot.name_extracted,
           interest: snapshot.interest,
           lead_intent_extracted: snapshot.lead_intent_extracted,
+          intent_score_extracted: snapshot.intent_score_extracted,
           actionable: snapshot.actionable,
           customer_status: snapshot.customer_status,
           visit_scheduled_at: snapshot.visit_scheduled_at,

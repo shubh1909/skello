@@ -83,6 +83,10 @@ export const leadUpdateSchema = z
     phone: z.string().trim().max(32).nullish(),
     current_intent: leadIntentSchema.nullish(),
     lead_intent: leadIntentSchema.nullish(), // back-compat alias
+    // Bounded to match the DB CHECK. Nullable because "unscored" is a real
+    // state a human may want to restore the lead to.
+    current_intent_score: z.number().int().min(0).max(100).nullish(),
+    owner_label: z.string().trim().min(1).max(80).nullish(),
     status: leadStatusSchema.optional(),
     source: leadSourceSchema.nullish(),
     notes: z.string().trim().max(5000).nullish(),

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { UploadCloudIcon } from "lucide-react";
+import { PlugZapIcon, UploadCloudIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -12,28 +12,20 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { VoiceAgentStatusCard } from "@/components/app/voice-agent-status-card";
-import { ShopifyStatusCard } from "@/components/app/shopify-status-card";
-import { WhatsAppStatusCard } from "@/components/app/whatsapp-status-card";
-import { getBolnaIntegration } from "@/actions/bolna-integrations";
-import { getWhatsAppIntegration } from "@/actions/whatsapp-integrations";
-import { getShopifyStatus } from "@/actions/shopify";
 import { requireSession } from "@/lib/auth/session";
 
 export const metadata = { title: "Settings · Skelo" };
 
+/**
+ * Workspace, data and account.
+ *
+ * The voice-agent, WhatsApp and Shopify connection cards used to live here,
+ * below the workspace form — which put "where do my leads come from" in the
+ * same place as "change my email", and left no room for the setup instructions
+ * and delivery logs a webhook integration needs. They now have /integrations.
+ */
 export default async function SettingsPage() {
   const session = await requireSession();
-  const [integrationResult, whatsappResult, shopifyResult] = await Promise.all([
-    getBolnaIntegration(session.organisation.id),
-    getWhatsAppIntegration(session.organisation.id),
-    getShopifyStatus(),
-  ]);
-  const integration = integrationResult.success ? integrationResult.data : null;
-  const whatsappIntegration = whatsappResult.success
-    ? whatsappResult.data
-    : null;
-  const shopifyStatus = shopifyResult.success ? shopifyResult.data : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -67,20 +59,20 @@ export default async function SettingsPage() {
 
       <Separator />
 
-      <VoiceAgentStatusCard integration={integration} />
-
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        Voice agents and lead fields are configured by your Skelo onboarding
-        team. Reach out to support if you need a change.
-      </p>
-
-      <Separator />
-
-      <WhatsAppStatusCard integration={whatsappIntegration} />
-
-      <Separator />
-
-      <ShopifyStatusCard status={shopifyStatus} />
+      <Card>
+        <CardHeader>
+          <CardTitle>Connections</CardTitle>
+          <CardDescription>
+            Your voice agent, lead sources and connected stores now live on their
+            own page, with setup steps and a delivery log for each.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" render={<Link href="/integrations" />}>
+            <PlugZapIcon /> Open Integrations
+          </Button>
+        </CardContent>
+      </Card>
 
       <Separator />
 

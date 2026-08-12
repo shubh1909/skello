@@ -2,12 +2,20 @@
 export type LeadIntent = "hot" | "warm" | "cold";
 
 // Mirrors the Postgres enum `lead_source`.
+//
+// `shopify` was added to the enum by 20260628000000 and never reached this type;
+// `google_ads` / `portal_99acres` by 20260813000000. The enum only ever grows —
+// ADD VALUE is the only operation Postgres offers — so this list is append-only
+// too, and a value missing here is a lead the UI can't label.
 export type LeadSource =
   | "inbound_call"
   | "whatsapp"
   | "manual"
   | "import"
-  | "web_form";
+  | "web_form"
+  | "shopify"
+  | "google_ads"
+  | "portal_99acres";
 
 // Mirrors the Postgres enum `lead_status`.
 export type LeadStatus =
@@ -45,11 +53,22 @@ export interface Lead {
   // Current view (admin-editable, also auto-filled by webhook).
   name: string | null;
   current_intent: LeadIntent | null;
+  /**
+   * 0-100 buying-intent score from the agent's extraction, rolled up like
+   * `current_intent`. Null means never scored — NOT a score of zero.
+   */
+  current_intent_score: number | null;
   city: string | null;
   pincode: string | null;
 
   // Admin-owned (webhook never writes).
   notes: string | null;
+  /**
+   * Who on the floor owns this lead. A label, not a user FK — this codebase
+   * has no membership model. Permitted values are curated per org in
+   * `lead_field_definitions.enum_options` for the `owner_label` column.
+   */
+  owner_label: string | null;
   status: LeadStatus;
   pending_action: boolean;
   source: LeadSource | null;

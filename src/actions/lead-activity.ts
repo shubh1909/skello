@@ -10,7 +10,7 @@ import {
   leadActivitySortBySchema as sortBySchema,
 } from "@/lib/validations/lead-activity";
 import { type ActionResult, fail, ok } from "@/types/action";
-import type { Lead, LeadIntent } from "@/types/lead";
+import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
 
 const inputSchema = z.object({
   org_slug: orgSlugSchema,
@@ -93,12 +93,14 @@ interface ActivityRow {
   first_seen_at: string | null;
   last_contact_at: string | null;
   current_intent: LeadIntent | null;
+  current_intent_score: number | null;
   city: string | null;
   pincode: string | null;
   notes: string | null;
   source: Lead["source"];
   status: Lead["status"];
   pending_action: boolean;
+  owner_label: string | null;
   lead_data: Record<string, unknown> | null;
   custom_data: Record<string, Record<string, unknown>> | null;
   latest_call_interest: string | null;
@@ -126,9 +128,11 @@ function buildActivity(row: ActivityRow): LeadWithCallActivity {
     last_contact_at: row.last_contact_at,
     name: row.name,
     current_intent: row.current_intent,
+    current_intent_score: row.current_intent_score,
     city: row.city,
     pincode: row.pincode,
     notes: row.notes,
+    owner_label: row.owner_label,
     status: row.status,
     pending_action: row.pending_action,
     source: row.source,
@@ -227,6 +231,60 @@ export interface LeadCallLifetimeStats {
 const lifetimeStatsInputSchema = z.object({
   org_slug: orgSlugSchema,
 });
+
+const statusCountsInputSchema = z.object({
+  org_slug: orgSlugSchema,
+  include_zero_calls: z.boolean().default(false),
+});
+
+/** Lead count per pipeline status. Absent statuses simply have no leads. */
+export type LeadStatusCounts = Partial<Record<LeadStatus, number>>;
+
+/**
+ * The funnel numbers on the /leads tab strip.
+ *
+ * ⚠️ Workspace-wide: this does NOT honour the table's search or filter chips
+ * (see the RPC's comment for why). The caller must hide the counts when either
+ * is active rather than render a number the rows below disagree with.
+ */
+export async function getLeadStatusCounts(
+  input: unknown,
+): Promise<ActionResult<LeadStatusCounts>> {
+  const parsed = statusCountsInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return fail("Not authenticated");
+
+  const { data: org } = await supabase
+    .from("organisations")
+    .select("id")
+    .eq("slug", parsed.data.org_slug)
+    .eq("owner_id", user.id)
+    .maybeSingle<{ id: string }>();
+  if (!org) return fail("Forbidden");
+
+  const { data, error } = await supabase.rpc("lead_status_counts", {
+    p_org_id: org.id,
+    p_include_zero_calls: parsed.data.include_zero_calls,
+  });
+  if (error) return fail(error.message);
+
+  const out: LeadStatusCounts = {};
+  for (const row of (data ?? []) as Array<{
+    status: LeadStatus;
+    total: number | string;
+  }>) {
+    // bigint arrives as a string from PostgREST — `+` would concatenate.
+    out[row.status] = Number(row.total);
+  }
+  return ok(out);
+}
 
 // Lifetime-wide totals for the leads page stat cards. Intentionally
 // ignores pagination, the include-zero-calls toggle, search, and filter

@@ -1,23 +1,17 @@
 "use client";
 
-import { humaniseFieldKey } from "@/lib/format/keys";
 import { formatDurationCompact } from "@/lib/format/duration";
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   BellPlusIcon,
-  CheckIcon,
   ClockIcon,
-  ExternalLinkIcon,
   HistoryIcon,
-  Loader2Icon,
   MessageCircleIcon,
-  PencilIcon,
   PhoneIcon,
   PhoneIncomingIcon,
   PhoneOutgoingIcon,
   Trash2Icon,
-  XIcon,
   MoreHorizontalIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -34,34 +28,21 @@ import {
   DetailSheetPanel,
   DetailSheetShell,
 } from "@/components/app/detail-sheet";
-import {
-  CallSplitView,
-  CapturedFieldGroups,
-} from "@/components/app/call-detail";
+import { CallSplitView } from "@/components/app/call-detail";
 import { EntityAvatar } from "@/components/app/entity-avatar";
 import { PendingActionBadge } from "@/components/app/pending-action-badge";
+import { SectionLabel } from "@/components/app/section-label";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Textarea } from "@/components/ui/textarea";
-import { LeadFieldLock } from "@/components/app/lead-field-lock";
+import { AssignCallbackDialog } from "@/components/app/lead-detail/assign-callback-dialog";
+import { LeadDetailsPanel } from "@/components/app/lead-detail/details-panel";
+import { LeadHeaderControls } from "@/components/app/lead-detail/header-controls";
+import { LeadNotesPanel } from "@/components/app/lead-detail/notes-panel";
+import { LeadSummaryPanel } from "@/components/app/lead-detail/summary-panel";
 import { listReminders } from "@/actions/reminders";
 import { listCalls } from "@/actions/calls";
 import { updateLead } from "@/actions/leads";
-import { formatDateTime, formatRelative } from "@/lib/format";
-import {
-  LEAD_DATA_SURFACED,
-  buildCustomFieldGroups,
-  pickLeadDataExtras,
-} from "@/lib/leads/captured-fields";
+import { formatRelative } from "@/lib/format";
 import {
   buildEffectiveCustomData,
   buildEffectiveLeadData,
@@ -78,14 +59,34 @@ import {
   leadToForm,
   type EditForm,
 } from "@/lib/leads/lead-form";
-import { INTENT_LABEL, INTENT_VARIANT } from "@/lib/leads/intent";
+import {
+  resolveSlot,
+  statsFromCalls,
+  type BindingSource,
+  type LeadCallStats,
+} from "@/lib/leads/sheet-bindings";
 import { useClientNow } from "@/hooks/use-client-now";
-import type { Lead, LeadIntent } from "@/types/lead";
+import type { Lead, LeadStatus } from "@/types/lead";
 import type { LeadFieldDefinition } from "@/types/lead-field-definition";
+import type { LeadSheetBinding } from "@/types/lead-sheet-binding";
 import type { Reminder } from "@/types/reminder";
 import type { Call, CallStatus } from "@/types/call";
 
-type LeadTab = "summary" | "calls" | "activity";
+type LeadTab = "summary" | "calls" | "notes" | "details" | "activity";
+
+/**
+ * The lead as the leads table has it: a `Lead` plus the call aggregates the
+ * `lead_call_activity` RPC returns. The aggregates are optional so any caller
+ * holding a plain `Lead` still type-checks — the sheet falls back to counting
+ * the calls it loaded.
+ */
+export interface LeadSheetLead extends Lead {
+  inbound_calls?: number;
+  outbound_calls?: number;
+  total_calls?: number;
+  last_call_at?: string | null;
+  first_call_at?: string | null;
+}
 
 /**
  * The Summary panel's edit draft.
@@ -127,15 +128,27 @@ const CALL_STATUS_LABEL: Record<CallStatus, string> = {
 };
 
 interface LeadDetailSheetProps {
-  lead: Lead | null;
+  lead: LeadSheetLead | null;
   organisationId: string;
-  // Catalog drives the editable form for captured fields — the sheet needs
-  // it to know each field's data_type (string / number / boolean / date /
-  // enum) and which keys are admin-declared vs. orphan extractions.
+  // Catalog drives the editable form for captured fields — the sheet needs it
+  // to know each field's data_type (string / number / boolean / date / enum)
+  // and which keys are admin-declared vs. orphan extractions. It also carries
+  // the curated owner_label options.
   catalog?: LeadFieldDefinition[];
+  /**
+   * Per-org layout: which fields fill the stat cards, the "what they want"
+   * panel and the header meta line. Empty is survivable — every slot hides
+   * itself — but orgs are seeded with defaults on migration.
+   */
+  bindings?: LeadSheetBinding[];
   open: boolean;
   onOpenChange: (next: boolean) => void;
   pending: boolean;
+  /** Step to the adjacent row in the table behind the sheet. */
+  onPrev?: () => void;
+  onNext?: () => void;
+  prevDisabled?: boolean;
+  nextDisabled?: boolean;
   onCall: (lead: Lead) => void;
   onOpenWhatsApp: (lead: Lead) => void;
   onOpenReminder: (lead: Lead) => void;
@@ -147,9 +160,14 @@ export function LeadDetailSheet({
   lead,
   organisationId,
   catalog,
+  bindings,
   open,
   onOpenChange,
   pending,
+  onPrev,
+  onNext,
+  prevDisabled,
+  nextDisabled,
   onCall,
   onOpenWhatsApp,
   onOpenReminder,
@@ -164,21 +182,17 @@ export function LeadDetailSheet({
   const [callsLoadingMore, setCallsLoadingMore] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  // ONE draft for the whole Summary panel.
-  //
-  // There used to be two independent edit states — one for Details, one for
-  // Captured fields — each with its own Edit, Save and Cancel. They didn't know
-  // about each other, so both could be open at once with two Save buttons on
-  // screen doing different things, and switching from one to the other
-  // discarded the first silently. There was never a server reason for the
-  // split: `updateLead` takes the row fields and both JSONB patches in a single
-  // call, which is exactly what `onSave` now sends.
+  // ONE draft for the whole Details panel. There used to be two independent
+  // edit states — one for Details, one for Captured fields — each with its own
+  // Edit, Save and Cancel, so both could be open at once with two Save buttons
+  // doing different things. `updateLead` takes the row fields and both JSONB
+  // patches in a single call, which is exactly what `onSave` sends.
   const [draft, setDraft] = React.useState<LeadDraft | null>(null);
   const [saving, startSaveTransition] = React.useTransition();
-  // Replaces the old `historyMode` boolean. That boolean drove a SECOND full
-  // layout at a different sheet width; folding it into a tab means one width,
-  // no jump, and no duplicated body.
-  //
+  // Header pickers save immediately, so they get their own pending flag —
+  // sharing `saving` would grey out the edit form while a status change flies.
+  const [quickSaving, startQuickSave] = React.useTransition();
+  const [callbackOpen, setCallbackOpen] = React.useState(false);
   // Invariant, enforced by the handlers below:
   //   `?call=<id>` present  ⟺  tab === "calls" && selectedCallId !== null
   const [tab, setTab] = React.useState<LeadTab>("summary");
@@ -188,18 +202,13 @@ export function LeadDetailSheet({
   const now = useClientNow();
 
   const leadId = lead?.id ?? null;
-  const editing = draft !== null;
   const urlCallId = searchParams.get("call");
 
   // Sync the selected call to the ?call=<id> query param.
-  //  - on close, strip it
-  //  - on entering history mode via row click, push the selection
-  //  - on landing with ?call=<id> already present, switch to history mode and
-  //    select the call when its row arrives in the loaded page
   //
-  // Use the history API directly instead of router.replace: this is a pure
-  // URL serialization of local sheet state, not a navigation. A Next.js soft
-  // nav would re-run the leads server component, ship a fresh initialItems
+  // Use the history API directly instead of router.replace: this is a pure URL
+  // serialization of local sheet state, not a navigation. A Next.js soft nav
+  // would re-run the leads server component, ship a fresh initialItems
   // reference, and useInfiniteList would clobber the client-filtered rows —
   // making the detail lead disappear and unmounting this sheet mid-click.
   const setCallInUrl = React.useCallback((id: string | null) => {
@@ -218,11 +227,9 @@ export function LeadDetailSheet({
     setDraft(null);
   }, [leadId, open]);
 
-  // Hydrate the active tab + selection from the URL on open. We intentionally
-  // read the URL only when the sheet opens for a new lead — once inside, the
-  // user's interactions drive both selection and URL together via setCallInUrl.
-  // (useSearchParams is the SSR-correct source on first paint; it goes stale
-  // after replaceState, which is exactly why this is keyed on [open, leadId].)
+  // Hydrate the active tab + selection from the URL on open. The URL is read
+  // only when the sheet opens for a new lead — once inside, the user's
+  // interactions drive both selection and URL together via setCallInUrl.
   React.useEffect(() => {
     if (!open) {
       setTab("summary");
@@ -276,8 +283,7 @@ export function LeadDetailSheet({
     };
   }, [open, leadId, organisationId]);
 
-  // Landing on the Calls tab with nothing selected (e.g. clicking the tab
-  // directly) defaults to the most recent call.
+  // Landing on the Calls tab with nothing selected defaults to the most recent.
   React.useEffect(() => {
     if (tab !== "calls") return;
     if (selectedCallId) return;
@@ -325,8 +331,7 @@ export function LeadDetailSheet({
       return;
     }
     // Leaving Calls drops the param but KEEPS `selectedCallId` in React state,
-    // so coming back re-selects without a refetch. (The old exitHistory nulled
-    // the selection, which meant a round trip every time.)
+    // so coming back re-selects without a refetch.
     setCallInUrl(null);
   }
 
@@ -337,8 +342,8 @@ export function LeadDetailSheet({
 
   function handleOpenChange(next: boolean) {
     if (!next) {
-      // Always strip the ?call= param when the sheet closes; otherwise reopening
-      // any lead row would silently re-enter history mode.
+      // Always strip the ?call= param when the sheet closes; otherwise
+      // reopening any lead row would silently re-enter the calls tab.
       setCallInUrl(null);
     }
     onOpenChange(next);
@@ -360,10 +365,6 @@ export function LeadDetailSheet({
       ),
     });
     setError(null);
-    // Edit lives in the pinned header, so it is reachable from any tab. The
-    // forms are on Summary, so go there rather than appearing to do nothing.
-    setTab("summary");
-    setCallInUrl(null);
   }
 
   function cancelEdit() {
@@ -371,7 +372,7 @@ export function LeadDetailSheet({
   }
 
   /**
-   * One save for both halves of the panel.
+   * One save for both halves of the Details panel.
    *
    * `updateLead` merges the row fields, `lead_data_patch` and
    * `custom_data_patch` in a single statement, so this is one request and one
@@ -382,11 +383,7 @@ export function LeadDetailSheet({
     if (!lead || !draft) return;
 
     const detailsPatch = diffForm(draft.details, lead);
-    const capturedPatch = diffCapturedForm(
-      draft.captured,
-      editableCatalog,
-      lead,
-    );
+    const capturedPatch = diffCapturedForm(draft.captured, editableCatalog, lead);
 
     if (
       Object.keys(detailsPatch).length === 0 &&
@@ -412,16 +409,32 @@ export function LeadDetailSheet({
     });
   }
 
+  /**
+   * The header pickers write straight through.
+   *
+   * Intent, status and owner are what a salesperson changes mid-call. Routing
+   * them through the edit form's open → change → save would be three clicks for
+   * a one-word decision, which is how these fields stop being maintained.
+   */
+  function quickPatch(patch: Record<string, unknown>, label: string) {
+    if (!lead) return;
+    startQuickSave(async () => {
+      const result = await updateLead(lead.id, patch);
+      if (!result.success) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success(label);
+      router.refresh();
+    });
+  }
+
   // ⚠️ The FIRST page only — never the whole paged list.
   //
-  // `loadMoreCalls` appends, and the Summary tab's captured fields are derived
-  // from this array. Feeding it the full list made Summary grow as you scrolled
-  // the Calls tab: open a lead, see 6 fields, scroll the call list, come back
-  // to 9. Nothing about the lead had changed.
-  //
-  // Derived rather than held in its own state: `calls` is only ever set to page
-  // one or appended to, so a slice is exactly page one by construction and
-  // there is no second variable to keep in sync.
+  // `loadMoreCalls` appends, and the summary's captured fields are derived from
+  // this array. Feeding it the full list made the summary grow as you scrolled
+  // the Calls tab: open a lead, see 6 fields, scroll the call list, come back to
+  // 9. Nothing about the lead had changed.
   const backfillCalls = React.useMemo(
     () => calls?.slice(0, CALLS_PAGE_SIZE) ?? null,
     [calls],
@@ -430,374 +443,266 @@ export function LeadDetailSheet({
   // Plain calls, deliberately not `useMemo`. These are pure functions imported
   // from `lib/`, and the React Compiler can't see across a module boundary to
   // prove that — so a manual memo around one makes it give up on the region
-  // ("existing memoization could not be preserved") instead of optimising it.
-  // Both are bounded by one page of calls, so recomputing costs nothing.
+  // instead of optimising it. Both are bounded by one page of calls.
   const effectiveCustomData = buildEffectiveCustomData(
     lead?.custom_data,
     backfillCalls,
   );
-  const effectiveLeadData = buildEffectiveLeadData(
-    lead?.lead_data,
-    backfillCalls,
-  );
+  const effectiveLeadData = buildEffectiveLeadData(lead?.lead_data, backfillCalls);
 
   // Read by startEdit, onSave and the render — it was recomputed independently
   // in all three, and the three copies had to agree for a save to be correct.
   const editableCatalog = pickEditableCatalog(catalog ?? []);
 
-  if (!lead) return null;
-
-  const intent = lead.current_intent ?? lead.lead_intent ?? "cold";
-  const isPending = Boolean(lead.pending_action);
-  const hasPhone = Boolean(lead.phone);
-  // Extras = everything in lead_data + custom_data that isn't already
-  // surfaced in the Details dl. Drives whether the "Captured fields"
-  // section renders at all.
-  const leadDataExtras = pickLeadDataExtras(effectiveLeadData, LEAD_DATA_SURFACED);
-  const leadFieldGroups = buildCustomFieldGroups(
-    effectiveCustomData,
-    leadDataExtras,
+  // Curated by an admin on the lead-fields page; empty until they set it up,
+  // which the picker treats as "don't offer an owner control at all".
+  const ownerOptions = React.useMemo(
+    () =>
+      catalog?.find(
+        (d) => d.source_column === "column" && d.key_path === "owner_label",
+      )?.enum_options ?? [],
+    [catalog],
   );
 
+  /**
+   * Call aggregates for the "last contact" panel and any `column` binding that
+   * points at one.
+   *
+   * The lead row's own counts win when present: they come from the RPC and
+   * cover every call, whereas the loaded array is one page. Only the LAST
+   * call's duration has to come from the array — no aggregate carries it — and
+   * it is read from page one, which is newest-first, so it doesn't drift as
+   * older pages load.
+   */
+  const callStats: LeadCallStats = React.useMemo(() => {
+    const fromPage = statsFromCalls(backfillCalls ?? []);
+    return {
+      inbound_calls: lead?.inbound_calls ?? fromPage.inbound_calls,
+      outbound_calls: lead?.outbound_calls ?? fromPage.outbound_calls,
+      total_calls: lead?.total_calls ?? callsTotal ?? fromPage.total_calls,
+      last_call_at: lead?.last_call_at ?? fromPage.last_call_at,
+      first_call_at: lead?.first_call_at ?? fromPage.first_call_at,
+      last_call_duration_seconds: fromPage.last_call_duration_seconds,
+    };
+  }, [lead, backfillCalls, callsTotal]);
+
+  const bindingSource: BindingSource | null = lead
+    ? {
+        lead,
+        leadData: effectiveLeadData,
+        customData: effectiveCustomData,
+        stats: callStats,
+      }
+    : null;
+
+  const allBindings = bindings ?? [];
+  // `keepUnresolved` for the cards only: the row is a three-column grid and a
+  // card that vanishes reflows the other two, which reads as a layout bug
+  // rather than as missing data.
+  const statCards = bindingSource
+    ? resolveSlot(allBindings, "stat_card", bindingSource, true)
+    : [];
+  const wants = bindingSource
+    ? resolveSlot(allBindings, "wants", bindingSource)
+    : [];
+  const headerMeta = bindingSource
+    ? resolveSlot(allBindings, "header_meta", bindingSource)
+    : [];
+
+  if (!lead) return null;
+
+  const isPending = Boolean(lead.pending_action);
+  const hasPhone = Boolean(lead.phone);
+  const busy = saving || quickSaving || pending;
+
   return (
-    <DetailSheetShell
-      open={open}
-      onOpenChange={handleOpenChange}
-      // ONE width, always. This used to jump 560 -> 1280 when history mode
-      // engaged, which is what forced two entire layouts to exist. `lg` fits the
-      // Calls tab's rail + pane comfortably and gives Summary room to breathe.
-      width="lg"
-      title={lead.name ?? "Unnamed lead"}
-      description="Lead details and history"
-      avatar={
-        <EntityAvatar name={lead.name} size="lg" />
-      }
-      pills={
-        <>
-          <Badge variant={INTENT_VARIANT[intent]}>{INTENT_LABEL[intent]}</Badge>
-          <PendingActionBadge
-            pending={isPending}
-            disabled={saving || pending}
-            onToggle={() => onToggleContacted(lead)}
-          />
-        </>
-      }
-      actions={
-        <>
-          {/* One Edit for the whole lead, pinned in the header rather than
-              scrolling away inside a section. Hidden while editing — Save and
-              Cancel are in the sticky bar at the foot of the Summary panel, and
-              a third, inert Edit button beside them would be noise. */}
-          {editing ? null : (
-            <Button variant="outline" size="sm" onClick={startEdit}>
-              <PencilIcon />
-              Edit
+    <>
+      <DetailSheetShell
+        open={open}
+        onOpenChange={handleOpenChange}
+        // ONE width, always. This used to jump 560 -> 1280 when history mode
+        // engaged, which is what forced two entire layouts to exist.
+        width="lg"
+        onPrev={onPrev}
+        onNext={onNext}
+        prevDisabled={prevDisabled}
+        nextDisabled={nextDisabled}
+        navLabel="lead"
+        title={lead.name ?? "Unnamed lead"}
+        description="Lead details and history"
+        avatar={<EntityAvatar name={lead.name} size="lg" />}
+        pills={
+          <>
+            {/* Only the pending toggle stays a badge. Intent and status used to
+                sit here as chips AND again as pickers directly below — the same
+                word twice, the inert copy first. The pickers now carry the
+                colour, so the state still reads at a glance. */}
+            <PendingActionBadge
+              pending={isPending}
+              disabled={busy}
+              onToggle={() => onToggleContacted(lead)}
+            />
+            <LeadHeaderControls
+              intent={lead.current_intent}
+              status={lead.status}
+              ownerLabel={lead.owner_label}
+              ownerOptions={ownerOptions}
+              meta={headerMeta}
+              disabled={busy}
+              onIntentChange={(next) =>
+                quickPatch({ current_intent: next }, "Intent updated")
+              }
+              onStatusChange={(next: LeadStatus) =>
+                quickPatch({ status: next }, "Status updated")
+              }
+              onOwnerChange={(next) =>
+                quickPatch({ owner_label: next }, "Owner updated")
+              }
+            />
+          </>
+        }
+        actions={
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onCall(lead)}
+              disabled={busy || !hasPhone}
+              title={hasPhone ? "Place a call" : "No phone on file"}
+            >
+              <PhoneIcon />
+              Call again
             </Button>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onCall(lead)}
-            disabled={pending || !hasPhone}
-            title={hasPhone ? "Place a call" : "No phone on file"}
-          >
-            <PhoneIcon />
-            Call
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onOpenWhatsApp(lead)}
-            disabled={!hasPhone}
-          >
-            <MessageCircleIcon />
-            WhatsApp
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onOpenReminder(lead)}
-          >
-            <BellPlusIcon />
-            Remind
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button variant="ghost" size="icon-sm" aria-label="More actions" />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onOpenWhatsApp(lead)}
+              disabled={!hasPhone}
+            >
+              <MessageCircleIcon />
+              WhatsApp
+            </Button>
+            {/* The primary action, and the only one that gets the filled
+                treatment: it is the one that puts work into the machine rather
+                than onto the person clicking. */}
+            <Button
+              size="sm"
+              onClick={() => setCallbackOpen(true)}
+              disabled={busy || !hasPhone}
+              title={
+                hasPhone ? "The agent will ring them" : "No phone on file"
               }
             >
-              <MoreHorizontalIcon />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuGroup>
-                {/* Delete lived in a persistent SheetFooter, which spent 60px of
-                    every viewport making the most destructive action the most
-                    prominent thing on screen. */}
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => onDelete(lead)}
-                  disabled={pending}
-                >
-                  <Trash2Icon />
-                  Delete lead
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </>
-      }
-      tabs={[
-        { value: "summary", label: "Summary" },
-        { value: "calls", label: "Calls", count: callsTotal || undefined },
-        { value: "activity", label: "Activity" },
-      ]}
-      activeTab={tab}
-      onTabChange={onTabChange}
-    >
-      <DetailSheetPanel value="summary">
-        {/* The 3-up quick-action grid moved into the shell header, where it is
-            pinned instead of scrolling away. */}
-          <section className="space-y-3">
-            <SectionTitle>Details</SectionTitle>
-
-            {draft ? (
-              <LeadEditForm
-                form={draft.details}
-                onChange={(details) =>
-                  setDraft((prev) => (prev ? { ...prev, details } : prev))
+              <BellPlusIcon />
+              Assign callback
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" size="icon-sm" aria-label="More actions" />
                 }
-                disabled={saving}
-              />
-            ) : (
-              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
-                <FieldWithLock
-                  label="Name"
-                  leadId={lead.id}
-                  fieldPath="name"
-                  value={lead.name}
-                >
-                  {lead.name ?? <Muted>Unnamed</Muted>}
-                </FieldWithLock>
-                <Field label="Phone">
-                  {hasPhone ? (
-                    <a
-                      href={`tel:${lead.phone}`}
-                      className="inline-flex items-center gap-1 font-mono tabular-nums text-foreground transition-colors hover:text-muted-foreground"
-                    >
-                      {lead.phone}
-                      <ExternalLinkIcon className="size-3" />
-                    </a>
-                  ) : (
-                    <span className="italic text-muted-foreground">
-                      No phone
-                    </span>
-                  )}
-                </Field>
-                <FieldWithLock
-                  label="Interest"
-                  leadId={lead.id}
-                  fieldPath="lead_data.interest"
-                  value={lead.interest}
-                >
-                  {lead.interest ?? <Muted>—</Muted>}
-                </FieldWithLock>
-                <FieldWithLock
-                  label="Intent"
-                  leadId={lead.id}
-                  fieldPath="current_intent"
-                  value={lead.current_intent}
-                >
-                  <Badge variant={INTENT_VARIANT[intent]}>
-                    {INTENT_LABEL[intent]}
-                  </Badge>
-                </FieldWithLock>
-                <FieldWithLock
-                  label="Customer type"
-                  leadId={lead.id}
-                  fieldPath="lead_data.customer_status"
-                  value={lead.customer_status}
-                >
-                  {lead.customer_status ?? <Muted>—</Muted>}
-                </FieldWithLock>
-                <FieldWithLock
-                  label="City"
-                  leadId={lead.id}
-                  fieldPath="city"
-                  value={lead.city}
-                >
-                  {lead.city ? (
-                    <span>
-                      {lead.city}
-                      {lead.pincode ? (
-                        <span className="ml-1 text-muted-foreground">
-                          · {lead.pincode}
-                        </span>
-                      ) : null}
-                    </span>
-                  ) : lead.pincode ? (
-                    <span>{lead.pincode}</span>
-                  ) : (
-                    <Muted>—</Muted>
-                  )}
-                </FieldWithLock>
-                <Field label="Visit">
-                  {lead.visit_date_time ? (
-                    <span suppressHydrationWarning>
-                      {formatDateTime(lead.visit_date_time)}
-                    </span>
-                  ) : (
-                    <Muted>Not scheduled</Muted>
-                  )}
-                </Field>
-                <Field label="Wants WA">
-                  {lead.wants_to_connect_on_watsapp === true
-                    ? "Yes"
-                    : lead.wants_to_connect_on_watsapp === false
-                      ? "No"
-                      : <Muted>Unknown</Muted>}
-                </Field>
-                <Field label="First seen">
-                  <span suppressHydrationWarning>
-                    {now === null || !lead.first_seen_at
-                      ? "—"
-                      : formatRelative(lead.first_seen_at, now)}
-                  </span>
-                </Field>
-                <Field label="Last contact">
-                  <span suppressHydrationWarning>
-                    {now === null || !lead.last_contact_at
-                      ? "—"
-                      : formatRelative(lead.last_contact_at, now)}
-                  </span>
-                </Field>
-                {lead.recording_url ? (
-                  <Field label="Latest recording">
-                    <audio
-                      controls
-                      preload="none"
-                      src={lead.recording_url}
-                      className="h-8 w-full"
-                    >
-                      <track kind="captions" />
-                    </audio>
-                  </Field>
-                ) : null}
-                {lead.actionable ? (
-                  <>
-                    <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
-                      Latest call action
-                    </dt>
-                    <dd className="col-span-2 whitespace-pre-wrap rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm leading-relaxed">
-                      {lead.actionable}
-                    </dd>
-                  </>
-                ) : null}
-                {lead.summary ? (
-                  <>
-                    <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
-                      Latest call summary
-                    </dt>
-                    <dd className="col-span-2 whitespace-pre-wrap rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm leading-relaxed">
-                      {lead.summary}
-                    </dd>
-                  </>
-                ) : null}
-                {lead.notes ? (
-                  <>
-                    <dt className="col-span-2 pt-1 text-xs text-muted-foreground">
-                      Notes
-                    </dt>
-                    <dd className="col-span-2 whitespace-pre-wrap rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm leading-relaxed">
-                      {lead.notes}
-                    </dd>
-                  </>
-                ) : null}
-              </dl>
-            )}
-          </section>
-
-          {leadFieldGroups.length > 0 || editableCatalog.length > 0 ? (
-            <>
-              <Separator />
-              <section className="space-y-3">
-                <SectionTitle>Captured fields</SectionTitle>
-                {draft && editableCatalog.length > 0 ? (
-                  <CapturedFieldsEditForm
-                    fields={editableCatalog}
-                    form={draft.captured}
-                    onChange={(captured) =>
-                      setDraft((prev) => (prev ? { ...prev, captured } : prev))
-                    }
-                    disabled={saving}
-                  />
-                ) : leadFieldGroups.length > 0 ? (
-                  <CapturedFieldGroups groups={leadFieldGroups} />
-                ) : (
-                  <EmptyHint>
-                    No fields captured yet. Use Edit to add values.
-                  </EmptyHint>
-                )}
-              </section>
-            </>
-          ) : null}
-
-          {error ? (
-            <p className="rounded-md border border-destructive/30 bg-destructive-muted px-3 py-2 text-xs text-destructive">
-              {error}
-            </p>
-          ) : null}
-
-          {/* One Save/Cancel for the whole panel, pinned to the bottom of the
-              scroller. `sticky` inside the scrolling content rather than a
-              SheetFooter: the bar only exists while editing, and a permanent
-              footer is what used to spend 60px of every viewport on a Delete
-              button. The negative margins bleed it past the panel's own p-4 so
-              it sits flush against the sheet edge. */}
-          {draft ? (
-            <div className="sticky bottom-0 -mx-4 -mb-4 mt-auto flex items-center justify-end gap-2 border-t bg-popover/95 px-4 py-3 backdrop-blur-sm">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={cancelEdit}
-                disabled={saving}
               >
-                <XIcon /> Cancel
-              </Button>
-              <Button size="sm" onClick={onSave} disabled={saving}>
-                {saving ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : (
-                  <CheckIcon />
-                )}
-                {saving ? "Saving…" : "Save changes"}
-              </Button>
-            </div>
-          ) : null}
-      </DetailSheetPanel>
+                <MoreHorizontalIcon />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onClick={() => onOpenReminder(lead)}>
+                    <BellPlusIcon />
+                    Remind me
+                  </DropdownMenuItem>
+                  {/* Delete lived in a persistent SheetFooter, which spent 60px
+                      of every viewport making the most destructive action the
+                      most prominent thing on screen. */}
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => onDelete(lead)}
+                    disabled={pending}
+                  >
+                    <Trash2Icon />
+                    Delete lead
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+        tabs={[
+          { value: "summary", label: "AI Summary" },
+          {
+            value: "calls",
+            label: "Call & Transcript",
+            count: callsTotal || undefined,
+          },
+          { value: "notes", label: "Notes" },
+          { value: "details", label: "Details" },
+          { value: "activity", label: "Activity" },
+        ]}
+        activeTab={tab}
+        onTabChange={onTabChange}
+      >
+        <DetailSheetPanel value="summary">
+          <LeadSummaryPanel
+            cards={statCards}
+            wants={wants}
+            summary={lead.summary}
+            actionable={lead.actionable}
+            stats={callStats}
+            now={now}
+          />
+        </DetailSheetPanel>
 
-      {/* Calls — what used to be `historyMode`, now just a tab. Same two-pane
-          rail + pane, at the sheet's single fixed width. */}
-      <DetailSheetPanel value="calls" fill>
-        {/* The same rail + pane cart recovery and COD now use. Extracted
-            rather than copied — this view existed three times. */}
-        <CallSplitView
-          calls={calls}
-          total={callsTotal}
-          selectedId={selectedCallId}
-          onSelect={selectCall}
-          onLoadMore={loadMoreCalls}
-          loadingMore={callsLoadingMore}
-          counterpartyName={lead.name}
-          now={now}
-          emptyLabel="No calls for this lead yet."
-        />
-      </DetailSheetPanel>
+        {/* Calls — the same rail + pane cart recovery and COD use. */}
+        <DetailSheetPanel value="calls" fill>
+          <CallSplitView
+            calls={calls}
+            total={callsTotal}
+            selectedId={selectedCallId}
+            onSelect={selectCall}
+            onLoadMore={loadMoreCalls}
+            loadingMore={callsLoadingMore}
+            counterpartyName={lead.name}
+            now={now}
+            emptyLabel="No calls for this lead yet."
+          />
+        </DetailSheetPanel>
 
-      <DetailSheetPanel value="activity">
+        <DetailSheetPanel value="notes">
+          {/* Keyed on the lead so switching leads remounts with empty state
+              rather than briefly showing the previous lead's notes. */}
+          <LeadNotesPanel
+            key={lead.id}
+            leadId={lead.id}
+            active={tab === "notes"}
+            now={now}
+          />
+        </DetailSheetPanel>
+
+        <DetailSheetPanel value="details">
+          <LeadDetailsPanel
+            lead={lead}
+            editableCatalog={editableCatalog}
+            effectiveLeadData={effectiveLeadData}
+            effectiveCustomData={effectiveCustomData}
+            draft={draft}
+            onDraftDetails={(details) =>
+              setDraft((prev) => (prev ? { ...prev, details } : prev))
+            }
+            onDraftCaptured={(captured) =>
+              setDraft((prev) => (prev ? { ...prev, captured } : prev))
+            }
+            onStartEdit={startEdit}
+            onCancel={cancelEdit}
+            onSave={onSave}
+            saving={saving}
+            error={error}
+            now={now}
+          />
+        </DetailSheetPanel>
+
+        <DetailSheetPanel value="activity">
           <section className="space-y-3">
             <div className="flex items-center justify-between">
-              <SectionTitle>Reminders</SectionTitle>
+              <SectionLabel as="h3">Reminders</SectionLabel>
               <Button
                 variant="ghost"
                 size="xs"
@@ -823,13 +728,9 @@ export function LeadDetailSheet({
 
           <section className="space-y-3">
             <div className="flex items-center justify-between">
-              <SectionTitle>Call history</SectionTitle>
+              <SectionLabel as="h3">Call history</SectionLabel>
               {callsTotal > 0 ? (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => openCalls()}
-                >
+                <Button variant="ghost" size="xs" onClick={() => openCalls()}>
                   <HistoryIcon /> Show all ({callsTotal})
                 </Button>
               ) : null}
@@ -851,63 +752,21 @@ export function LeadDetailSheet({
               <EmptyHint>No calls placed yet.</EmptyHint>
             )}
           </section>
+        </DetailSheetPanel>
+      </DetailSheetShell>
 
-      </DetailSheetPanel>
-    </DetailSheetShell>
-  );
-}
-
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return (
-    <h3 className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-      {children}
-    </h3>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm wrap-break-word">{children}</dd>
+      <AssignCallbackDialog
+        // Remounts when opened, so the default time is always "an hour from
+        // now" rather than an hour after the sheet was first rendered.
+        key={`${lead.id}-${callbackOpen}`}
+        leadId={lead.id}
+        leadName={lead.name}
+        open={callbackOpen}
+        onOpenChange={setCallbackOpen}
+        onAssigned={() => router.refresh()}
+      />
     </>
   );
-}
-
-// Field row with a lock indicator. The lock widget itself fetches its
-// state from lead_field_overrides; the field renders normally regardless.
-function FieldWithLock({
-  label,
-  leadId,
-  fieldPath,
-  value,
-  children,
-}: {
-  label: string;
-  leadId: string;
-  fieldPath: string;
-  value: unknown;
-  children: React.ReactNode;
-}) {
-  return (
-    <>
-      <dt className="flex items-center gap-1 text-xs text-muted-foreground">
-        {label}
-        <LeadFieldLock leadId={leadId} fieldPath={fieldPath} value={value} />
-      </dt>
-      <dd className="min-w-0 text-sm wrap-break-word">{children}</dd>
-    </>
-  );
-}
-
-function Muted({ children }: { children: React.ReactNode }) {
-  return <span className="text-muted-foreground">{children}</span>;
 }
 
 function EmptyHint({ children }: { children: React.ReactNode }) {
@@ -969,11 +828,7 @@ function ReminderRow({
         }
         className="mt-0.5"
       >
-        {reminder.status === "done"
-          ? "Done"
-          : overdue
-            ? "Overdue"
-            : "Pending"}
+        {reminder.status === "done" ? "Done" : overdue ? "Overdue" : "Pending"}
       </Badge>
     </li>
   );
@@ -996,340 +851,29 @@ function CallRow({
   const DirectionIcon = inbound ? PhoneIncomingIcon : PhoneOutgoingIcon;
   const counterparty = inbound ? call.from_phone : call.to_phone;
   return (
-    <li
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
-      className="flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-card px-3 py-2 transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
-    >
-      <DirectionIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm">
-          <span className="text-muted-foreground">
-            {inbound ? "Inbound from " : "Call to "}
-          </span>
-          <span className="font-mono tabular-nums">
-            {counterparty ?? "unknown"}
-          </span>
-          {duration ? (
-            <span className="text-muted-foreground"> · {duration}</span>
-          ) : null}
-        </p>
-        <p
-          className="text-xs text-muted-foreground"
-          suppressHydrationWarning
-        >
-          {now === null ? "" : formatRelative(call.started_at, now)}
-          {call.error_message ? ` · ${call.error_message}` : ""}
-        </p>
-      </div>
-      <Badge variant={CALL_STATUS_VARIANT[call.status]} className="mt-0.5">
-        {CALL_STATUS_LABEL[call.status]}
-      </Badge>
+    <li>
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex w-full items-start gap-2 rounded-md border border-border/60 bg-card px-3 py-2 text-left transition-colors hover:bg-accent/40"
+      >
+        <DirectionIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-mono text-xs tabular-nums">
+            {counterparty ?? "Unknown number"}
+          </p>
+          <p className="text-xs text-muted-foreground" suppressHydrationWarning>
+            {now === null || !call.started_at
+              ? CALL_STATUS_LABEL[call.status]
+              : `${formatRelative(call.started_at, now)}${
+                  duration ? ` · ${duration}` : ""
+                }`}
+          </p>
+        </div>
+        <Badge variant={CALL_STATUS_VARIANT[call.status]} className="mt-0.5">
+          {CALL_STATUS_LABEL[call.status]}
+        </Badge>
+      </button>
     </li>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Captured fields edit form — catalog-driven inline editor for the lead's
-// JSONB-backed fields (lead_data + custom_data). Each catalog row maps to
-// one typed input. The hardcoded keys below are already editable via the
-// main Details form, so the captured-fields editor skips them to avoid
-// the same field appearing twice in the sheet.
-// ---------------------------------------------------------------------------
-
-function CapturedFieldsEditForm({
-  fields,
-  form,
-  onChange,
-  disabled,
-}: {
-  fields: LeadFieldDefinition[];
-  form: CapturedForm;
-  onChange: (next: CapturedForm) => void;
-  disabled: boolean;
-}) {
-  function update(id: string, value: string) {
-    onChange({ ...form, [id]: value });
-  }
-
-  // Group by category so nested custom_data fields visually cluster
-  // under their group header, matching the read-only display.
-  const groups = React.useMemo(() => {
-    const map = new Map<string, LeadFieldDefinition[]>();
-    for (const def of fields) {
-      const key =
-        def.source_column === "lead_data" ? "" : (def.category ?? "");
-      const bag = map.get(key) ?? [];
-      bag.push(def);
-      map.set(key, bag);
-    }
-    return Array.from(map.entries());
-  }, [fields]);
-
-  return (
-    <div className="space-y-4">
-      {groups.map(([category, defs]) => (
-        <div key={category || "_ungrouped"} className="space-y-2">
-          {category ? (
-            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              {humaniseFieldKey(category)}
-            </div>
-          ) : null}
-          <div className="grid gap-3 rounded-md border border-border/70 bg-card p-3">
-            {defs.map((def) => {
-              const inputId = `cap-${def.id}`;
-              const label = def.label ?? humaniseFieldKey(def.key_path);
-              const value = form[def.id] ?? "";
-              return (
-                <div key={def.id} className="grid gap-1.5">
-                  <Label htmlFor={inputId} className="text-xs">
-                    {label}
-                  </Label>
-                  {def.data_type === "boolean" ? (
-                    <Select
-                      value={value === "" ? "unset" : value}
-                      onValueChange={(v) =>
-                        update(def.id, !v || v === "unset" ? "" : v)
-                      }
-                      disabled={disabled}
-                    >
-                      <SelectTrigger id={inputId} className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="unset">Unset</SelectItem>
-                        <SelectItem value="true">Yes</SelectItem>
-                        <SelectItem value="false">No</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  ) : def.data_type === "enum" &&
-                    def.enum_options &&
-                    def.enum_options.length > 0 ? (
-                    <Select
-                      value={value === "" ? "unset" : value}
-                      onValueChange={(v) =>
-                        update(def.id, !v || v === "unset" ? "" : v)
-                      }
-                      disabled={disabled}
-                    >
-                      <SelectTrigger id={inputId} className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="unset">Unset</SelectItem>
-                        {def.enum_options.map((opt) => (
-                          <SelectItem key={opt} value={opt}>
-                            {opt}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : def.data_type === "date" ? (
-                    <Input
-                      id={inputId}
-                      type="datetime-local"
-                      value={value}
-                      onChange={(e) => update(def.id, e.target.value)}
-                      disabled={disabled}
-                    />
-                  ) : def.data_type === "number" ? (
-                    <Input
-                      id={inputId}
-                      type="number"
-                      value={value}
-                      onChange={(e) => update(def.id, e.target.value)}
-                      disabled={disabled}
-                      step="any"
-                    />
-                  ) : (
-                    <Input
-                      id={inputId}
-                      value={value}
-                      onChange={(e) => update(def.id, e.target.value)}
-                      disabled={disabled}
-                      maxLength={2000}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Edit mode — only fields that live at the lead level. Per-call fields
-// (summary, actionable, recording_url, visit_date_time) are immutable
-// snapshots and no longer editable from here. Visit time and WhatsApp
-// preference moved out of the edit form for the same reason — they're
-// LLM-extracted dynamic fields exposed via the catalog UI now.
-// ---------------------------------------------------------------------------
-
-function LeadEditForm({
-  form,
-  onChange,
-  disabled,
-}: {
-  form: EditForm;
-  onChange: (next: EditForm) => void;
-  disabled: boolean;
-}) {
-  function update<K extends keyof EditForm>(key: K, value: EditForm[K]) {
-    onChange({ ...form, [key]: value });
-  }
-  return (
-    <div className="grid gap-3">
-      <div className="grid gap-1.5">
-        <Label htmlFor="edit-name">Name</Label>
-        <Input
-          id="edit-name"
-          value={form.name}
-          onChange={(e) => update("name", e.target.value)}
-          disabled={disabled}
-          maxLength={200}
-          placeholder="Jane Cooper"
-        />
-      </div>
-      <div className="grid gap-1.5">
-        <Label htmlFor="edit-phone">Phone</Label>
-        <Input
-          id="edit-phone"
-          type="tel"
-          value={form.phone}
-          onChange={(e) => update("phone", e.target.value)}
-          disabled={disabled}
-          maxLength={32}
-          placeholder="+91 98xxxxxxxx"
-        />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="grid gap-1.5">
-          <Label htmlFor="edit-interest">Interest</Label>
-          <Input
-            id="edit-interest"
-            value={form.interest}
-            onChange={(e) => update("interest", e.target.value)}
-            disabled={disabled}
-            maxLength={500}
-            placeholder="Pro plan"
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="edit-customer-type">Customer type</Label>
-          <Input
-            id="edit-customer-type"
-            value={form.customer_status}
-            onChange={(e) => update("customer_status", e.target.value)}
-            disabled={disabled}
-            maxLength={50}
-            placeholder="Buyer / Owner / …"
-          />
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="grid gap-1.5">
-          <Label>Intent</Label>
-          <Select
-            value={form.lead_intent === "" ? "none" : form.lead_intent}
-            onValueChange={(v) =>
-              update("lead_intent", v === "none" ? "" : (v as LeadIntent))
-            }
-            disabled={disabled}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">Unset</SelectItem>
-              <SelectItem value="hot">Hot</SelectItem>
-              <SelectItem value="warm">Warm</SelectItem>
-              <SelectItem value="cold">Cold</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-1.5">
-          <Label>Wants WhatsApp</Label>
-          <Select
-            value={form.wants_to_connect_on_watsapp}
-            onValueChange={(v) =>
-              update(
-                "wants_to_connect_on_watsapp",
-                v as EditForm["wants_to_connect_on_watsapp"],
-              )
-            }
-            disabled={disabled}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="unknown">Unknown</SelectItem>
-              <SelectItem value="yes">Yes</SelectItem>
-              <SelectItem value="no">No</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="grid gap-1.5">
-          <Label htmlFor="edit-city">City</Label>
-          <Input
-            id="edit-city"
-            value={form.city}
-            onChange={(e) => update("city", e.target.value)}
-            disabled={disabled}
-            maxLength={100}
-            placeholder="Mumbai"
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="edit-pincode">Pincode</Label>
-          <Input
-            id="edit-pincode"
-            value={form.pincode}
-            onChange={(e) => update("pincode", e.target.value)}
-            disabled={disabled}
-            maxLength={20}
-            inputMode="numeric"
-            placeholder="400001"
-          />
-        </div>
-      </div>
-      <div className="grid gap-1.5">
-        <Label htmlFor="edit-notes">Notes</Label>
-        <Textarea
-          id="edit-notes"
-          value={form.notes}
-          onChange={(e) => update("notes", e.target.value)}
-          disabled={disabled}
-          maxLength={5000}
-          rows={4}
-          placeholder="Conversation context, objections, preferences…"
-        />
-      </div>
-      <div className="grid gap-1.5">
-        <Label htmlFor="edit-visit">Visit scheduled</Label>
-        <Input
-          id="edit-visit"
-          type="datetime-local"
-          value={form.visit_date_time}
-          onChange={(e) => update("visit_date_time", e.target.value)}
-          disabled={disabled}
-        />
-        <p className="text-[11px] text-muted-foreground">
-          Leave blank to clear.
-        </p>
-      </div>
-    </div>
   );
 }

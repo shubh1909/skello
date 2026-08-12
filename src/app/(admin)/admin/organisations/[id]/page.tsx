@@ -5,13 +5,10 @@ import {
   Building2Icon,
   ChevronRightIcon,
   GaugeIcon,
-  HeadphonesIcon,
-  MessageCircleIcon,
-  ShoppingCartIcon,
+  PlugZapIcon,
   SlidersHorizontalIcon,
   TargetIcon,
   UserIcon,
-  UsersIcon,
 } from "lucide-react";
 
 import { ErrorCard } from "@/components/app/error-card";
@@ -19,12 +16,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { OrgInfoForm } from "@/components/admin/org-info-form";
-import { VoiceAgentForm } from "@/components/admin/voice-agent-form";
-import { WhatsAppForm } from "@/components/admin/whatsapp-form";
 import { getOrganisationAdmin } from "@/actions/admin/organisations";
 import { getVoiceAgentAdmin } from "@/actions/admin/voice-agent";
 import { getWhatsAppAdmin } from "@/actions/admin/whatsapp";
-import { formatDateTime, formatRelative } from "@/lib/format";
+import { formatRelative } from "@/lib/format";
 
 export const metadata = { title: "Organisation · Admin · Skelo" };
 
@@ -98,47 +93,47 @@ export default async function AdminOrganisationDetailPage({
           </CardContent>
         </Card>
 
+        {/* Voice agent and WhatsApp forms used to sit here as two more cards.
+            They moved into the Integrations hub so every connection this org has
+            lives behind one tab strip, instead of being split between this page
+            and two separate routes. This card is the summary and the way in. */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
-              <HeadphonesIcon className="size-4 text-muted-foreground" />
-              <CardTitle>Voice agent</CardTitle>
+              <PlugZapIcon className="size-4 text-muted-foreground" />
+              <CardTitle>Integrations</CardTitle>
             </div>
             <p className="text-sm text-muted-foreground">
-              Provision the outbound agent for this workspace. The owner sees a
-              read-only status card in Settings — all config lives here.
+              Voice agent, WhatsApp, Google Ads and Shopify — all configured in
+              one place. The owner sees the same tabs read-only.
             </p>
           </CardHeader>
-          <CardContent>
-            <VoiceAgentForm organisationId={org.id} integration={integration} />
-            {integration ? (
-              <p className="mt-3 text-[11px] text-muted-foreground">
-                Connected {formatDateTime(integration.created_at)}, last
-                updated {formatRelative(integration.updated_at)}.
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <MessageCircleIcon className="size-4 text-muted-foreground" />
-              <CardTitle>WhatsApp</CardTitle>
+          <CardContent className="grid gap-3">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+              <dt className="text-xs text-muted-foreground">Voice agent</dt>
+              <dd className="text-xs">
+                {integration
+                  ? `Connected, updated ${formatRelative(integration.updated_at)}`
+                  : "Not connected"}
+              </dd>
+              <dt className="text-xs text-muted-foreground">WhatsApp sending</dt>
+              <dd className="text-xs">
+                {whatsapp
+                  ? `Connected, updated ${formatRelative(whatsapp.updated_at)}`
+                  : "Not connected"}
+              </dd>
+            </dl>
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                render={
+                  <Link href={`/admin/organisations/${org.id}/integrations`} />
+                }
+              >
+                <PlugZapIcon /> Open integrations
+              </Button>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Connect the WhatsApp channel for cart recovery. The owner sees a
-              read-only status card in Settings — all config lives here.
-            </p>
-          </CardHeader>
-          <CardContent>
-            <WhatsAppForm organisationId={org.id} integration={whatsapp} />
-            {whatsapp ? (
-              <p className="mt-3 text-[11px] text-muted-foreground">
-                Connected {formatDateTime(whatsapp.created_at)}, last updated{" "}
-                {formatRelative(whatsapp.updated_at)}.
-              </p>
-            ) : null}
           </CardContent>
         </Card>
       </section>
@@ -154,10 +149,10 @@ export default async function AdminOrganisationDetailPage({
         <CardContent className="grid gap-0 p-0">
           <Separator />
           <ConfigLink
-            href={`/admin/organisations/${org.id}/voice-agents`}
-            title="Voice agents"
-            description="Link the agents that route inbound calls into this workspace."
-            icon={<UsersIcon className="size-4" />}
+            href={`/admin/organisations/${org.id}/integrations`}
+            title="Integrations"
+            description="Voice agent, WhatsApp, Google Ads and Shopify — one tab each."
+            icon={<PlugZapIcon className="size-4" />}
           />
           <Separator />
           <ConfigLink
@@ -179,13 +174,6 @@ export default async function AdminOrganisationDetailPage({
             title="Call outcomes"
             description="Configure what each conversation outcome does (succeed / fail / callback / retry) and which count as a success."
             icon={<TargetIcon className="size-4" />}
-          />
-          <Separator />
-          <ConfigLink
-            href={`/admin/organisations/${org.id}/shopify`}
-            title="Cart Recovery (Shopify)"
-            description="Connect the store's Shopify app so abandoned checkouts trigger recovery calls."
-            icon={<ShoppingCartIcon className="size-4" />}
           />
         </CardContent>
       </Card>

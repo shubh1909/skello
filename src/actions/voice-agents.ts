@@ -2,10 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 
+import { requireUser, userCanManageOrg } from "@/lib/auth/org-access";
 import { pingBolna } from "@/lib/bolna/client";
 import { logSkeloError } from "@/lib/errors";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
 import {
   registerVoiceAgentSchema,
   removeVoiceAgentSchema,
@@ -14,39 +14,8 @@ import {
 import { type ActionResult, fail, ok } from "@/types/action";
 import type { VoiceAgent } from "@/types/voice-agent";
 
-type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
-
 const COLUMNS =
   "agent_id, organisation_id, label, enabled, verified_at, created_at, updated_at";
-
-async function requireUser() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return { supabase, user };
-}
-
-async function userCanManageOrg(
-  supabase: SupabaseServerClient,
-  userId: string,
-  organisationId: string,
-): Promise<boolean> {
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", userId)
-    .maybeSingle<{ is_admin: boolean }>();
-  if (profile?.is_admin) return true;
-
-  const { data } = await supabase
-    .from("organisations")
-    .select("id")
-    .eq("id", organisationId)
-    .eq("owner_id", userId)
-    .maybeSingle<{ id: string }>();
-  return !!data;
-}
 
 export async function listVoiceAgents(
   organisationId: unknown,

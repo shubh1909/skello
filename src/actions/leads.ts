@@ -22,7 +22,8 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 const LEAD_COLUMNS =
   "id, created_at, updated_at, organisation_id, org_slug, " +
   "name, phone, phone_normalized, first_seen_at, last_contact_at, " +
-  "current_intent, city, pincode, notes, source, status, pending_action, " +
+  "current_intent, current_intent_score, owner_label, " +
+  "city, pincode, notes, source, status, pending_action, " +
   "lead_data, custom_data";
 
 interface LeadRow {
@@ -37,6 +38,8 @@ interface LeadRow {
   first_seen_at: string | null;
   last_contact_at: string | null;
   current_intent: LeadIntent | null;
+  current_intent_score: number | null;
+  owner_label: string | null;
   city: string | null;
   pincode: string | null;
   notes: string | null;
@@ -97,9 +100,11 @@ function buildLead(row: LeadRow, snapshot: LatestCallSnapshot | null): Lead {
     last_contact_at: row.last_contact_at,
     name: row.name,
     current_intent: row.current_intent,
+    current_intent_score: row.current_intent_score,
     city: row.city,
     pincode: row.pincode,
     notes: row.notes,
+    owner_label: row.owner_label,
     status: row.status,
     pending_action: row.pending_action,
     source: row.source,
@@ -313,6 +318,8 @@ function splitWrites(
       case "status":
       case "source":
       case "pending_action":
+      case "current_intent_score":
+      case "owner_label":
         rowPatch[k] = v;
         break;
       case "lead_intent":

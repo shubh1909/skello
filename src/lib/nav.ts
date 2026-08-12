@@ -5,6 +5,7 @@ import {
   LayoutGridIcon,
   MessageCircleIcon,
   PackageCheckIcon,
+  PlugZapIcon,
   RadioIcon,
   SettingsIcon,
   ShoppingCartIcon,
@@ -102,10 +103,28 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     label: "System",
     items: [
       {
+        // Above Settings on purpose: this is where leads come FROM, which is
+        // operational, while Settings is workspace and account admin. They were
+        // the same page until the connection cards moved here.
+        href: "/integrations",
+        label: "Integrations",
+        icon: PlugZapIcon,
+        keywords: [
+          "google ads",
+          "whatsapp",
+          "99acres",
+          "webhook",
+          "lead capture",
+          "sources",
+          "shopify",
+          "connect",
+        ],
+      },
+      {
         href: "/settings",
         label: "Settings",
         icon: SettingsIcon,
-        keywords: ["preferences", "integrations", "workspace"],
+        keywords: ["preferences", "workspace", "account"],
       },
       {
         href: "/developer",
