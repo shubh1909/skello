@@ -48,7 +48,8 @@ A map of every route in the app, who can reach it, what it renders, and how the 
     │   ├── /campaigns/templates/cart-recovery   → Abandoned-checkout recovery workspace
     │   └── /campaigns/templates/cod-confirmation → COD order-confirmation calls
     ├── System
-    │   ├── /settings       → Workspace + voice agent integration
+    │   ├── /integrations   → Lead sources + connected apps, one tab per integration
+    │   ├── /settings       → Workspace, data import, account
     │   ├── /developer      → Placeholder (Access denied)
     │   └── /billing        → Placeholder (Access denied)
     └── /reminders          → Reminder list (not in sidebar; linked from
@@ -73,7 +74,8 @@ A map of every route in the app, who can reach it, what it renders, and how the 
 | `/conversations` | [src/app/(app)/conversations/page.tsx](../src/app/(app)/conversations/page.tsx) | Authed + org required | Unified call log (inbound + outbound). Columns: Call ID, Lead / Number, Date & Time, Duration, Direction, Outcome, Audio. Filter bar: Range (24h / 7d / 30d / all), Agent, Outcome, Direction, search. Click a row → `CallTranscriptDialog`. **Audio → Play** opens `recording_url`. Realtime updates via `useCallsRealtime`. |
 | `/campaigns` | [src/app/(app)/campaigns/page.tsx](../src/app/(app)/campaigns/page.tsx) | Authed + org required | **Bulk outbound calling.** Header + 4 stat cards (Total / Running / Scheduled / Completed) + the campaigns table (ID, File, Contacts `valid/total`, Status, Progress bar `succeeded·in-flight·failed`, Workflow, Created, row actions). Click the ID or the list icon → call-log sheet. New-campaign button opens [`CampaignUploadDialog`](../src/components/app/campaign-upload-dialog.tsx) (drag-and-drop CSV, run-now or schedule, retries 0–5, retry interval, retry-on triggers). Realtime via `useCampaignsRealtime`. See [api.md § Campaigns](api.md#campaigns-bulk-outbound). |
 | `/reminders` | [src/app/(app)/reminders/page.tsx](../src/app/(app)/reminders/page.tsx) | Authed + org required | Tabbed reminder list. Query: `?status=pending\|done\|dismissed` (default `pending`). Not in sidebar — reached from dashboard widgets and the lead detail sheet. |
-| `/settings` | [src/app/(app)/settings/page.tsx](../src/app/(app)/settings/page.tsx) | Authed + org required | Workspace + account view; includes the voice agent integration card |
+| `/integrations` | [src/app/(app)/integrations/page.tsx](<../src/app/(app)/integrations/page.tsx>) | Authed + org required | **Read-only.** One tab per integration (`?tab=`): **Google Ads** and **WhatsApp** (live — webhook URL, self-issued key/verify token, setup steps, delivery log with raw payloads and re-run), **99acres** (not built — states what the customer must supply), **Voice agent** and **Shopify** (the status cards moved off `/settings`). Provisioning is admin-only, at `/admin/organisations/[id]/integrations`, which mirrors these tabs one-for-one. See [docs/integrations-plan.md](integrations-plan.md). |
+| `/settings` | [src/app/(app)/settings/page.tsx](../src/app/(app)/settings/page.tsx) | Authed + org required | Workspace, CSV call import, account. The connection cards moved to `/integrations` (2026-08-12). |
 | `/developer` | [src/app/(app)/developer/page.tsx](../src/app/(app)/developer/page.tsx) | Authed + org required | Placeholder — role-gated (Access denied) |
 | `/billing` | [src/app/(app)/billing/page.tsx](../src/app/(app)/billing/page.tsx) | Authed + org required | Placeholder — owner-gated (Access denied) |
 | `GET /api/leads/export` | [src/app/api/leads/export/route.ts](../src/app/api/leads/export/route.ts) | Session-authed | CSV download. Query: `?range=today\|yesterday\|last_week\|last_month\|all`. Scoped to the caller's org. |

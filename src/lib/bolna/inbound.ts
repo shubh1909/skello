@@ -133,6 +133,7 @@ export async function recordInboundCall(
         name_extracted: merge.callSnapshot.name_extracted,
         interest: merge.callSnapshot.interest,
         lead_intent_extracted: merge.callSnapshot.lead_intent_extracted,
+        intent_score_extracted: merge.callSnapshot.intent_score_extracted,
         actionable: merge.callSnapshot.actionable,
         customer_status: merge.callSnapshot.customer_status,
         visit_scheduled_at: merge.callSnapshot.visit_scheduled_at,

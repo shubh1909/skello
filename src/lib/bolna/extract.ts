@@ -165,6 +165,8 @@ export interface ExtractedLead {
   interest: string | null;
   customer_status: string | null;
   lead_intent: string | null;
+  /** Raw 0-100 buying-intent score; coerced and range-checked downstream. */
+  intent_score: string | null;
   actionable: string | null;
   connect_on_whatsapp: boolean | null;
   visit_scheduled_at: string | null;
@@ -195,6 +197,7 @@ export function extractLead(
     interest: pickValue(ld.interest),
     customer_status: pickValue(ld.customer_status),
     lead_intent: pickValue(ld.lead_intent),
+    intent_score: pickValue(ld.intent_score),
     actionable: pickValue(ld.actionable),
     connect_on_whatsapp: toBoolean(pickValue(ld.connect_on_whatsapp)),
     visit_scheduled_at: toTimestamp(pickValue(ld.date_and_time_of_visit)),

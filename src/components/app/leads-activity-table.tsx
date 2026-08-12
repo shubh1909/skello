@@ -59,8 +59,9 @@ import { useCallsRealtime } from "@/hooks/use-calls-realtime";
 import { ColumnResizeHandle, useColumnWidths } from "@/hooks/use-column-widths";
 import { useInfiniteList } from "@/hooks/use-infinite-list";
 import { useLeadsRealtime } from "@/hooks/use-leads-realtime";
-import type { Lead, LeadIntent } from "@/types/lead";
+import type { Lead, LeadIntent, LeadStatus } from "@/types/lead";
 import type { LeadFieldDefinition } from "@/types/lead-field-definition";
+import type { LeadSheetBinding } from "@/types/lead-sheet-binding";
 
 const INTENT_CLASSES: Record<LeadIntent, string> = {
   hot: "border-transparent bg-destructive/10 text-destructive dark:bg-destructive/20",
@@ -206,6 +207,19 @@ interface LeadsActivityTableProps {
   // what each row contributes: visible_in_table → column rendering,
   // filterable → filter picker entry, sortable → sort dropdown entry.
   catalog: LeadFieldDefinition[];
+  /**
+   * Per-org lead-sheet layout. Passed straight through to the detail sheet —
+   * the table itself has no use for it, but fetching it once on the server
+   * beats every sheet open paying for its own round trip.
+   */
+  bindings?: LeadSheetBinding[];
+  /**
+   * Pipeline tab, owned by the URL and applied server-side to the first page.
+   * Repeated into every subsequent fetch here so page 2 matches page 1.
+   */
+  statusFilter?: LeadStatus | null;
+  /** The with-calls / all-leads switch, rendered by the page into the toolbar. */
+  viewToggle?: React.ReactNode;
   initialSearch?: string;
 }
 
@@ -235,6 +249,9 @@ export function LeadsActivityTable({
   orgSlug,
   includeZeroCalls,
   catalog,
+  bindings,
+  statusFilter = null,
+  viewToggle,
   initialSearch = "",
 }: LeadsActivityTableProps) {
   const router = useRouter();
@@ -283,13 +300,25 @@ export function LeadsActivityTable({
     [catalog],
   );
 
-  const wireFilters = React.useMemo(
-    () =>
-      filters
-        .map(filterToWire)
-        .filter((f): f is LeadActivityFilter => f !== null),
-    [filters],
-  );
+  const wireFilters = React.useMemo(() => {
+    const chips = filters
+      .map(filterToWire)
+      .filter((f): f is LeadActivityFilter => f !== null);
+    if (!statusFilter) return chips;
+    // The pipeline tab is a filter like any other, prepended rather than held
+    // separately — that way the export dialog and the count query inherit it
+    // without either having to know a tab exists.
+    return [
+      {
+        source: "column" as const,
+        category: "",
+        key: "status",
+        op: "eq" as const,
+        value: statusFilter,
+      },
+      ...chips,
+    ];
+  }, [filters, statusFilter]);
 
   const fetchPage = React.useCallback(
     async (offset: number, limit: number) => {
@@ -381,11 +410,25 @@ export function LeadsActivityTable({
   const [pendingLeadId, setPendingLeadId] = React.useState<string | null>(null);
   const [pending, startTransition] = React.useTransition();
 
-  const detailLead = React.useMemo(
-    () =>
-      detailLeadId ? (items.find((l) => l.id === detailLeadId) ?? null) : null,
+  const detailIndex = React.useMemo(
+    () => (detailLeadId ? items.findIndex((l) => l.id === detailLeadId) : -1),
     [items, detailLeadId],
   );
+  const detailLead = detailIndex >= 0 ? items[detailIndex] : null;
+
+  /**
+   * Step the open sheet to the adjacent row.
+   *
+   * Bounded by what is LOADED, not by `total`: the list pages as you scroll, so
+   * "next" at the bottom of the loaded window has nothing to move to yet. The
+   * button disables there rather than silently doing nothing.
+   */
+  function stepDetail(delta: number) {
+    if (detailIndex < 0) return;
+    const next = items[detailIndex + delta];
+    if (!next) return;
+    setDetailLeadId(next.id);
+  }
 
   function openWhatsApp(lead: Lead) {
     setWaLead(lead);
@@ -512,7 +555,8 @@ export function LeadsActivityTable({
           </Button>
         </form>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {viewToggle}
           {filterableDefs.length > 0 ? (
             <FilterMenu defs={filterableDefs} onAdd={addFilter} />
           ) : null}
@@ -729,6 +773,11 @@ export function LeadsActivityTable({
         lead={detailLead}
         organisationId={organisationId}
         catalog={catalog}
+        bindings={bindings}
+        onPrev={() => stepDetail(-1)}
+        onNext={() => stepDetail(1)}
+        prevDisabled={detailIndex <= 0}
+        nextDisabled={detailIndex < 0 || detailIndex >= items.length - 1}
         open={detailOpen}
         onOpenChange={setDetailOpen}
         pending={pending}

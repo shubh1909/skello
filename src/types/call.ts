@@ -67,6 +67,8 @@ export interface Call {
   name_extracted: string | null;
   interest: string | null;
   lead_intent_extracted: LeadIntent | null;
+  /** 0-100 buying-intent score for this conversation. Null = not scored. */
+  intent_score_extracted: number | null;
   actionable: string | null;
   customer_status: string | null;
   visit_scheduled_at: string | null;

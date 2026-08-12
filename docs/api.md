@@ -75,7 +75,18 @@ SUPABASE_SERVICE_ROLE_KEY=<service_role_key>   # server-only, never exposed
 BOLNA_WEBHOOK_SECRET=<shared_secret>           # for webhook signature check (inbound + call-status)
 BOLNA_API_BASE_URL=https://api.bolna.ai        # optional — override for testing / self-host
 CRON_SECRET=<shared_secret>                    # campaigns cron drainer; must match the value stored in Supabase Vault as `campaigns_cron_secret`
+NEXT_PUBLIC_APP_URL=https://app.skelo.team     # public origin for webhook addresses shown in the UI
 ```
+
+> **`NEXT_PUBLIC_APP_URL` matters in production.** It is the origin used to build the
+> lead-source webhook addresses an admin hands to Google Ads and Meta (`src/lib/app-url.ts`).
+> Unset, it falls back to the incoming request's host — correct behind a proxy, but
+> `http://localhost:3000` in development, which is an address that looks perfectly valid and
+> silently never receives a delivery. The admin Lead sources page detects a
+> local/private host and says so rather than rendering it quietly.
+>
+> Distinct from `SHOPIFY_APP_URL`, which exists because Shopify's registered OAuth redirect
+> URI must match byte for byte and may legitimately differ from the app's own domain.
 
 > Provider **API keys** are **per-organisation** — stored in the `bolna_integrations` table and configured by each org admin in Settings. Skelo itself does not hold a global provider key. The environment variable names above still reference `BOLNA_*` because that is the current provider; rename if you later abstract the service directory.
 
