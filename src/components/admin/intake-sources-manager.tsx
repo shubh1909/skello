@@ -37,7 +37,9 @@ import {
 } from "@/actions/lead-intake";
 import { cn } from "@/lib/utils";
 import {
+  CREDENTIAL_HINT,
   CREDENTIAL_LABEL,
+  OPTIONAL_CREDENTIALS,
   WRITABLE_CREDENTIALS,
   type LeadIntakeChannel,
   type LeadIntakeSource,
@@ -49,7 +51,7 @@ const CHANNEL_BLURB: Record<LeadIntakeChannel, string> = {
   whatsapp:
     "Straight to the Meta Cloud API, not a messaging provider — the ad attribution does not survive a relay. Needs the client's own Meta credentials, which is why this lives here.",
   portal_99acres:
-    "Not built yet — the field mapping needs a live sample enquiry first.",
+    "99acres posts each enquiry to the URL below. There is no self-serve console — the client's account manager registers it. Field names differ per seller account, so the first delivery is what teaches us the mapping.",
 };
 
 const ROUTE_SEGMENT: Record<LeadIntakeChannel, string> = {
@@ -154,10 +156,15 @@ function SourceCard({
 
   const brand = CHANNEL_BRAND[source.channel];
   const writable = WRITABLE_CREDENTIALS[source.channel];
+  const optional = new Set(OPTIONAL_CREDENTIALS[source.channel]);
   const url = `${origin}/api/webhooks/${ROUTE_SEGMENT[source.channel]}/${source.public_token}`;
-  const credentialsReady = writable.every((key) =>
-    source.configured_credentials.includes(key),
-  );
+  // Only the REQUIRED ones gate readiness. Every portal credential is optional
+  // — a portal signs nothing — so a portal endpoint is ready the moment it
+  // exists, and must not sit on "Awaiting credentials" forever.
+  const credentialsReady = writable
+    .filter((key) => !optional.has(key))
+    .every((key) => source.configured_credentials.includes(key));
+  const hasRequired = writable.some((key) => !optional.has(key));
 
   // Only non-empty fields are sent. An untouched input must not blank a stored
   // secret, and a saved-then-cleared field would do exactly that.
@@ -200,7 +207,7 @@ function SourceCard({
         <SetupProgress
           steps={[
             { label: "Endpoint issued", done: true },
-            ...(writable.length > 0
+            ...(hasRequired
               ? [{ label: "Credentials stored", done: credentialsReady }]
               : []),
             { label: "First lead received", done: Boolean(source.last_event_at) },
@@ -241,11 +248,12 @@ function SourceCard({
               <div className="grid gap-3 sm:grid-cols-2">
                 {writable.map((key) => {
                   const set = source.configured_credentials.includes(key);
+                  const isOptional = optional.has(key);
                   return (
                     <div key={key} className="grid gap-1.5">
                       <Label
                         htmlFor={`${source.id}-${key}`}
-                        className="flex items-center gap-2"
+                        className="flex flex-wrap items-center gap-2"
                       >
                         {CREDENTIAL_LABEL[key] ?? key}
                         <span
@@ -253,16 +261,21 @@ function SourceCard({
                             "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
                             set
                               ? "bg-success-muted text-success"
-                              : "bg-warning-muted text-warning",
+                              : isOptional
+                                ? "bg-muted text-muted-foreground"
+                                : "bg-warning-muted text-warning",
                           )}
                         >
                           {set ? <CheckIcon className="size-2.5" /> : null}
-                          {set ? "set" : "missing"}
+                          {set ? "set" : isOptional ? "optional" : "missing"}
                         </span>
                       </Label>
                       <Input
                         id={`${source.id}-${key}`}
-                        type="password"
+                        // An IP allowlist is not a secret and is much easier to
+                        // get wrong than to keep private — masking it would only
+                        // stop an admin proof-reading what they typed.
+                        type={key === "allowed_ips" ? "text" : "password"}
                         autoComplete="off"
                         placeholder={set ? "Replace…" : "Paste value"}
                         value={draft[key] ?? ""}
@@ -270,6 +283,11 @@ function SourceCard({
                           setDraft((d) => ({ ...d, [key]: e.target.value }))
                         }
                       />
+                      {CREDENTIAL_HINT[key] ? (
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          {CREDENTIAL_HINT[key]}
+                        </p>
+                      ) : null}
                     </div>
                   );
                 })}

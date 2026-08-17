@@ -2,10 +2,7 @@ import { Building2Icon, HeadphonesIcon, ShoppingCartIcon } from "lucide-react";
 
 import { ErrorCard } from "@/components/app/error-card";
 import { NavTabs } from "@/components/app/nav-tabs";
-import {
-  ChannelLogo,
-  ChannelTile,
-} from "@/components/app/integrations/channel-brand";
+import { ChannelLogo } from "@/components/app/integrations/channel-brand";
 import { ChannelPanel } from "@/components/app/integrations/channel-panel";
 import { IntakeEventLog } from "@/components/app/integrations/intake-event-log";
 import { ShopifyStatusCard } from "@/components/app/shopify-status-card";
@@ -14,7 +11,6 @@ import { WhatsAppStatusCard } from "@/components/app/whatsapp-status-card";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -90,8 +86,16 @@ export default async function IntegrationsPage({ searchParams }: PageProps) {
     sourcesRes.data.find((s) => s.channel === "google_ads") ?? null;
   const whatsappSource =
     sourcesRes.data.find((s) => s.channel === "whatsapp") ?? null;
+  const portalSource =
+    sourcesRes.data.find((s) => s.channel === "portal_99acres") ?? null;
   const activeSource =
-    tab === "google-ads" ? googleSource : tab === "whatsapp" ? whatsappSource : null;
+    tab === "google-ads"
+      ? googleSource
+      : tab === "whatsapp"
+        ? whatsappSource
+        : tab === "portal-99acres"
+          ? portalSource
+          : null;
 
   // Only the active tab's data is fetched. Each connection card hits a
   // different table, and loading all of them on every tab would make the page
@@ -207,7 +211,9 @@ export default async function IntegrationsPage({ searchParams }: PageProps) {
             emptyHint={
               tab === "google-ads"
                 ? "No deliveries yet. Press “Send test data” on the lead form in Google Ads — the test lands here in a few seconds."
-                : "No leads yet. Tap one of your own Click-to-WhatsApp ads and send a message to check the wiring."
+                : tab === "whatsapp"
+                  ? "No leads yet. Tap one of your own Click-to-WhatsApp ads and send a message to check the wiring."
+                  : "No enquiries yet. Ask your 99acres account manager to send a test one — it lands here within seconds of them sending it."
             }
           />
         ) : (
@@ -218,38 +224,21 @@ export default async function IntegrationsPage({ searchParams }: PageProps) {
       ) : null}
 
       {tab === "portal-99acres" ? (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2.5">
-              <ChannelTile channel="portal_99acres" className="size-8" />
-              <div>
-                <CardTitle>99acres enquiries</CardTitle>
-                <CardDescription>
-                  Every enquiry on your 99acres listings arriving as a lead, with
-                  the project, locality and budget attached as fields you can put
-                  straight onto the lead sheet.
-                </CardDescription>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-2 text-sm leading-relaxed text-muted-foreground">
-            <p className="font-medium text-foreground">
-              What we need from you to switch it on
-            </p>
-            <ul className="ml-4 grid list-disc gap-1.5">
-              <li>A 99acres seller account with lead API access</li>
-              <li>
-                Your 99acres account manager to register the Skelo webhook
-                address
-              </li>
-              <li>One sample enquiry, so the fields can be mapped to yours</li>
-            </ul>
-            <p className="mt-2 text-xs">
-              Talk to your Skelo contact when you have these and we will connect
-              it.
-            </p>
-          </CardContent>
-        </Card>
+        <ChannelPanel
+          source={portalSource}
+          channel="portal_99acres"
+          origin={origin}
+          routeSegment="portal"
+          keyLabel="API key (optional)"
+          keyHint="Only needed if 99acres issues one for your account. The address itself is what identifies you."
+          unprovisioned="Every enquiry on your 99acres listings arriving as a lead, with the project, locality and budget attached as fields you can put straight onto the lead sheet. Ask your Skelo contact to switch it on."
+          steps={[
+            "Check your 99acres seller dashboard under Settings → Lead API / Webhook Integration. If the field is there, paste the address above and save.",
+            "If you can't find it, email your 99acres account manager asking them to enable webhook integration, and give them the address above as the POST target.",
+            "Ask them to send one test enquiry. It appears in the log below within seconds.",
+            "Tell your Skelo contact once the first enquiry lands — the fields 99acres sends differ per account, and that first delivery is what we map yours from.",
+          ]}
+        />
       ) : null}
 
       {tab === "voice" ? (

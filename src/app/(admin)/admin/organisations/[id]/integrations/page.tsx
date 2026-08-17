@@ -24,6 +24,7 @@ import {
 import { VoiceAgentsManager } from "@/components/app/voice-agents-manager";
 import { CodAgentForm } from "@/components/admin/cod-agent-form";
 import { IntakeSourcesManager } from "@/components/admin/intake-sources-manager";
+import { PortalFieldMapEditor } from "@/components/admin/portal-field-map-editor";
 import { ShopifyConnectForm } from "@/components/admin/shopify-connect-form";
 import { VoiceAgentForm } from "@/components/admin/voice-agent-form";
 import { WhatsAppForm } from "@/components/admin/whatsapp-form";
@@ -35,11 +36,15 @@ import { getOrganisationAdmin } from "@/actions/admin/organisations";
 import { getShopifyIntegrationStatus } from "@/actions/admin/shopify";
 import { getVoiceAgentAdmin } from "@/actions/admin/voice-agent";
 import { getWhatsAppAdmin } from "@/actions/admin/whatsapp";
-import { listIntakeSourcesForOrg } from "@/actions/lead-intake";
+import {
+  listIntakeSourcesForOrg,
+  listObservedPortalFields,
+} from "@/actions/lead-intake";
 import { listVoiceAgents } from "@/actions/voice-agents";
 import { appOrigin } from "@/lib/app-url";
 import { requireAdmin } from "@/lib/auth/admin";
 import { formatDateTime, formatRelative } from "@/lib/format";
+import type { LeadIntakeChannel } from "@/types/lead-intake";
 
 export const metadata = { title: "Integrations · Admin · Skelo" };
 
@@ -154,8 +159,19 @@ export default async function AdminOrganisationIntegrationsPage({
   }
 
   const org = orgRes.data;
-  const sourceFor = (channel: "google_ads" | "whatsapp") =>
+  const sourceFor = (channel: LeadIntakeChannel) =>
     sourcesRes.data.find((s) => s.channel === channel) ?? null;
+  const portalSource = sourceFor("portal_99acres");
+
+  // The mapping editor reads back what the endpoint has received. Only fetched
+  // on its own tab, and only once an endpoint exists to have received anything.
+  const observedRes =
+    tab === "portal-99acres" && portalSource
+      ? await listObservedPortalFields({
+          organisation_id: id,
+          id: portalSource.id,
+        })
+      : null;
 
   // Only the open tab's data is fetched. Each one hits a different set of
   // tables, and loading all five on every tab would make the page slower with
@@ -355,37 +371,83 @@ export default async function AdminOrganisationIntegrationsPage({
       ) : null}
 
       {tab === "portal-99acres" ? (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2.5">
-              <ChannelTile channel="portal_99acres" className="size-8" />
-              <div>
-                <CardTitle className="text-base">99acres enquiries</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Not built yet.
-                </p>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-2 text-sm leading-relaxed text-muted-foreground">
-            <p>
-              99acres publishes no developer documentation. Every CRM integrates
-              it the same way: 99acres posts each enquiry to a URL their account
-              manager registers, with field names that vary per seller account.
-            </p>
-            <p className="font-medium text-foreground">
-              What unblocks the build
-            </p>
-            <ul className="ml-4 grid list-disc gap-1.5">
-              <li>The client&rsquo;s seller account with lead API access</li>
-              <li>Their 99acres RM to register our webhook address</li>
-              <li>
-                <strong>One sample payload from a live enquiry</strong> — the
-                hard blocker. The first real enquiry is the spec.
-              </li>
-            </ul>
-          </CardContent>
-        </Card>
+        <>
+          <IntakeSourcesManager
+            organisationId={org.id}
+            origin={origin.url}
+            channel="portal_99acres"
+            source={portalSource}
+          />
+
+          {portalSource ? (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2.5">
+                  <ChannelTile channel="portal_99acres" className="size-8" />
+                  <div>
+                    <CardTitle className="text-base">Field mapping</CardTitle>
+                    <p className="text-sm text-muted-foreground">
+                      99acres publishes no schema and its field names differ per
+                      seller account, so this is built from what the endpoint has
+                      actually received. Anything not mapped is still kept, under
+                      its own name.
+                    </p>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {observedRes?.success ? (
+                  <PortalFieldMapEditor
+                    organisationId={org.id}
+                    sourceId={portalSource.id}
+                    fields={observedRes.data}
+                    fieldMap={portalSource.field_map}
+                  />
+                ) : (
+                  <p className="text-sm text-destructive">
+                    {observedRes?.error ?? "Could not read recent deliveries"}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                Getting 99acres to send here
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Unlike Google and Meta, there is no self-serve console for this —
+                it goes through the client&rsquo;s 99acres account manager.
+              </p>
+            </CardHeader>
+            <CardContent className="grid gap-1.5 text-sm leading-relaxed text-muted-foreground">
+              <ul className="ml-4 grid list-disc gap-1.5">
+                <li>
+                  The client checks their seller dashboard under{" "}
+                  <strong>Settings → Lead API / Webhook Integration</strong>. If
+                  the field is there, they paste the URL themselves.
+                </li>
+                <li>
+                  Most accounts don&rsquo;t expose it. Then the client emails
+                  their 99acres RM asking for webhook integration, quoting the
+                  URL above as the POST target.
+                </li>
+                <li>
+                  If the RM issues an API key, or gives you the IP ranges they
+                  post from, add them above. Both are optional — the URL token is
+                  the gate either way.
+                </li>
+                <li>
+                  <strong>Ask for one test enquiry.</strong> The first delivery
+                  populates the mapping table above, which is the only way to
+                  learn this account&rsquo;s field names.
+                </li>
+              </ul>
+            </CardContent>
+          </Card>
+        </>
       ) : null}
 
       {tab === "voice" ? (
