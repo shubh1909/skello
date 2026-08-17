@@ -1,4 +1,10 @@
+import { sanitiseKey } from "@/lib/intake/keys";
 import type { IngestSnapshot, NormalisedLead } from "@/lib/leads/ingest";
+
+// Re-exported because this module owned it first and its tests still address it
+// here. The implementation moved to `keys.ts` when the portal adapter needed
+// the same guarantee about catalog-addressable keys.
+export { sanitiseKey };
 
 /**
  * Google Ads lead form webhook — payload parsing and normalisation.
@@ -147,24 +153,6 @@ export function parseGoogleAdsPayload(
     lead_submit_time: str(b.lead_submit_time),
     lead_source: str(b.lead_source),
   };
-}
-
-/**
- * A JSONB key safe to store and to address from a lead-sheet binding.
- *
- * Binding key paths are validated against `[a-zA-Z0-9_\-.]+`, so a custom
- * question id with a space or a bracket would register a field nobody could
- * ever bind to. Sanitising here keeps the catalog addressable.
- */
-export function sanitiseKey(raw: string): string {
-  return (
-    raw
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 60) || "field"
-  );
 }
 
 /**

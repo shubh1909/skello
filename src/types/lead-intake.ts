@@ -73,7 +73,17 @@ export const WRITABLE_CREDENTIALS: Record<LeadIntakeChannel, readonly string[]> 
   {
     google_ads: [],
     whatsapp: ["app_secret", "access_token", "phone_number_id", "waba_id"],
-    portal_99acres: ["api_key"],
+    // Both optional. A portal signs nothing, so the URL token is the real gate;
+    // these narrow it further when the account happens to support them.
+    portal_99acres: ["api_key", "allowed_ips"],
+  };
+
+/** Credentials that are optional — the endpoint works without them. */
+export const OPTIONAL_CREDENTIALS: Record<LeadIntakeChannel, readonly string[]> =
+  {
+    google_ads: [],
+    whatsapp: ["waba_id"],
+    portal_99acres: ["api_key", "allowed_ips"],
   };
 
 export const CREDENTIAL_LABEL: Record<string, string> = {
@@ -82,6 +92,14 @@ export const CREDENTIAL_LABEL: Record<string, string> = {
   phone_number_id: "Phone number ID",
   waba_id: "WhatsApp Business Account ID",
   api_key: "Portal API key",
+  allowed_ips: "Allowed IP addresses",
+};
+
+export const CREDENTIAL_HINT: Record<string, string> = {
+  api_key:
+    "Only if the portal account sends one. Checked against ?api_key= or an X-Api-Key header.",
+  allowed_ips:
+    "Comma-separated. Leave blank to accept from anywhere — the URL token is still required.",
 };
 
 export interface LeadIntakeEvent {
@@ -96,6 +114,22 @@ export interface LeadIntakeEvent {
   error: string | null;
   received_at: string;
   processed_at: string | null;
+}
+
+/**
+ * One field name a portal endpoint has been observed sending.
+ *
+ * `source` says how it currently resolves: `map` is what an admin chose,
+ * `alias` is our guess from the built-in table, `default` is "kept as a custom
+ * field under its own name". The guesses are the ones worth reviewing.
+ */
+export interface ObservedPortalField {
+  path: string;
+  sample: string;
+  seen: number;
+  target: string | null;
+  customKey: string | null;
+  source: "map" | "alias" | "default";
 }
 
 export const LEAD_INTAKE_CHANNEL_LABEL: Record<LeadIntakeChannel, string> = {

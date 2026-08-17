@@ -45,23 +45,31 @@ exist.)*
 
 ### A2. Find the org in the admin console (you)
 Go to **`/admin` → Organisations**, open the workspace. The detail page
-(`/admin/organisations/[id]`) is your provisioning home: **Org info**, **Voice
-agent**, **WhatsApp**, and a **Workspace configuration** list (Voice agents,
-Lead fields, Dashboard, Call outcomes, Cart Recovery).
+(`/admin/organisations/[id]`) holds **Org info**, an **Integrations** summary,
+and a **Workspace configuration** list (Integrations, Lead fields, Dashboard,
+Call outcomes).
+
+> **Changed 2026-08-17.** Every connection now lives on one page —
+> `/admin/organisations/[id]/integrations` — with a tab each for **Google Ads ·
+> WhatsApp · 99acres · Voice agent · Cart recovery**. The old
+> `…/voice-agents` and `…/shopify` routes still work; they redirect into their
+> tabs. The customer sees the same tabs read-only at `/integrations`.
 
 ### A3. Connect the voice agent (you)
-On the org detail page → **Voice agent** card:
-- Paste the **Outbound Agent ID** and **API key** (from the voice provider's
-  dashboard) and an optional **Caller ID** number → **Connect**.
+Integrations page → **Voice agent** tab:
+- Under **Provider connection**, paste the **Outbound Agent ID** and **API key**
+  (from the voice provider's dashboard) and an optional **Caller ID** number →
+  **Connect**.
+- Under **Agents**, link the agent IDs that route inbound calls to this org.
+  This is the trusted tenancy gate, not the LLM's guess.
 - Use the provider dashboard to point the **post-call webhook** at
   `https://app.skelo.team/api/webhooks/bolna/leads?secret=<BOLNA_WEBHOOK_SECRET>`
   and enable extraction so transcripts + extracted fields flow back.
 
-### A4. Configure routing + workspace behaviour (you, as needed)
+### A4. Configure workspace behaviour (you, as needed)
 From the **Workspace configuration** list on the org detail page:
-- **Voice agents** — link the agent IDs that route inbound calls to this org
-  (this is the trusted tenancy gate, not the LLM's guess).
-- **Lead fields** — choose which extracted fields show on the leads table.
+- **Lead fields** — choose which extracted fields show on the leads table, and
+  which ones the lead detail sheet leads with.
 - **Call outcomes** — map each disposition to succeed / fail / callback / retry.
 - **Dashboard** — compose the org's analytics from the catalogue (optional).
 
@@ -89,8 +97,8 @@ Ask the client to, in their Shopify admin (**Settings → Apps → Develop apps*
    **API key (Client ID)**, and the **API secret key**.
 
 ### B2. Connect + authorize + register webhooks (you)
-Org detail page → **Workspace configuration → Cart Recovery (Shopify)**
-(`/admin/organisations/[id]/shopify`):
+Integrations page → **Cart recovery** tab
+(`/admin/organisations/[id]/integrations?tab=shopify`):
 1. Paste **store domain + API key + API secret** → **Save credentials**.
 2. Click **Authorize with Shopify** — the store approves once and the access
    token is fetched + stored automatically.
@@ -102,7 +110,13 @@ Org detail page → **Workspace configuration → Cart Recovery (Shopify)**
 > prod env var is missing — fix it (Platform prerequisites) and retry.
 
 ### B3. Connect WhatsApp (you) — optional second channel
-Org detail page → **WhatsApp** card:
+Integrations page → **WhatsApp** tab → **Outbound messaging (cart recovery, COD)**:
+
+> That tab also carries **Click-to-WhatsApp lead capture**, which is a different
+> subsystem on the same number — see Part C. The constraint worth knowing now: a
+> number delivers webhooks to exactly one app, so a number connected to
+> KwikEngage here **cannot** also deliver CTWA leads to us.
+
 1. In the KwikEngage/Kwikchat dashboard: get the **API token** (Integrations →
    API), and submit a **Meta-approved template** (Marketing category; see the
    template in [docs/cart-recovery.md](cart-recovery.md) / the onboarding notes).
@@ -148,16 +162,78 @@ curl -X POST https://app.skelo.team/api/cron/campaigns/tick \
 
 ---
 
+## Part C — Lead sources (adds on top of Part A)
+
+For orgs capturing leads from ads or property portals. Each is independent; do
+only the ones the client uses. All of it lives on the **Integrations** page,
+`/admin/organisations/[id]/integrations`.
+
+> ⚠️ **Not live yet.** Migrations `20260813000000` and `20260813000001` are
+> unapplied, and `NEXT_PUBLIC_APP_URL` is unset — until both are done the
+> webhook addresses shown are localhost and nothing can be created.
+
+### C1. Google Ads lead forms — the easy one
+1. **Google Ads** tab → **Connect Google Ads**. Skelo issues the URL and key.
+2. Give both to the client. In Google Ads they edit the lead form asset →
+   **Lead delivery option → Webhook integration** → paste → **Send test data**.
+3. A row appears in their delivery log marked **Test**. It is recorded and
+   deliberately creates no lead — that is the proof-of-life.
+4. Custom qualifying questions on the form arrive as lead fields automatically;
+   bind them on the sheet via **Lead fields** if they should be prominent.
+
+Nothing is needed from the client beyond access to their Google Ads account.
+
+### C2. Click-to-WhatsApp lead capture — the one with prerequisites
+Collect from the client **before** promising anything (the tab lists these):
+verified Meta Business account; a Meta app with WhatsApp added (→ app secret); a
+number **not already on another provider**; a System User *permanent* token; and
+**Ads Attribution switched on** in WhatsApp Manager.
+
+1. **WhatsApp** tab → **Connect WhatsApp**. Skelo issues the URL + verify token.
+2. Client pastes both into their Meta app under **WhatsApp → Configuration →
+   Webhook**, saves (Meta calls the URL to verify), then subscribes to
+   **`messages`**. Nothing arrives without that subscription.
+3. Client sends you the **app secret** and **phone number ID**; paste them into
+   **Client credentials**. They are write-only — never shown again.
+4. Verify: tap one of their live CTWA ads and send a message. It should appear in
+   the delivery log with the ad headline attached.
+
+> If leads arrive with **no ad attached**, Ads Attribution is off. Meta omits the
+> referral block entirely and the click id is lost permanently. Nothing in the
+> payload says so — this is the failure that looks like success.
+
+### C3. 99acres enquiries
+1. **99acres** tab → **Connect 99acres**. Skelo issues the URL.
+2. Client checks their seller dashboard under **Settings → Lead API / Webhook
+   Integration**. If the field is there they paste it themselves; most accounts
+   don't expose it, so they email their 99acres RM asking for webhook
+   integration and quoting the URL as the POST target.
+3. If the RM issues an API key, or shares the IP ranges they post from, add them
+   under **Client credentials**. Both optional — the URL token is the gate.
+4. **Ask for one test enquiry.** 99acres publishes no schema and field names
+   differ per seller account, so the first delivery populates the **Field
+   mapping** table — that is how this account's names get learned.
+5. Review the mapping. Rows marked **guessed** came from our alias table; correct
+   any that are wrong, save, then **re-run** those deliveries from the log to fix
+   leads already created.
+
+---
+
 ## Quick reference
 
 | Thing | Where / value |
 | --- | --- |
 | Admin console | `/admin/organisations/[id]` |
-| Owner status (read-only) | Workspace **Settings** page |
+| All connections (admin) | `/admin/organisations/[id]/integrations` |
+| Owner status (read-only) | Workspace **Integrations** page |
 | Shopify webhook (auto-registered) | `https://app.skelo.team/api/webhooks/shopify` |
 | Voice post-call webhook | `…/api/webhooks/bolna/leads?secret=<BOLNA_WEBHOOK_SECRET>` |
 | WhatsApp delivery webhook | `…/api/webhooks/kwikengage?secret=<KWIKENGAGE_WEBHOOK_SECRET>` |
 | Shopify OAuth callback | `…/api/shopify/oauth/callback` |
+| Google Ads lead webhook | `…/api/webhooks/google-ads/<token>` (token per org, issued in admin) |
+| Click-to-WhatsApp webhook | `…/api/webhooks/whatsapp/<token>` (subscribe to `messages`) |
+| Portal enquiry webhook | `…/api/webhooks/portal/<token>` |
+| Public origin for the above | `NEXT_PUBLIC_APP_URL` (`https://app.skelo.team`) |
 | Dispatch tick | `POST …/api/cron/campaigns/tick` (`x-cron-secret`), every minute |
 | Required Shopify scopes | `read_checkouts`, `read_orders` |
 | WhatsApp send API | `POST https://api.kwikengage.ai/send-message/v2` |

@@ -19,11 +19,12 @@ All mutations and queries live in Server Actions under [src/actions/](../src/act
 9. [Calls](#calls)
 10. [Call Transcripts](#call-transcripts)
 11. [Voice Agent Webhooks](#voice-agent-webhooks)
-12. [Campaigns (Bulk Outbound)](#campaigns-bulk-outbound)
-13. [Realtime](#realtime)
-14. [Analytics](#analytics)
-15. [Admin Console](#admin-console)
-16. [Security Model](#security-model)
+12. [Lead Intake (Google Ads · WhatsApp · Portals)](#lead-intake-google-ads--whatsapp--portals)
+13. [Campaigns (Bulk Outbound)](#campaigns-bulk-outbound)
+14. [Realtime](#realtime)
+15. [Analytics](#analytics)
+16. [Admin Console](#admin-console)
+17. [Security Model](#security-model)
 
 ---
 
@@ -1024,6 +1025,99 @@ Expected: `200 { id: "<lead uuid>" }`. Lead appears at `/leads`, call appears at
 5. The conversations page now shows the row as **Completed** with duration, **Audio → Play** linking the recording, and the transcript dialog populated when you click the row.
 
 If you see `[outbound] no matching call for execution …` — that means we don't have a call with that `bolna_call_id`. Most often the agent fired the webhook for a call we didn't initiate (manual test from the Bolna dashboard, calls placed against a different env, etc.).
+
+---
+
+## Lead Intake (Google Ads · WhatsApp · Portals)
+
+Non-voice lead sources. The voice-agent path is **not** part of this and is unchanged —
+it has its own webhook contract and a per-call snapshot on `calls`.
+
+Files:
+- Adapters: [src/lib/intake/google-ads.ts](../src/lib/intake/google-ads.ts), [whatsapp.ts](../src/lib/intake/whatsapp.ts), [portal.ts](../src/lib/intake/portal.ts), [keys.ts](../src/lib/intake/keys.ts)
+- Endpoint resolution + event ledger: [source.ts](../src/lib/intake/source.ts), [events.ts](../src/lib/intake/events.ts)
+- Shared ingest core: [src/lib/leads/ingest.ts](../src/lib/leads/ingest.ts)
+- Actions: [src/actions/lead-intake.ts](../src/actions/lead-intake.ts)
+- Types: [src/types/lead-intake.ts](../src/types/lead-intake.ts)
+- Migrations: `20260813000000_lead_source_intake_channels.sql`, `20260813000001_lead_intake.sql`
+
+### The shared pipeline
+
+Every channel does the same five things; only step 4 differs.
+
+1. **Receive** — tenancy resolved from the opaque `public_token` in the URL path, **never** from the payload.
+2. **Verify** — per channel (below).
+3. **Record** — `lead_intake_events` row written **before** the ack. A 200 tells the sender to forget the delivery, so the receipt must be durable first. Same discipline as `recordCheckoutEvent` on the Shopify path.
+4. **Normalise** — the channel adapter produces a `NormalisedLead`.
+5. **Ingest** — `ingestNormalisedLead()`: find-or-create by phone, honour `lead_field_overrides` locks, merge JSONB per key, auto-register every new key via `register_lead_field`.
+
+Step 5 is why a new channel costs no display code: an unseen field lands in the catalog on
+first sight and becomes selectable as a leads-table column and bindable on the lead sheet.
+
+### Tables
+
+| Table | Purpose | RLS |
+|---|---|---|
+| `lead_intake_sources` | One row per (org, channel). Holds `public_token`, `credentials` jsonb, `field_map` jsonb, `enabled`, `last_event_at`. | Enabled, **no authenticated policies** — service-role only (it holds secrets). |
+| `lead_intake_events` | One row per delivery: `external_id`, `status`, `payload`, `lead_id`, `error`. Unique on `(source_id, external_id)` where `external_id is not null`. | SELECT for org owners — the delivery log is customer-facing. Writes are webhook-side only. |
+
+`lead_source` gained `google_ads` and `portal_99acres` (`20260813000000`). CTWA leads reuse
+the existing `whatsapp` value.
+
+### Endpoints
+
+| Route | Method | Verification | Ack |
+|---|---|---|---|
+| `/api/webhooks/google-ads/[token]` | POST | `google_key` echoed in the body, constant-time compare. No signature exists. | `200 {}`; **4xx never retried, 5xx retried** |
+| `/api/webhooks/whatsapp/[token]` | GET | `hub.verify_token` — Meta's subscription handshake | echo `hub.challenge` as `text/plain` |
+| `/api/webhooks/whatsapp/[token]` | POST | `X-Hub-Signature-256` over the **raw** body, with *that org's* `app_secret` | `200`, work deferred to `after()` |
+| `/api/webhooks/portal/[token]` | POST + GET | Token; optional `api_key` (query or `X-Api-Key`); optional per-source IP allowlist | `200`, work deferred to `after()` |
+
+> ⚠️ **Google's response contract is the inverse of Shopify's.** `4XX` is never retried,
+> `5XX` is. Our Shopify route deliberately 200-acks deliveries it cannot use so Shopify
+> stops retrying — copying that reflex here loses a real lead on a transient DB failure.
+> A failed `lead_intake_events` insert must return **503**.
+
+> ⚠️ **Resolve, then verify** on WhatsApp. Each client runs their own Meta app, so the
+> signing secret differs per org and the tenant must come out of the URL token first. The
+> raw body is read once and hashed as-is; a re-serialised body never matches.
+
+### Channel notes
+
+**Google Ads** — `is_test: true` deliveries are recorded as `status = 'test'` and create no
+lead; that is the advertiser's "Send test data" ping and the onboarding proof-of-life.
+Dedupe on `lead_id` (Google does not promise exactly-once). Custom form questions land in
+`custom_data['']`; ad attribution in `custom_data.google_ads`.
+
+**WhatsApp (Click-to-WhatsApp)** — Meta Cloud API direct, client-owned WABA. A lead is
+created when the message carries a `referral` block (an ad tap — always, even for a known
+contact) **or** the sender is unknown. Known senders with no referral are acked and
+dropped, and get no ledger row. `won`/`lost` leads reopen to `new`. The WhatsApp display
+name seeds a new lead but never overwrites an existing one. `referral` only appears on the
+first message of a conversation, and only when **Ads Attribution** is enabled on the WABA —
+if it is off, leads still arrive with no ad attached and `ctwa_clid` is lost permanently.
+Dedupe on `wamid`.
+
+**Portals (99acres)** — no published schema; field names differ per seller account.
+Accepts JSON, form-encoded and query-string on POST *and* GET, merged, body winning; the
+`Content-Type` header is not trusted. Aliases are case- and separator-blind
+(`Mobile__c` / `mobile_no` / `MOBILE NO.` all match). **`price`/`budget` is deliberately not
+aliased** — on a property portal that is either the buyer's budget or the asking price.
+Unrecognised fields are kept under `custom_data.portal`. An enquiry with no phone still
+creates a lead, flagged `custom_data.portal.missing_phone`. `listObservedPortalFields()`
+reads keys back out of recent payloads to drive the admin mapping editor — the deliveries
+are the only documentation these portals have.
+
+### Provisioning
+
+Endpoints are created and configured by **Skelo staff** at
+`/admin/organisations/[id]/integrations`, gated by `userCanManageOrg`. Org owners see the
+same tabs read-only at `/integrations`, plus the delivery log and a re-run action. Only the
+credential Skelo itself issues (`google_key`, `verify_token`) is ever returned to a client;
+`configured_credentials` reports which client-supplied secrets are set, by name only.
+
+The webhook addresses shown come from `appOrigin()` — set
+`NEXT_PUBLIC_APP_URL=https://app.skelo.team` (see [Setup & Environment](#setup--environment)).
 
 ---
 

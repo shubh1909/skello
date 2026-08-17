@@ -138,6 +138,10 @@ concluding "this is broken".
 - `call_transcripts` — child table, one row per utterance. FTS GIN index on `to_tsvector('simple', text)` for multi-language search.
 - `bolna_integrations` — per-org provider config (API key, agent id). RLS enabled with no authenticated policies; service-role only.
 - `reminders` — per-lead + per-org follow-ups with `type` and `status` enums.
+- `lead_intake_sources` — per-org webhook endpoints for **non-voice** lead sources (Google Ads, Click-to-WhatsApp, property portals). Holds `public_token` (tenancy comes from the URL, never the payload), `credentials` jsonb, `field_map` jsonb. RLS enabled with **no authenticated policies** — service-role only, it holds secrets.
+- `lead_intake_events` — one row per inbound delivery, written **before** the webhook acks. Doubles as the idempotency key (`unique (source_id, external_id)`), the customer-facing delivery log, and the replay buffer. Org owners can SELECT; writes are webhook-side only.
+  - ⚠️ `lead_source` now also carries `shopify`, `google_ads` and `portal_99acres`. Adding a value is its own migration — `ADD VALUE` cannot be *used* in the transaction that adds it.
+  - The shared ingest core lives in `src/lib/leads/ingest.ts`, extracted from `lib/bolna/lead-merge.ts`. The voice path still owns its own snapshot/merge and does **not** route through `ingestNormalisedLead`. See [docs/api.md § Lead Intake](docs/api.md#lead-intake-google-ads--whatsapp--portals).
 
 Migration files live under `supabase/migrations/`; [docs/api.md § Setup & Environment](docs/api.md#setup--environment) keeps the chronological list.
 
@@ -174,6 +178,7 @@ This codebase has several traps that produce confident-but-wrong answers — dro
 | `skelo-tenancy` | **Any** tenant-scoped query, Supabase client choice, auth/session, RLS, migrations, soft-delete. Highest frequency — the default. |
 | `skelo-leads` | `leads`, `reminders`, `campaign_contacts`, `lead_data`/`custom_data` JSONB, extraction/merge, dedupe |
 | `skelo-voice-agent` | `calls`, `call_transcripts`, `bolna_integrations`, `voice_agents`, dialling, call webhooks, transcripts |
+| `skelo-lead-intake` | Google Ads / Click-to-WhatsApp / portal lead capture, `lead_intake_sources`, `lead_intake_events`, `src/lib/intake/`, `/integrations`, the shared `lib/leads/ingest.ts` core |
 | `skelo-whatsapp` | Template sends, delivery status, `whatsapp_integrations`, `shopify_recovery_messages`, KwikEngage |
 | `skelo-recovery` | `shopify_recovery_*`, the Shopify webhook, App Proxy short links, conversion attribution, recovery metrics |
 | `skelo-platform` | Cron, observability/Sentry, rate limits, campaign dispatch, analytics, CSV import/export, tests |

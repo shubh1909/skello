@@ -11,6 +11,12 @@ import {
   normaliseGoogleAdsLead,
   parseGoogleAdsPayload,
 } from "@/lib/intake/google-ads";
+import {
+  decodePortalRequest,
+  normalisePortalLead,
+  observedFields,
+  resolveTarget,
+} from "@/lib/intake/portal";
 import { ingestNormalisedLead } from "@/lib/leads/ingest";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -28,6 +34,7 @@ import {
   type LeadIntakeChannel,
   type LeadIntakeEvent,
   type LeadIntakeSource,
+  type ObservedPortalField,
 } from "@/types/lead-intake";
 
 /**
@@ -421,6 +428,88 @@ export async function listIntakeEvents(
 }
 
 /**
+ * The field names this portal endpoint has actually been sending.
+ *
+ * No portal publishes a schema, so the deliveries ARE the documentation. This
+ * reads them back — every key seen recently, a sample value, how often it
+ * appeared, and where it currently resolves to — which is what turns the admin
+ * mapping editor from a blank JSON box into a list you can just correct.
+ *
+ * Admin-only: it takes an explicit org and shows raw payload values.
+ */
+export async function listObservedPortalFields(
+  input: unknown,
+): Promise<ActionResult<ObservedPortalField[]>> {
+  const parsed = intakeSourceIdSchema.safeParse(input);
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input");
+  }
+  const auth = await requireOrgManager(parsed.data.organisation_id);
+  if (!auth.ok) return fail(auth.error);
+
+  const admin = createAdminClient();
+
+  const { data: source } = await admin
+    .from("lead_intake_sources")
+    .select("field_map")
+    .eq("id", parsed.data.id)
+    .eq("organisation_id", parsed.data.organisation_id)
+    .maybeSingle<{ field_map: Record<string, string> | null }>();
+  if (!source) return fail("Integration not found");
+
+  // 50 is enough to see every field an account sends without reading the whole
+  // ledger — portals are repetitive, and the rare field shows up in the count.
+  const { data: events, error } = await admin
+    .from("lead_intake_events")
+    .select("payload")
+    .eq("source_id", parsed.data.id)
+    .eq("organisation_id", parsed.data.organisation_id)
+    .order("received_at", { ascending: false })
+    .limit(50)
+    .returns<Array<{ payload: unknown }>>();
+
+  if (error) {
+    return fail(
+      logSkeloError("WEBHOOK-INGEST", "Could not read recent deliveries", {
+        organisationId: parsed.data.organisation_id,
+        cause: error,
+      }),
+    );
+  }
+
+  const fieldMap = source.field_map ?? {};
+  const observed = observedFields(
+    (events ?? []).map((e) => {
+      const stored = e.payload as {
+        fields?: Record<string, string>;
+        raw_body?: string | null;
+        content_type?: string | null;
+      } | null;
+      // Prefer the decoded fields; fall back to the raw body so a delivery the
+      // decoder failed on still contributes its keys once decoding improves.
+      return stored?.fields && Object.keys(stored.fields).length > 0
+        ? { body: stored.fields }
+        : { body: stored?.raw_body ?? {}, contentType: stored?.content_type };
+    }),
+  );
+
+  return ok(
+    observed.map((f) => {
+      const resolved = resolveTarget(f.path, fieldMap);
+      return {
+        path: f.path,
+        sample: f.sample,
+        seen: f.seen,
+        target: resolved.target,
+        customKey: resolved.customKey,
+        // "alias" means we guessed. That is the column an admin scans.
+        source: resolved.source,
+      };
+    }),
+  );
+}
+
+/**
  * Re-run ingest from a stored payload.
  *
  * The reason raw bodies are kept. A wrong field map, an ingest that died
@@ -455,8 +544,8 @@ export async function replayIntakeEvent(
     }>();
 
   if (!event) return fail("Delivery not found");
-  if (event.channel !== "google_ads") {
-    return fail("Re-running is only available for Google Ads deliveries");
+  if (event.channel === "whatsapp") {
+    return fail("Re-running is not available for WhatsApp deliveries");
   }
   // A test lead stays a test lead on replay. Google sends it to prove the
   // endpoint answers, not to add anyone to the pipeline.
@@ -471,13 +560,44 @@ export async function replayIntakeEvent(
     .eq("organisation_id", session.organisation.id)
     .maybeSingle<{ field_map: Record<string, string> | null }>();
 
-  const payload = parseGoogleAdsPayload(event.payload);
-  if (!payload) return fail("Stored payload is not a Google Ads lead");
+  const fieldMap = source?.field_map ?? {};
+
+  // Rebuilt from the stored payload rather than from anything cached, so a
+  // replay picks up a field map the admin has corrected since. That is the
+  // entire point of keeping raw bodies for a channel with no published schema.
+  let lead;
+  if (event.channel === "portal_99acres") {
+    const stored = event.payload as {
+      fields?: Record<string, string>;
+      raw_body?: string | null;
+      content_type?: string | null;
+    } | null;
+    const fields =
+      stored?.fields && Object.keys(stored.fields).length > 0
+        ? stored.fields
+        : decodePortalRequest({
+            contentType: stored?.content_type ?? null,
+            rawBody: stored?.raw_body ?? "",
+            searchParams: new URLSearchParams(),
+          });
+    if (Object.keys(fields).length === 0) {
+      return fail("Stored payload has no readable fields");
+    }
+    lead = normalisePortalLead(fields, fieldMap);
+  } else {
+    const payload = parseGoogleAdsPayload(event.payload);
+    if (!payload) return fail("Stored payload is not a Google Ads lead");
+    lead = normaliseGoogleAdsLead(payload, fieldMap);
+  }
 
   try {
     const { leadId } = await ingestNormalisedLead({
       organisationId: session.organisation.id,
-      lead: normaliseGoogleAdsLead(payload, source?.field_map ?? {}),
+      lead,
+      options:
+        event.channel === "portal_99acres"
+          ? { overwriteName: false, reopenClosedStatus: true }
+          : undefined,
     });
 
     await admin

@@ -1,8 +1,8 @@
 # Integrations — Lead Intake Implementation Plan
 
-**Status:** Phases 0, 1 and 3 **built** (2026-08-12) — ⚠️ migrations not yet applied.
-Phase 2 (99acres) not started; still blocked on a sample payload.
-**Date:** 2026-08-12
+**Status:** All four phases **built** (Phases 0/1/3 on 2026-08-12, Phase 2 on 2026-08-17)
+— ⚠️ migrations still not applied, so nothing is live yet.
+**Date:** 2026-08-12, last updated 2026-08-17
 **Goal:** a new top-level **Integrations** surface that captures leads from Google Ads
 lead forms, Click-to-WhatsApp ads, and 99acres — alongside the voice agent, which is
 unchanged.
@@ -478,12 +478,31 @@ the Google Ads tab and the Create button fails — the tables do not exist.
 press *Send test data* → a `Test` row appears in the log and no lead is created. A real
 submission creates a lead whose custom questions are already registered as lead fields.
 
-### Phase 2 — 99acres / portals
+### Phase 2 — 99acres / portals — ✅ built
 
-Portal adapter, `field_map` admin editor, IP allowlist, replay.
-**Done when:** a live 99acres enquiry creates a lead with project and budget bound onto
-the lead sheet.
-**Blocked by:** one sample payload from a live enquiry + RM registering the URL.
+`src/lib/intake/portal.ts` + `keys.ts` (+31 tests), `/api/webhooks/portal/[token]`
+(POST **and** GET), the learn-from-deliveries field-map editor, per-source IP allowlist,
+replay extended to portal deliveries.
+
+Built to survive not having a schema, because none exists:
+
+- **Three encodings accepted** — JSON, form-encoded, and query string, merged, with the
+  body winning over the query. Content type is not trusted: a JSON body labelled
+  `text/plain` still parses, because losing an enquiry to a header would be absurd.
+- **Aliases, separator- and case-blind.** `Mobile__c`, `mobile_no`, `MOBILE NO.` and
+  `contactNumber` all resolve to phone. **`price`/`budget` is deliberately NOT aliased** —
+  on a property portal that is either the buyer's budget or the listing's asking price,
+  and a wrong guess writes a number a salesperson acts on. It lands as a labelled custom
+  field instead.
+- **Nothing is ever dropped.** Unrecognised fields become custom fields under their own
+  name; a body we cannot decode at all is stored as `failed` with the raw bytes and is
+  replayable once the decoder or the map is fixed.
+- **No phone → still a lead**, flagged with `custom_data.portal.missing_phone`, which is
+  filterable on the leads table and bindable on the sheet with no display code.
+
+**Blocked from going live by** the client's RM registering the URL, and one test enquiry —
+which is now a feature rather than a blocker: the first delivery populates the mapping
+table, which is how that account's field names get learned.
 
 ### Phase 3 — WhatsApp CTWA — ✅ built
 
